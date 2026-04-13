@@ -154,3 +154,7 @@ venv.bak/
 
 # mlflow local runs
 mlruns/*
+
+# IA tools
+.claude/**
+CLAUDE.md
