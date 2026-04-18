@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "shared"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.0",
+    "pandas>=2.0",
+    "pyarrow",
+    "numpy",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/shared"]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "ruff",
+]
