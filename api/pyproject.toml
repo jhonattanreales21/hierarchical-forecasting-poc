@@ -3,11 +3,18 @@ requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "api"
+name = "hdf_api"
 version = "0.1.0"
 requires-python = ">=3.12"
-# Stage 3: add fastapi, uvicorn, shared
-dependencies = []
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "pandas>=2.0",
+    "shared",
+]
 
 [tool.uv.sources]
 shared = { workspace = true }
+
+[dependency-groups]
+dev = ["ruff", "httpx"]
