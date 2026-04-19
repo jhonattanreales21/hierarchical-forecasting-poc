@@ -1,3 +1,3 @@
-project_name: hierarchical_demand_forecasting_poc
+project_name: hdf_pipelines
 random_seed: 42
 target_sku: "SKU_PLACEHOLDER"

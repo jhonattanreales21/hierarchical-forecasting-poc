@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 requires-python = ">=3.12"
-name = "hierarchical_demand_forecasting_poc"
+name = "hdf_pipelines"
 readme = "README_kedro.md"
 dynamic = ["version"]
 dependencies = [
@@ -27,7 +27,7 @@ dependencies = [
 ]
 
 [project.scripts]
-"hierarchical-demand-forecasting-poc" = "hierarchical_demand_forecasting_poc.__main__:main"
+"hdf-pipelines" = "hdf_pipelines.__main__:main"
 
 [project.entry-points."kedro.hooks"]
 
@@ -53,15 +53,15 @@ dev = [
 shared = { workspace = true }
 
 [tool.setuptools.dynamic]
-version = {attr = "hierarchical_demand_forecasting_poc.__version__"}
+version = {attr = "hdf_pipelines.__version__"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
 namespaces = false
 
 [tool.kedro]
-package_name = "hierarchical_demand_forecasting_poc"
-project_name = "hierarchical-demand-forecasting-poc"
+package_name = "hdf_pipelines"
+project_name = "hdf-pipelines"
 kedro_init_version = "1.3.1"
 tools = "['Linting', 'Testing', 'Custom Logging', 'Documentation', 'Data Structure']"
 source_dir = "src"
@@ -69,7 +69,7 @@ source_dir = "src"
 [tool.pytest.ini_options]
 addopts = """
 --cov-report term-missing \
---cov src/hierarchical_demand_forecasting_poc -ra"""
+--cov src/hdf_pipelines -ra"""
 
 [tool.coverage.report]
 fail_under = 0

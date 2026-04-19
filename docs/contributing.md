@@ -23,6 +23,61 @@ fix(metrics): correct pooled variance in SMD calculation
 docs(readme): rewrite overview and usage examples
 ```
 
+## Pull Requests
+
+### PR Title
+
+Use the following format:
+
+```sh
+[<TYPE>] <Short clear description>
+```
+
+Examples:
+
+```sh
+[FEATURE] Add exact matcher fit and match flow
+[FIX] Correct balance table output for binary variables
+[DOCS] Improve README overview and usage examples
+[REFACTOR] Centralize matching input validations
+```
+
+Suggested PR types:
+
+- `FEATURE`
+- `FIX`
+- `REFACTOR`
+- `DOCS`
+- `TEST`
+- `CHORE`
+
+### PR Description
+
+Every PR should include, at minimum:
+
+- A short summary of the change
+- The main changes introduced
+- How the change was validated
+- Notes for reviewers when relevant
+
+Recommended sections:
+
+```md
+## Summary
+Brief description of the change and why it is needed.
+
+## Changes
+- 
+- 
+- 
+
+## Validation
+- Describe how the changes were validated.
+
+## Notes for reviewers
+- Optional reviewer guidance.
+```
+
 ## Running checks locally
 
 ```bash

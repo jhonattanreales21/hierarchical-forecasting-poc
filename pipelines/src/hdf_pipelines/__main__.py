@@ -1,5 +1,5 @@
-"""hierarchical-demand-forecasting-poc file for ensuring the package is executable
-as `hierarchical-demand-forecasting-poc` and `python -m hierarchical_demand_forecasting_poc`
+"""hdf-pipelines entry point for ensuring the package is executable
+as `hdf-pipelines` and `python -m hdf_pipelines`
 """
 
 import sys

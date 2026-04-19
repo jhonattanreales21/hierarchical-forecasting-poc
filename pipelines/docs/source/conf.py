@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 
-# hierarchical_demand_forecasting_poc documentation build
+# hdf_pipelines documentation build
 # configuration file, created by sphinx-quickstart.
 #
 # This file is execfile()d with the current directory set to its
@@ -19,11 +19,11 @@
 #
 import re
 
-from hierarchical_demand_forecasting_poc import __version__ as release
+from hdf_pipelines import __version__ as release
 
 # -- Project information -----------------------------------------------------
 
-project = "hierarchical_demand_forecasting_poc"
+project = "hdf_pipelines"
 author = "Kedro"
 
 # The short X.Y version.
@@ -119,7 +119,7 @@ html_show_copyright = False
 # -- Options for HTMLHelp output ---------------------------------------------
 
 # Output file base name for HTML help builder.
-htmlhelp_basename = "hierarchical_demand_forecasting_pocdoc"
+htmlhelp_basename = "hdf_pipelinesdoc"
 
 # -- Options for LaTeX output ------------------------------------------------
 
@@ -147,8 +147,8 @@ latex_elements = {
 latex_documents = [
     (
         master_doc,
-        "hierarchical_demand_forecasting_poc.tex",
-        "hierarchical_demand_forecasting_poc Documentation",
+        "hdf_pipelines.tex",
+        "hdf_pipelines Documentation",
         "Kedro",
         "manual",
     )
@@ -161,8 +161,8 @@ latex_documents = [
 man_pages = [
     (
         master_doc,
-        "hierarchical_demand_forecasting_poc",
-        "hierarchical_demand_forecasting_poc Documentation",
+        "hdf_pipelines",
+        "hdf_pipelines Documentation",
         [author],
         1,
     )
@@ -176,11 +176,11 @@ man_pages = [
 texinfo_documents = [
     (
         master_doc,
-        "hierarchical_demand_forecasting_poc",
-        "hierarchical_demand_forecasting_poc Documentation",
+        "hdf_pipelines",
+        "hdf_pipelines Documentation",
         author,
-        "hierarchical_demand_forecasting_poc",
-        "Project hierarchical_demand_forecasting_poc codebase.",
+        "hdf_pipelines",
+        "Project hdf_pipelines codebase.",
         "Data-Science",
     )
 ]

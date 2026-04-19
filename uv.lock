@@ -14,7 +14,7 @@ resolution-markers = [
 members = [
     "hdf-api",
     "hdf-app",
-    "hierarchical-demand-forecasting-poc",
+    "hdf-pipelines",
     "shared",
 ]
 
@@ -1385,7 +1385,7 @@ requires-dist = [
 dev = [{ name = "ruff" }]
 
 [[package]]
-name = "hierarchical-demand-forecasting-poc"
+name = "hdf-pipelines"
 source = { editable = "pipelines" }
 dependencies = [
     { name = "catboost" },

@@ -2,7 +2,7 @@
 
 from kedro.pipeline import Pipeline
 
-from hierarchical_demand_forecasting_poc.pipelines import (
+from hdf_pipelines.pipelines import (
     data_ingestion,
     feature_engineering_monthly,
     feature_engineering_weekly,

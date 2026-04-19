@@ -1,6 +1,6 @@
 """Smoke tests for the Kedro pipeline registry."""
 
-from hierarchical_demand_forecasting_poc.pipeline_registry import register_pipelines
+from hdf_pipelines.pipeline_registry import register_pipelines
 
 
 def test_all_expected_pipelines_registered():

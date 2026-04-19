@@ -13,10 +13,13 @@ from kedro.framework.startup import bootstrap_project
 # and should be replaced with the ones testing the project
 # functionality
 
+# Resolve to pipelines/ regardless of where pytest is invoked from
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
 
 class TestKedroRun:
     def test_kedro_run(self):
-        bootstrap_project(Path.cwd())
+        bootstrap_project(_PROJECT_ROOT)
 
-        with KedroSession.create(project_path=Path.cwd()) as session:
+        with KedroSession.create(project_path=_PROJECT_ROOT) as session:
             assert session.run() is not None

@@ -36,7 +36,7 @@ loggers:
   kedro:
     level: INFO
 
-  hierarchical_demand_forecasting_poc:
+  hdf_pipelines:
     level: INFO
 
 root:
