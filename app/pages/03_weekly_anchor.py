@@ -2,13 +2,11 @@ import streamlit as st
 
 st.title("Weekly Anchor Forecast — Secondary Layer")
 
-st.info(
-    """
+st.info("""
     **Secondary operational layer.** 14-week horizon, useful for short-term interpretability and
     as an operational complement to the monthly layer. Results here should be read alongside the
     monthly forecast — not in isolation.
-    """
-)
+    """)
 
 forecast_type = st.radio(
     "Forecast type",

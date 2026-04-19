@@ -23,14 +23,14 @@ class TemporalGranularity(str, Enum):
 class ForecastRecord(BaseModel):
     """Single forecast data point at a given granularity."""
 
-    ds: date                          # period date (month start, week start, or day)
-    y_actual: Optional[float]         # actual observed value; None if the period is future
-    y_forecast: float                 # point forecast value
-    y_lower: Optional[float]          # lower bound of prediction interval
-    y_upper: Optional[float]          # upper bound of prediction interval
+    ds: date  # period date (month start, week start, or day)
+    y_actual: Optional[float]  # actual observed value; None if the period is future
+    y_forecast: float  # point forecast value
+    y_lower: Optional[float]  # lower bound of prediction interval
+    y_upper: Optional[float]  # upper bound of prediction interval
     granularity: TemporalGranularity  # temporal level this record belongs to
-    model_name: str                   # name of the model that produced this forecast
-    horizon_step: int                 # 1-based position within the forecast horizon
+    model_name: str  # name of the model that produced this forecast
+    horizon_step: int  # 1-based position within the forecast horizon
 
 
 class BacktestResult(BaseModel):
@@ -38,11 +38,11 @@ class BacktestResult(BaseModel):
 
     model_name: str
     granularity: TemporalGranularity
-    mape: float    # Mean Absolute Percentage Error
-    rmse: float    # Root Mean Squared Error
-    mase: float    # Mean Absolute Scaled Error
-    n_folds: int   # number of rolling-origin folds used
-    horizon: int   # forecast horizon length (in granularity units)
+    mape: float  # Mean Absolute Percentage Error
+    rmse: float  # Root Mean Squared Error
+    mase: float  # Mean Absolute Scaled Error
+    n_folds: int  # number of rolling-origin folds used
+    horizon: int  # forecast horizon length (in granularity units)
 
 
 class ForecastArtifact(BaseModel):
@@ -54,9 +54,9 @@ class ForecastArtifact(BaseModel):
     by the app and API.
     """
 
-    run_id: str                              # MLflow run ID for traceability
+    run_id: str  # MLflow run ID for traceability
     model_name: str
     granularity: TemporalGranularity
-    trained_at: datetime                     # UTC timestamp of the training run
-    forecast_records: list[ForecastRecord]   # ordered by ds ascending
+    trained_at: datetime  # UTC timestamp of the training run
+    forecast_records: list[ForecastRecord]  # ordered by ds ascending
     backtest_result: BacktestResult

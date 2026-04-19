@@ -10,7 +10,9 @@ _empty: pd.DataFrame = pd.DataFrame(columns=_columns)
 
 st.subheader("Monthly Models")
 st.dataframe(_empty, use_container_width=True)
-st.caption("Primary evaluation focus — accuracy target: ≥ 85% (MAPE improvement from 82.3% baseline).")
+st.caption(
+    "Primary evaluation focus — accuracy target: ≥ 85% (MAPE improvement from 82.3% baseline)."
+)
 
 st.subheader("Weekly Models")
 st.dataframe(_empty, use_container_width=True)

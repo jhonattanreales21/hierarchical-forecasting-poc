@@ -34,12 +34,7 @@ def register_pipelines() -> dict[str, Pipeline]:
 
     training = monthly_training + weekly_training
     full_experiment = (
-        ingestion
-        + fe_monthly
-        + fe_weekly
-        + model_input
-        + training
-        + selection
+        ingestion + fe_monthly + fe_weekly + model_input + training + selection
     )
     inference_flow = inference + recon
 

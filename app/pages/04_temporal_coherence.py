@@ -2,8 +2,7 @@ import streamlit as st
 
 st.title("Temporal Coherence")
 
-st.markdown(
-    """
+st.markdown("""
     ### Monthly ↔ Weekly ↔ Daily Reconciliation
 
     Temporal coherence ensures that forecasts at different granularities are internally consistent:
@@ -12,8 +11,7 @@ st.markdown(
 
     The **primary reconciliation target** for this PoC is **monthly ↔ weekly**. Daily allocation
     is an optional exploratory extension and is currently disabled by parameter.
-    """
-)
+    """)
 
 st.code(
     """\
