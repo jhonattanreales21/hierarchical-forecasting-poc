@@ -29,8 +29,8 @@ jobs:
 
       - name: Lint
         continue-on-error: true
-        run: uv run --package hierarchical_demand_forecasting_poc ruff check pipelines/
+        run: uv run --package hdf_pipelines ruff check pipelines/
 
       - name: Test
         continue-on-error: true
-        run: uv run --package hierarchical_demand_forecasting_poc python -m pytest pipelines/ --cov
+        run: uv run --package hdf_pipelines python -m pytest pipelines/ --cov
