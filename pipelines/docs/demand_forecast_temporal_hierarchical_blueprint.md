@@ -12,8 +12,8 @@ The project aims to build a functional proof of concept to improve demand foreca
 
 The intended solution moves beyond a process dominated by aggregated statistical forecasting and manual planner adjustments. The target direction is a structured system built around:
 
-- a monthly benchmark model,
-- a weekly anchor forecast as the main operational layer,
+- a monthly model as the main layer or goal,
+- a weekly anchor forecast,
 - an optional daily allocation or reconciliation layer,
 - experiment tracking and artifact versioning,
 - a reproducible repository structure,
@@ -60,9 +60,8 @@ Success should therefore be judged both by forecasting performance and by implem
 ### 6.1 In scope
 
 - Forecasting for one critical SKU.
-- Monthly benchmark modeling.
-- Weekly anchor forecasting as the central forecasting layer.
-- Optional daily disaggregation or reconciliation.
+- Monthly benchmark modeling as the central forecasting layer.
+- Weekly anchor forecasting.
 - Use of exogenous variables already collected by the team.
 - Time-based backtesting and reproducible evaluation.
 - Model and artifact tracking with MLflow.
@@ -114,7 +113,7 @@ The weekly anchor forecast is the methodological center of the project. Other co
 
 ### 8.3 Minimum valuable temporal coherence
 
-The primary coherence target is **monthly ↔ weekly**. Reaching **monthly ↔ weekly ↔ daily** is desirable, but should be treated as an extension if time becomes constrained.
+The primary coherence target is **monthly ↔ weekly** with a focus on the monthly layer. Reaching **monthly ↔ weekly ↔ daily** is desirable, but should be treated as an extension if time becomes constrained.
 
 ### 8.4 Application layer matters
 
@@ -132,27 +131,46 @@ The repository and blueprint should be explicit enough for AI-assisted developme
 
 ### 9.1 Official model candidates
 
-- **SARIMAX** as a structured statistical baseline.
+- **SARIMAX** as a structured statistical baseline, especially relevant for the monthly layer.
 - **Prophet** as an existing benchmark and early starting point.
-- **CatBoost** as the main tabular candidate with exogenous variables.
-- **Nixtla NeuralForecast (preferably N-HiTS)** as an optional exploratory model if complexity remains manageable.
+- **CatBoost** as the main tabular candidate with exogenous variables, particularly for monthly forecasting.
+- **Nixtla NeuralForecast (preferably N-HiTS)** as an optional exploratory model if complexity remains manageable and only after the core monthly layer is stable.
 
-### 9.2 Monthly benchmark role
+### 9.2 Monthly forecasting as the primary decision layer
 
-The monthly model remains intentionally in scope because:
+The monthly forecasting layer is the **main modeling priority** of the project and the most important output for decision-making. This is the level that receives the greatest attention from stakeholders and tutors, so the architecture, evaluation effort, and reporting narrative should primarily revolve around monthly performance.
 
-- it aligns with current business practice,
-- it provides a baseline comparison,
-- it supports the improvement narrative,
-- and it helps structure the exogenous variable workflow.
+The monthly model remains intentionally central because:
 
-### 9.3 Weekly anchor role
+- it aligns directly with the main business decision horizon,
+- it reflects the level of forecasting currently most relevant for planning,
+- it provides the strongest benchmark for measuring improvement,
+- it supports a more feasible and robust integration of exogenous variables,
+- and it offers the clearest path for delivering a defensible and useful forecasting POC.
 
-The weekly anchor is the intended main output for operational decision-making. It should integrate temporal structure and exogenous business variables in a way that is more responsive and useful than a monthly-only forecast.
+### 9.3 Weekly forecasting as a secondary enhancement layer
+
+The weekly layer should be treated as a **valuable extension**, not as the core success criterion of the project. Its role is to enrich the solution with a more granular operational perspective when feasible, but without shifting attention away from the monthly forecasting objective.
+
+Weekly forecasting is still useful because:
+
+- it can provide additional short-term interpretability,
+- it may serve as an operational complement to the monthly layer,
+- and it can strengthen the technical ambition of the solution if implemented successfully.
+
+However, it should be developed only insofar as it does not compromise the quality, rigor, and completeness of the monthly layer.
 
 ### 9.4 Daily allocation philosophy
 
-If a proper daily shares model is feasible, it should be included. If not, pragmatic disaggregation strategies based on historical intra-week patterns, calendar structure, and reconciliation constraints are acceptable.
+The daily layer should be treated as a **low-priority exploratory extension**. Given the high variability and instability of the data at that level, a fully modeled daily forecasting layer is unlikely to be feasible or reliable within the scope of the project.
+
+Therefore:
+
+- if a reasonable daily shares or disaggregation approach is feasible, it may be included as an additional plus,
+- but it should not be considered a core project deliverable,
+- and the absence of a formal daily model should not be seen as a weakness if the monthly layer is strong and the weekly layer is adequately supported.
+
+Pragmatic disaggregation strategies based on historical intra-week patterns, calendar effects, and reconciliation constraints are acceptable if daily outputs are needed for demonstration purposes.
 
 ## 10. Exogenous Variables and Market Intelligence
 
@@ -251,18 +269,20 @@ FastAPI should therefore be treated as a real architectural component, even if t
 
 ## 15. Suggested Logical Project Areas
 
-The repository should remain general and modular. At a high level, it should separate concerns such as:
+The repository should remain general, modular, and clearly oriented around the **primary monthly forecasting layer**. At a high level, it should separate concerns such as:
 
 - data ingestion and cleaning,
 - temporal aggregation and feature engineering,
-- monthly forecasting,
-- weekly anchor forecasting,
-- optional daily allocation and reconciliation,
-- evaluation and backtesting,
-- artifact generation,
-- serving and application layer.
+- monthly forecasting as the main modeling and evaluation layer,
+- weekly forecasting as a secondary enhancement layer,
+- optional reconciliation and lightweight disaggregation logic when useful,
+- evaluation, backtesting, and model comparison,
+- artifact generation and reporting,
+- inference, serving, and application layer.
 
-The exact folder layout can later be refined around Kedro conventions, but the blueprint should keep this logical separation visible.
+The architecture should make it explicit that the **monthly layer is the core analytical and business-facing component** of the solution, while the weekly layer acts as an additional level of technical and operational value if it can be implemented without compromising the quality of the monthly workflow. Daily-level outputs, if included at all, should be treated only as optional downstream derivations rather than as a primary modeling focus.
+
+The exact folder layout can later be refined around Kedro conventions, modular pipelines, and namespaces, but the blueprint should keep this functional separation visible from the beginning.
 
 ## 16. Testing Expectations
 
@@ -325,6 +345,6 @@ Reaching a specific forecast metric threshold is important, but it is not the on
 
 ## 19. Short Executive Summary
 
-This project aims to build a functional and reproducible proof of concept for demand forecasting of a critical SKU using a temporal hierarchical approach. The central logic is a **monthly benchmark + weekly anchor + optional daily allocation**, supported by exogenous variables, modular Kedro pipelines, MLflow-based artifact tracking, and an application layer built around Streamlit with FastAPI as an architectural serving path.
+This project aims to build a functional and reproducible proof of concept for demand forecasting of a critical SKU using a temporal hierarchical approach. The central logic is a **monthly benchmark + weekly forecasting**, supported by exogenous variables, modular Kedro pipelines, MLflow-based artifact tracking, and an application layer built around Streamlit with FastAPI as an architectural serving path.
 
 The project is intentionally scoped to remain pragmatic. Its main goal is not to build a full enterprise platform, but to deliver a technically credible, academically strong, and operationally meaningful prototype that demonstrates learning, rigor, and future potential.

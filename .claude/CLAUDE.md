@@ -8,7 +8,7 @@ The project is built as a Forecasting + MLOps + Application Layer system, not a 
 
 ## North Star
 
-Build a functional, reproducible, and academically defensible PoC that shows how temporal hierarchical forecasting (monthly benchmark + weekly anchor + optional daily allocation), supported by exogenous variables and clean architecture, can improve demand forecasting for a critical SKU.
+Build a functional, reproducible, and academically defensible PoC that shows how temporal hierarchical forecasting (monthly benchmark + weekly forecasting), supported by exogenous variables and clean architecture, can improve demand forecasting for a critical SKU. The monthly layer is the primary analytical and business-facing component; the weekly layer is a secondary enhancement.
 
 ## Tech Stack
 
@@ -94,11 +94,11 @@ notebooks/                  # Exploratory notebooks (not for production logic)
 
 The forecasting hierarchy is strictly temporal:
 
-1. **Monthly** -- Benchmark model, bridges to current business process
-2. **Weekly** -- Anchor forecast, the main operational layer
-3. **Daily** -- Optional allocation/disaggregation layer
+1. **Monthly** -- **Primary decision layer and main modeling priority.** Receives the greatest evaluation effort, attention from stakeholders, and narrative focus. Central benchmark aligned with the business decision horizon.
+2. **Weekly** -- Secondary enhancement layer. Valuable operational complement, but must not compromise the quality of the monthly layer.
+3. **Daily** -- Low-priority exploratory extension. Pragmatic disaggregation only if feasible; not a core deliverable.
 
-Primary coherence target: monthly <-> weekly. Full monthly <-> weekly <-> daily is secondary scope.
+Primary coherence target: monthly <-> weekly. Full monthly <-> weekly <-> daily is desirable but treated as secondary scope.
 
 ## Model Candidates
 
@@ -159,9 +159,13 @@ Lightweight but real: unit tests for critical utility functions, especially feat
 - Parameters per pipeline: `conf/base/parameters_<pipeline_name>.yml`
 - All datasets defined in `conf/base/catalog.yml`
 
+## Architecture Style
+
+The project is **local-first with cloud option**: must run cleanly in local development, but remain structurally ready for deployment to AWS (EC2, optional S3-backed storage). Docker supports reproducibility and portability.
+
 ## Blueprint Reference
 
-The full strategic blueprint is at `docs/demand_forecast_temporal_hierarchical_blueprint.md`. Consult it for detailed methodology, scope boundaries, success criteria, and business context before making architectural decisions.
+The full strategic blueprint is at `pipelines/docs/demand_forecast_temporal_hierarchical_blueprint.md`. Consult it for detailed methodology, scope boundaries, success criteria, and business context before making architectural decisions.
 
 
 ## Contributing preferences
