@@ -3,11 +3,18 @@ requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "app"
+name = "hdf_app"
 version = "0.1.0"
 requires-python = ">=3.12"
-# Stage 3: add streamlit, shared
-dependencies = []
+dependencies = [
+    "streamlit>=1.35",
+    "plotly>=5.0",
+    "pandas>=2.0",
+    "shared",
+]
 
 [tool.uv.sources]
 shared = { workspace = true }
+
+[dependency-groups]
+dev = ["ruff"]
