@@ -1,0 +1,12 @@
+feature_engineering:
+  monthly:
+    lags: [1, 2, 3, 6, 12]
+    rolling_windows: [3, 6, 12]
+    calendar_features: true
+    include_exogenous: true
+
+  weekly:
+    lags: [1, 2, 4, 8, 12, 26, 52]
+    rolling_windows: [4, 8, 13]
+    calendar_features: true
+    include_exogenous: true

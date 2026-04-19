@@ -1,41 +1,181 @@
-# Here you can define all your data sets by using simple YAML syntax.
-#
-# Documentation for this file format can be found in "The Data Catalog"
-# Link: https://docs.kedro.org/en/stable/data/data_catalog.html
-#
-# We support interacting with a variety of data stores including local file systems, cloud, network and HDFS
-#
-# An example data set definition can look as follows:
-#
-#bikes:
-#  type: pandas.CSVDataset
-#  filepath: "data/01_raw/bikes.csv"
-#
-#weather:
-#  type: spark.SparkDataset
-#  filepath: s3a://your_bucket/data/01_raw/weather*
-#  file_format: csv
-#  credentials: dev_s3
-#  load_args:
-#    header: True
-#    inferSchema: True
-#  save_args:
-#    sep: '|'
-#    header: True
-#
-#scooters:
-#  type: pandas.SQLTableDataset
-#  credentials: scooters_credentials
-#  table_name: scooters
-#  load_args:
-#    index_col: ['name']
-#    columns: ['name', 'gear']
-#  save_args:
-#    if_exists: 'replace'
-#    # if_exists: 'fail'
-#    # if_exists: 'append'
-#
-# The Data Catalog supports being able to reference the same file using two different Dataset implementations
-# (transcoding), templating and a way to reuse arguments that are frequently repeated. See more here:
-# https://docs.kedro.org/en/stable/data/data_catalog.html
+# 01_raw
+raw_demand_data:
+  type: pandas.CSVDataset
+  filepath: data/01_raw/demand_data.csv
 
+raw_exogenous_data:
+  type: pandas.CSVDataset
+  filepath: data/01_raw/exogenous_data.csv
+
+# 02_intermediate
+intermediate_demand_data:
+  type: pandas.ParquetDataset
+  filepath: data/02_intermediate/demand_data.parquet
+
+intermediate_exogenous_data:
+  type: pandas.ParquetDataset
+  filepath: data/02_intermediate/exogenous_data.parquet
+
+# 03_primary
+primary_weekly_demand:
+  type: pandas.ParquetDataset
+  filepath: data/03_primary/weekly_demand.parquet
+
+primary_monthly_demand:
+  type: pandas.ParquetDataset
+  filepath: data/03_primary/monthly_demand.parquet
+
+# 04_feature
+feature_weekly_data:
+  type: pandas.ParquetDataset
+  filepath: data/04_feature/weekly_features.parquet
+
+feature_monthly_data:
+  type: pandas.ParquetDataset
+  filepath: data/04_feature/monthly_features.parquet
+
+# 05_model_input — train/val/test splits per granularity × model family
+# Monthly splits
+model_input_monthly_prophet_train:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/monthly_prophet_train.parquet
+model_input_monthly_prophet_validation:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/monthly_prophet_validation.parquet
+model_input_monthly_prophet_test:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/monthly_prophet_test.parquet
+
+model_input_monthly_catboost_train:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/monthly_catboost_train.parquet
+model_input_monthly_catboost_validation:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/monthly_catboost_validation.parquet
+model_input_monthly_catboost_test:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/monthly_catboost_test.parquet
+
+model_input_monthly_sarimax_train:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/monthly_sarimax_train.parquet
+model_input_monthly_sarimax_validation:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/monthly_sarimax_validation.parquet
+model_input_monthly_sarimax_test:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/monthly_sarimax_test.parquet
+
+# Weekly splits
+model_input_weekly_prophet_train:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/weekly_prophet_train.parquet
+model_input_weekly_prophet_validation:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/weekly_prophet_validation.parquet
+model_input_weekly_prophet_test:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/weekly_prophet_test.parquet
+
+model_input_weekly_catboost_train:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/weekly_catboost_train.parquet
+model_input_weekly_catboost_validation:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/weekly_catboost_validation.parquet
+model_input_weekly_catboost_test:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/weekly_catboost_test.parquet
+
+model_input_weekly_sarimax_train:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/weekly_sarimax_train.parquet
+model_input_weekly_sarimax_validation:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/weekly_sarimax_validation.parquet
+model_input_weekly_sarimax_test:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/weekly_sarimax_test.parquet
+
+# Backtesting folds metadata
+backtest_folds_monthly:
+  type: json.JSONDataset
+  filepath: data/05_model_input/backtest_folds_monthly.json
+backtest_folds_weekly:
+  type: json.JSONDataset
+  filepath: data/05_model_input/backtest_folds_weekly.json
+
+# 06_models — candidate models per granularity × family
+candidate_monthly_prophet:
+  type: pickle.PickleDataset
+  filepath: data/06_models/candidates/monthly_prophet.pkl
+candidate_monthly_catboost:
+  type: pickle.PickleDataset
+  filepath: data/06_models/candidates/monthly_catboost.pkl
+candidate_monthly_sarimax:
+  type: pickle.PickleDataset
+  filepath: data/06_models/candidates/monthly_sarimax.pkl
+
+candidate_weekly_prophet:
+  type: pickle.PickleDataset
+  filepath: data/06_models/candidates/weekly_prophet.pkl
+candidate_weekly_catboost:
+  type: pickle.PickleDataset
+  filepath: data/06_models/candidates/weekly_catboost.pkl
+candidate_weekly_sarimax:
+  type: pickle.PickleDataset
+  filepath: data/06_models/candidates/weekly_sarimax.pkl
+
+# Champion models (final selection)
+champion_monthly_model:
+  type: pickle.PickleDataset
+  filepath: data/06_models/champions/monthly_champion.pkl
+champion_weekly_model:
+  type: pickle.PickleDataset
+  filepath: data/06_models/champions/weekly_champion.pkl
+
+champion_registry:
+  type: json.JSONDataset
+  filepath: data/06_models/champions/champion_registry.json
+
+# Tuning and validation results
+tuning_results_monthly:
+  type: pandas.ParquetDataset
+  filepath: data/06_models/tuning/monthly_tuning_results.parquet
+tuning_results_weekly:
+  type: pandas.ParquetDataset
+  filepath: data/06_models/tuning/weekly_tuning_results.parquet
+
+# 07_model_output
+forecast_monthly_raw:
+  type: pandas.ParquetDataset
+  filepath: data/07_model_output/monthly_forecast_raw.parquet
+
+forecast_weekly_raw:
+  type: pandas.ParquetDataset
+  filepath: data/07_model_output/weekly_forecast_raw.parquet
+
+forecast_monthly_reconciled:
+  type: pandas.ParquetDataset
+  filepath: data/07_model_output/monthly_forecast_reconciled.parquet
+
+forecast_weekly_reconciled:
+  type: pandas.ParquetDataset
+  filepath: data/07_model_output/weekly_forecast_reconciled.parquet
+
+forecast_daily_output:
+  type: pandas.ParquetDataset
+  filepath: data/07_model_output/daily_forecast.parquet
+
+# 08_reporting
+model_selection_report:
+  type: pandas.ParquetDataset
+  filepath: data/08_reporting/model_selection_report.parquet
+
+evaluation_report:
+  type: pandas.ParquetDataset
+  filepath: data/08_reporting/evaluation_report.parquet
+
+reconciliation_diagnostics:
+  type: pandas.ParquetDataset
+  filepath: data/08_reporting/reconciliation_diagnostics.parquet
