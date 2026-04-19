@@ -1,0 +1,28 @@
+name: CI — shared
+
+on:
+  push:
+    paths:
+      - "shared/**"
+  pull_request:
+    paths:
+      - "shared/**"
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Lint
+        run: uv run --package shared ruff check shared/
+
+      - name: Test
+        run: uv run --package shared pytest shared/

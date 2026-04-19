@@ -1,0 +1,25 @@
+name: CI — app
+
+on:
+  push:
+    paths:
+      - "app/**"
+  pull_request:
+    paths:
+      - "app/**"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Lint
+        run: uv run --package hdf_app ruff check app/

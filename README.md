@@ -40,25 +40,56 @@ and their dependencies into a shared `.venv` at the repo root.
 ### Kedro (pipelines/)
 
 ```bash
-# TODO: fill in Stage 2
+# Install all dependencies
+uv sync
+
+# Run the full default pipeline (ingestion → features → training → selection → reconciliation → inference)
+uv run --package hierarchical_demand_forecasting_poc kedro run
+
+# Run only data ingestion and feature engineering
+uv run --package hierarchical_demand_forecasting_poc kedro run --pipeline data_ingestion
+uv run --package hierarchical_demand_forecasting_poc kedro run --pipeline feature_engineering_monthly
+uv run --package hierarchical_demand_forecasting_poc kedro run --pipeline feature_engineering_weekly
+
+# Run only training (both monthly and weekly, all model families)
+uv run --package hierarchical_demand_forecasting_poc kedro run --pipeline training
+
+# Run only monthly training
+uv run --package hierarchical_demand_forecasting_poc kedro run --pipeline train_monthly
+
+# Run only weekly training
+uv run --package hierarchical_demand_forecasting_poc kedro run --pipeline train_weekly
+
+# Run model selection (champion selection on test data)
+uv run --package hierarchical_demand_forecasting_poc kedro run --pipeline model_selection
+
+# Run reconciliation only
+uv run --package hierarchical_demand_forecasting_poc kedro run --pipeline reconciliation
+
+# Run inference (generates forecast outputs)
+uv run --package hierarchical_demand_forecasting_poc kedro run --pipeline inference
+
+# Run the full experiment (all stages except final inference)
+uv run --package hierarchical_demand_forecasting_poc kedro run --pipeline full_experiment
 ```
 
 ### Streamlit (app/)
 
 ```bash
-# TODO: fill in Stage 3
+uv run --package hdf_app streamlit run app/app.py
 ```
 
 ### FastAPI (api/)
 
 ```bash
-# TODO: fill in Stage 3
+uv run --package hdf_api uvicorn api.main:app --reload --port 8000
 ```
 
 ### Docker
 
 ```bash
-# TODO: fill in Stage 3
+# Run all services (pipelines + app + api)
+docker compose -f docker/docker-compose.yml up
 ```
 
 ---
