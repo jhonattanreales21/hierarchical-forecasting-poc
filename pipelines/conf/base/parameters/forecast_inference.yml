@@ -1,0 +1,7 @@
+forecast_inference:
+  mode: "batch"
+  include_intervals: true
+  confidence_level: 0.90
+  daily_allocation:
+    enabled: false
+    method: "historical_shares"

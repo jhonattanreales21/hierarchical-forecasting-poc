@@ -1,0 +1,29 @@
+services:
+  pipelines:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.pipelines
+    volumes:
+      - ./pipelines/data:/app/pipelines/data
+
+  app:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.app
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./pipelines/data:/app/pipelines/data
+    depends_on:
+      - pipelines
+
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./pipelines/data:/app/pipelines/data
+    depends_on:
+      - pipelines

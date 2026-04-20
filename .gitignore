@@ -1,78 +1,19 @@
 ##########################
-# KEDRO PROJECT
+# Python
 
-# ignore all local configuration
-conf/local/**
-!conf/local/.gitkeep
-
-# ignore potentially sensitive credentials files
-conf/**/*credentials*
-
-# ignore everything in the following folders
-data/**
-
-# except their sub-folders
-!data/**/
-
-# also keep all .gitkeep files
-!.gitkeep
-
-# ignore kedro-viz metadata
-.viz
-
-# ignore file based logs
-*.log
-
-##########################
-# Common files
-
-# IntelliJ
-.idea/
-*.iml
-out/
-.idea_modules/
-
-### macOS
-*.DS_Store
-.AppleDouble
-.LSOverride
-.Trashes
-
-# Vim
-*~
-.*.swo
-.*.swp
-
-# emacs
-*~
-\#*\#
-/.emacs.desktop
-/.emacs.desktop.lock
-*.elc
-
-# JIRA plugin
-atlassian-ide-plugin.xml
-
-# C extensions
-*.so
-
-### Python template
-# Byte-compiled / optimized / DLL files
 __pycache__/
+*.pyc
+*.pyo
 *.py[cod]
 *$py.class
-
-# Distribution / packaging
-.Python
+dist/
 build/
 develop-eggs/
-dist/
 downloads/
 eggs/
 .eggs/
 lib/
 lib64/
-parts/
 sdist/
 var/
 wheels/
@@ -81,17 +22,96 @@ wheels/
 *.egg
 MANIFEST
 
-# PyInstaller
-#  Usually these files are written by a python script from a template
-#  before PyInstaller builds the exe, so as to inject date/other infos into it.
-*.manifest
-*.spec
+##########################
+# Environments
 
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
+.venv/
+.uv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.python-version
 
-# Unit test / coverage reports
+##########################
+# Kedro
+
+# Local configuration overrides (credentials, local datasets)
+pipelines/conf/local/**
+!pipelines/conf/local/.gitkeep
+
+# Credentials anywhere in conf
+pipelines/conf/**/*credentials*
+
+# Intermediate and derived data layers (keep raw layer and directory structure)
+pipelines/data/02_intermediate/**
+pipelines/data/03_primary/**
+pipelines/data/04_feature/**
+pipelines/data/05_model_input/**
+pipelines/data/06_models/**
+pipelines/data/07_model_output/**
+pipelines/data/08_reporting/**
+
+# Keep .gitkeep markers and directory structure
+!.gitkeep
+
+# Kedro-Viz metadata
+.viz/
+
+# Kedro session and app logs
+*.log
+
+##########################
+# MLflow
+
+mlruns/
+mlartifacts/
+
+##########################
+# Secrets and environment files
+
+.env
+*.env
+
+##########################
+# Model artifacts
+
+*.pkl
+*.pickle
+
+##########################
+# macOS
+
+.DS_Store
+.AppleDouble
+.LSOverride
+.Trashes
+
+##########################
+# Jupyter
+
+.ipynb_checkpoints/
+
+##########################
+# IDE
+
+.idea/
+*.iml
+out/
+.idea_modules/
+.vscode/
+.mypy_cache/
+
+##########################
+# Sphinx docs build
+
+docs/_build/
+pipelines/docs/_build/
+
+##########################
+# Coverage and test artifacts
+
 htmlcov/
 .tox/
 .coverage
@@ -101,56 +121,3 @@ nosetests.xml
 coverage.xml
 *.cover
 .hypothesis/
-
-# Translations
-*.mo
-*.pot
-
-# Django stuff:
-*.log
-.static_storage/
-.media/
-local_settings.py
-
-# Flask stuff:
-instance/
-.webassets-cache
-
-# Scrapy stuff:
-.scrapy
-
-# Sphinx documentation
-docs/_build/
-
-# PyBuilder
-target/
-
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# pyenv
-.python-version
-
-# celery beat schedule file
-celerybeat-schedule
-
-# SageMath parsed files
-*.sage.py
-
-# Environments
-.env
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
-
-# mkdocs documentation
-/site
-
-# mypy
-.mypy_cache/
-
-# mlflow local runs
-mlruns/*
