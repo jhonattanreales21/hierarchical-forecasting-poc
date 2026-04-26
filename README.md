@@ -1,9 +1,9 @@
 # Hierarchical Demand Forecasting PoC
 
-![CI — shared](https://github.com/jhonattanreales21/hierarchical-forecasting-poc/actions/workflows/ci-shared.yml/badge.svg)
+<!-- ![CI — shared](https://github.com/jhonattanreales21/hierarchical-forecasting-poc/actions/workflows/ci-shared.yml/badge.svg)
 ![CI — pipelines](https://github.com/jhonattanreales21/hierarchical-forecasting-poc/actions/workflows/ci-pipelines.yml/badge.svg)
 ![CI — app](https://github.com/jhonattanreales21/hierarchical-forecasting-poc/actions/workflows/ci-app.yml/badge.svg)
-![CI — api](https://github.com/jhonattanreales21/hierarchical-forecasting-poc/actions/workflows/ci-api.yml/badge.svg)
+![CI — api](https://github.com/jhonattanreales21/hierarchical-forecasting-poc/actions/workflows/ci-api.yml/badge.svg) -->
 ![Python](https://img.shields.io/badge/python-3.12-blue?logo=python&logoColor=white)
 ![uv](https://img.shields.io/badge/uv-workspace-7C3AED?logo=astral&logoColor=white)
 ![Kedro](https://img.shields.io/badge/kedro-1.3-FFC900?logoColor=black)
@@ -71,7 +71,7 @@ hierarchical-demand-forecasting-poc/
 │   ├── data/                   # Layered data store (01_raw → 08_reporting)
 │   ├── docs/                   # Pipeline-level blueprint and proposals
 │   └── src/
-│       └── hierarchical_demand_forecasting_poc/
+│       └── hdf_pipelines/
 │           └── pipelines/      # data_ingestion, feature_engineering, train_*, ...
 ├── shared/                     # Internal library: schemas, metrics, loaders, viz
 │   └── src/shared/
@@ -120,7 +120,7 @@ cp your_demand_data.csv pipelines/data/01_raw/raw_demand_data.csv
 cp your_exogenous_data.csv pipelines/data/01_raw/raw_exogenous_data.csv
 
 # 4. Run the full pipeline
-uv run --package hierarchical_demand_forecasting_poc kedro run
+uv run --package hdf_pipelines kedro run
 
 # 5. Launch the Streamlit app
 uv run --package hdf_app streamlit run app/app.py
@@ -134,22 +134,22 @@ uv run --package hdf_app streamlit run app/app.py
 
 ```bash
 # Run the full default pipeline (ingestion → features → training → selection → reconciliation → inference)
-uv run --package hierarchical_demand_forecasting_poc kedro run
+uv run --package hdf_pipelines kedro run
 
 # Run only data ingestion
-uv run --package hierarchical_demand_forecasting_poc kedro run --pipeline data_ingestion
+uv run --package hdf_pipelines kedro run --pipeline data_ingestion
 
 # Run training (monthly + weekly, all model families)
-uv run --package hierarchical_demand_forecasting_poc kedro run --pipeline training
+uv run --package hdf_pipelines kedro run --pipeline training
 
 # Run model selection (champion selection on test data)
-uv run --package hierarchical_demand_forecasting_poc kedro run --pipeline model_selection
+uv run --package hdf_pipelines kedro run --pipeline model_selection
 
 # Run inference (generates forecast outputs under data/07_model_output/)
-uv run --package hierarchical_demand_forecasting_poc kedro run --pipeline inference
+uv run --package hdf_pipelines kedro run --pipeline inference
 
 # Run the full experiment without final inference
-uv run --package hierarchical_demand_forecasting_poc kedro run --pipeline full_experiment
+uv run --package hdf_pipelines kedro run --pipeline full_experiment
 ```
 
 ### Streamlit (app/)
