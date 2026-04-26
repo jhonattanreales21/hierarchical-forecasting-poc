@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 
-from api.routers import forecast
+from hdf_api.routers import forecast
 
 app = FastAPI(
     title="Demand Forecast POC — API",

@@ -1,2 +1,5 @@
 [tool.uv.workspace]
 members = ["pipelines", "app", "api", "shared"]
+
+[tool.uv.sources]
+shared = { workspace = true }

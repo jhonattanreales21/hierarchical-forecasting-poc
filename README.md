@@ -113,7 +113,7 @@ git clone https://github.com/jhonattanreales21/hierarchical-forecasting-poc.git
 cd hierarchical-forecasting-poc
 
 # 2. Install all workspace packages into a shared virtual environment
-uv sync
+uv sync --all-packages
 
 # 3. Place raw input files in the data layer
 cp your_demand_data.csv pipelines/data/01_raw/raw_demand_data.csv
@@ -162,7 +162,7 @@ uv run --package hdf_app streamlit run app/app.py
 ### FastAPI (api/)
 
 ```bash
-uv run --package hdf_api uvicorn api.main:app --reload --port 8000
+uv run --package hdf_api uvicorn hdf_api.main:app --reload --port 8000
 # Interactive docs at http://localhost:8000/docs
 ```
 
