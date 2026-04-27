@@ -1,93 +1,73 @@
-"""Model input preparation pipeline: feature data → per-model splits and backtest folds."""
+"""Kedro pipeline for Monthly Prophet model-input preparation."""
 
 from kedro.pipeline import Pipeline, node, pipeline
 
 from .nodes import (
-    build_monthly_splits_catboost,
-    build_monthly_splits_prophet,
-    build_monthly_splits_sarimax,
-    build_weekly_splits_catboost,
-    build_weekly_splits_prophet,
-    build_weekly_splits_sarimax,
-    generate_backtest_folds_monthly,
-    generate_backtest_folds_weekly,
+    build_monthly_prophet_future_regressors,
+    build_monthly_prophet_split_metadata,
+    prepare_monthly_prophet_modeling_data,
+    split_monthly_prophet_data,
 )
 
 
 def create_pipeline(**kwargs) -> Pipeline:
+    """Create the Monthly Prophet model-input preparation pipeline."""
     return pipeline(
         [
             node(
-                func=build_monthly_splits_prophet,
-                inputs=["monthly_prophet_features", "params:model_input"],
+                func=prepare_monthly_prophet_modeling_data,
+                inputs=["monthly_prophet_features", "params:model_input_preparation"],
                 outputs=[
-                    "model_input_monthly_prophet_train",
-                    "model_input_monthly_prophet_validation",
-                    "model_input_monthly_prophet_test",
+                    "monthly_prophet_modeling_data",
+                    "monthly_prophet_preparation_metadata",
                 ],
-                name="build_monthly_splits_prophet",
+                name="prepare_monthly_prophet_modeling_data",
             ),
             node(
-                func=build_monthly_splits_catboost,
-                inputs=["monthly_prophet_features", "params:model_input"],
+                func=split_monthly_prophet_data,
+                inputs=[
+                    "monthly_prophet_modeling_data",
+                    "monthly_prophet_preparation_metadata",
+                    "params:model_input_preparation",
+                ],
                 outputs=[
-                    "model_input_monthly_catboost_train",
-                    "model_input_monthly_catboost_validation",
-                    "model_input_monthly_catboost_test",
+                    "monthly_prophet_train",
+                    "monthly_prophet_validation",
+                    "monthly_prophet_test",
+                    "monthly_prophet_full_train",
+                    "monthly_prophet_split_preparation_metadata",
                 ],
-                name="build_monthly_splits_catboost",
+                name="split_monthly_prophet_data",
             ),
             node(
-                func=build_monthly_splits_sarimax,
-                inputs=["monthly_prophet_features", "params:model_input"],
+                func=build_monthly_prophet_future_regressors,
+                inputs=[
+                    "monthly_prophet_modeling_data",
+                    "monthly_calendar_features",
+                    "monthly_exogenous_features",
+                    "params:model_input_preparation",
+                    "params:feature_engineering_monthly",
+                ],
                 outputs=[
-                    "model_input_monthly_sarimax_train",
-                    "model_input_monthly_sarimax_validation",
-                    "model_input_monthly_sarimax_test",
+                    "monthly_prophet_future_3m",
+                    "monthly_prophet_future_6m",
                 ],
-                name="build_monthly_splits_sarimax",
+                name="build_monthly_prophet_future_regressors",
             ),
             node(
-                func=build_weekly_splits_prophet,
-                inputs=["feature_weekly_data", "params:model_input"],
-                outputs=[
-                    "model_input_weekly_prophet_train",
-                    "model_input_weekly_prophet_validation",
-                    "model_input_weekly_prophet_test",
+                func=build_monthly_prophet_split_metadata,
+                inputs=[
+                    "monthly_prophet_train",
+                    "monthly_prophet_validation",
+                    "monthly_prophet_test",
+                    "monthly_prophet_full_train",
+                    "monthly_prophet_future_3m",
+                    "monthly_prophet_future_6m",
+                    "monthly_prophet_split_preparation_metadata",
+                    "params:model_input_preparation",
                 ],
-                name="build_weekly_splits_prophet",
-            ),
-            node(
-                func=build_weekly_splits_catboost,
-                inputs=["feature_weekly_data", "params:model_input"],
-                outputs=[
-                    "model_input_weekly_catboost_train",
-                    "model_input_weekly_catboost_validation",
-                    "model_input_weekly_catboost_test",
-                ],
-                name="build_weekly_splits_catboost",
-            ),
-            node(
-                func=build_weekly_splits_sarimax,
-                inputs=["feature_weekly_data", "params:model_input"],
-                outputs=[
-                    "model_input_weekly_sarimax_train",
-                    "model_input_weekly_sarimax_validation",
-                    "model_input_weekly_sarimax_test",
-                ],
-                name="build_weekly_splits_sarimax",
-            ),
-            node(
-                func=generate_backtest_folds_monthly,
-                inputs=["monthly_prophet_features", "params:model_input"],
-                outputs="backtest_folds_monthly",
-                name="generate_backtest_folds_monthly",
-            ),
-            node(
-                func=generate_backtest_folds_weekly,
-                inputs=["feature_weekly_data", "params:model_input"],
-                outputs="backtest_folds_weekly",
-                name="generate_backtest_folds_weekly",
+                outputs="monthly_prophet_split_metadata",
+                name="build_monthly_prophet_split_metadata",
             ),
         ]
     )

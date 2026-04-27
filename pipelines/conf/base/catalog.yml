@@ -46,18 +46,40 @@ monthly_prophet_features:
   type: pandas.ParquetDataset
   filepath: data/04_feature/monthly_prophet_features.parquet
 
-# 05_model_input — train/val/test splits per granularity × model family
-# Monthly splits
-model_input_monthly_prophet_train:
+# 05_model_input — Monthly Prophet model-ready datasets
+monthly_prophet_modeling_data:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/monthly_prophet_modeling_data.parquet
+
+monthly_prophet_train:
   type: pandas.ParquetDataset
   filepath: data/05_model_input/monthly_prophet_train.parquet
-model_input_monthly_prophet_validation:
+
+monthly_prophet_validation:
   type: pandas.ParquetDataset
   filepath: data/05_model_input/monthly_prophet_validation.parquet
-model_input_monthly_prophet_test:
+
+monthly_prophet_test:
   type: pandas.ParquetDataset
   filepath: data/05_model_input/monthly_prophet_test.parquet
 
+monthly_prophet_full_train:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/monthly_prophet_full_train.parquet
+
+monthly_prophet_future_3m:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/monthly_prophet_future_3m.parquet
+
+monthly_prophet_future_6m:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/monthly_prophet_future_6m.parquet
+
+monthly_prophet_split_metadata:
+  type: json.JSONDataset
+  filepath: data/05_model_input/monthly_prophet_split_metadata.json
+
+# Legacy / future-stage placeholders
 model_input_monthly_catboost_train:
   type: pandas.ParquetDataset
   filepath: data/05_model_input/monthly_catboost_train.parquet
@@ -110,9 +132,6 @@ model_input_weekly_sarimax_test:
   filepath: data/05_model_input/weekly_sarimax_test.parquet
 
 # Backtesting folds metadata
-backtest_folds_monthly:
-  type: json.JSONDataset
-  filepath: data/05_model_input/backtest_folds_monthly.json
 backtest_folds_weekly:
   type: json.JSONDataset
   filepath: data/05_model_input/backtest_folds_weekly.json

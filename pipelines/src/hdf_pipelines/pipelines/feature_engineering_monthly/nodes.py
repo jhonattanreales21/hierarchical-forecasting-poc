@@ -75,6 +75,7 @@ def _validate_unique_rows(
     dataset_name: str,
 ) -> None:
     """Ensure the dataset is unique on the expected business key."""
+    # keep=False marks every copy of a duplicate so the error report shows the full conflicting set.
     duplicated = df.duplicated(subset=list(key_columns), keep=False)
     if duplicated.any():
         duplicated_rows = df.loc[duplicated, list(key_columns)].sort_values(
@@ -145,7 +146,6 @@ def _count_monthly_calendar_features(
     working_tuesdays = int((is_tuesday & ~is_holiday).sum())
     working_thursdays = int((is_thursday & ~is_holiday).sum())
 
-    # Business days exclude weekends and observed holidays for the configured country.
     return {
         "month_start_date": pd.Timestamp(month_start_date).normalize(),
         "business_days": int((is_business_weekday & ~is_holiday).sum()),
@@ -194,7 +194,34 @@ def build_monthly_calendar_features(
     demand_monthly: pd.DataFrame,
     parameters: dict,
 ) -> pd.DataFrame:
-    """Build deterministic monthly calendar features from demand months."""
+    """Compute deterministic calendar features for every month present in the demand table.
+
+    For each unique month, counts business days, Tuesdays, Thursdays, working Tuesdays,
+    working Thursdays, and public holidays using the configured country calendar and
+    weekmask. Results are independent of demand values, so the same table can be reused
+    for future forecast horizons without recomputation.
+
+    Args:
+        demand_monthly: Monthly demand DataFrame used only to determine which months to
+            compute calendar features for. Must contain ``date_column`` and ``sku_column``
+            as declared in ``parameters``.
+        parameters: Feature engineering parameters. Expected keys: ``date_column``,
+            ``sku_column``, ``target_column``, and a ``calendar_features`` block with
+            ``enabled`` (bool), ``country_holidays`` (ISO country code),
+            ``observed_holidays`` (bool), and ``weekmask`` (NumPy-style string, e.g.
+            ``"Mon Tue Wed Thu Fri"``).
+
+    Returns:
+        Calendar feature DataFrame with one row per unique month and columns:
+        ``month_start_date``, ``business_days``, ``total_tuesdays``, ``total_thursdays``,
+        ``working_tuesdays``, ``working_thursdays``, ``has_5_working_tuesdays``,
+        ``has_5_working_thursdays``, ``tuesday_holidays``, ``thursday_holidays``,
+        ``total_holidays``. All feature columns are cast to ``int64``.
+
+    Raises:
+        ValueError: If ``calendar_features.enabled`` is ``False``, required columns are
+            missing from ``demand_monthly``, or the weekmask contains unrecognized day names.
+    """
     if not parameters["calendar_features"]["enabled"]:
         raise ValueError(
             "feature_engineering_monthly.calendar_features.enabled must be true."
@@ -256,7 +283,30 @@ def build_monthly_exogenous_features(
     exogenous_monthly: pd.DataFrame,
     parameters: dict,
 ) -> pd.DataFrame:
-    """Build monthly exogenous features and configured lagged regressors."""
+    """Build monthly exogenous features and append chronological lag columns.
+
+    Selects the declared ``base_columns`` from the exogenous primary dataset and creates
+    lag columns (e.g., ``pfizer_limited_lag_1``) for every configured lag value. Leading
+    null rows introduced by lagging are kept intentionally — the downstream
+    model-input preparation node drops them after all sources are joined.
+
+    Args:
+        exogenous_monthly: Monthly exogenous DataFrame from the primary layer. Must
+            contain ``date_column`` and all ``base_columns`` declared in ``parameters``.
+        parameters: Feature engineering parameters. Expected keys: ``date_column``, and
+            an ``exogenous_features`` block with ``enabled`` (bool), ``base_columns``
+            (list of column names to include and lag), and ``lags`` (list of positive
+            integers, e.g. ``[1, 2]``).
+
+    Returns:
+        Monthly exogenous feature DataFrame with columns: ``date_column``,
+        ``*base_columns``, and one ``{col}_lag_{n}`` column per (base column, lag)
+        combination. Sorted by date.
+
+    Raises:
+        ValueError: If ``exogenous_features.enabled`` is ``False`` or required columns
+            are missing from ``exogenous_monthly``.
+    """
     if not parameters["exogenous_features"]["enabled"]:
         raise ValueError(
             "feature_engineering_monthly.exogenous_features.enabled must be true."
@@ -279,6 +329,7 @@ def build_monthly_exogenous_features(
         "exogenous_monthly",
     )
     _validate_unique_rows(exogenous_df, [date_column], "exogenous_monthly")
+    # Restrict to declared base_columns before lagging to avoid carrying unintended regressors downstream.
     exogenous_df = (
         exogenous_df[[date_column, *base_columns]]
         .sort_values(date_column)
@@ -292,12 +343,14 @@ def build_monthly_exogenous_features(
         exogenous_df[date_column].max().date(),
     )
 
+    # Add lagged features based on the configured base columns and lags.
     exogenous_features, lagged_columns = _add_lag_features(
         exogenous_df,
         columns=base_columns,
         lags=lags,
         date_column=date_column,
     )
+    # Log the number of nulls introduced by lagging.
     null_counts = exogenous_features[lagged_columns].isnull().sum()
     null_counts = null_counts[null_counts > 0]
     logger.info(
@@ -327,12 +380,45 @@ def build_monthly_prophet_features(
     monthly_exogenous_features: pd.DataFrame,
     parameters: dict,
 ) -> pd.DataFrame:
-    """Join monthly demand, calendar, and exogenous features for Prophet."""
+    """Join monthly demand, calendar, and exogenous features into the final Prophet feature table.
+
+    Performs two sequential left joins on ``date_column``:
+
+    1. demand → calendar (many-to-one): attaches deterministic calendar features to each
+       demand row.
+    2. result → exogenous (many-to-one): attaches exogenous regressors and their lags.
+
+    Months with demand but no matching exogenous or calendar rows produce null regressor
+    values and are logged as warnings. The downstream model-input preparation node
+    controls whether those rows are dropped.
+
+    Args:
+        demand_monthly: Monthly demand DataFrame. Must contain ``date_column``,
+            ``sku_column``, and ``target_column``.
+        monthly_calendar_features: Calendar feature DataFrame produced by
+            ``build_monthly_calendar_features``. Must contain ``date_column`` and all
+            columns in ``_CALENDAR_FEATURE_COLUMNS``. Must be unique by ``date_column``.
+        monthly_exogenous_features: Exogenous feature DataFrame produced by
+            ``build_monthly_exogenous_features``. Must contain ``date_column`` and all
+            ``base_columns`` declared in ``parameters``. Must be unique by ``date_column``.
+        parameters: Feature engineering parameters. Expected keys: ``date_column``,
+            ``sku_column``, ``target_column``, and ``exogenous_features.base_columns``.
+
+    Returns:
+        Prophet feature DataFrame with one row per (SKU, month) and columns from all
+        three input sources merged together. Sorted by ``(sku_column, date_column)``.
+
+    Raises:
+        ValueError: If required columns are missing from any input DataFrame, or if
+            ``monthly_calendar_features`` or ``monthly_exogenous_features`` contain
+            duplicate month keys, which would cause row fan-out in the join.
+    """
     date_column = parameters["date_column"]
     sku_column = parameters["sku_column"]
     target_column = parameters["target_column"]
     base_exogenous_columns = parameters["exogenous_features"]["base_columns"]
 
+    # Validate all required columns are present before joining to fail fast with clear errors.
     _validate_required_columns(
         demand_monthly,
         [date_column, sku_column, target_column],
@@ -372,6 +458,8 @@ def build_monthly_prophet_features(
         exogenous_df.shape,
     )
 
+    # Drop duplicates before the join to avoid unexpected fan-out.
+    # The date columns are expected to be unique after validation.
     demand_months = pd.DatetimeIndex(
         demand_df[date_column].drop_duplicates().sort_values()
     )
@@ -379,6 +467,7 @@ def build_monthly_prophet_features(
         exogenous_df[date_column].drop_duplicates().sort_values()
     )
 
+    # Identify months with demand but missing exogenous variables, and vice versa.
     missing_exogenous_months = sorted(set(demand_months) - set(exogenous_months))
     extra_exogenous_months = sorted(set(exogenous_months) - set(demand_months))
 
@@ -389,13 +478,14 @@ def build_monthly_prophet_features(
             _format_month_list(missing_exogenous_months),
         )
     if extra_exogenous_months:
-        logger.info(
+        logger.warning(
             "Months with exogenous variables but no demand records (%d): %s",
             len(extra_exogenous_months),
             _format_month_list(extra_exogenous_months),
         )
 
     # Left joins preserve every demand observation while attaching deterministic features.
+    # validate="many_to_one" guards against accidental fan-out if calendar/exogenous have duplicate months.
     prophet_features = demand_df.merge(
         calendar_df,
         on=date_column,

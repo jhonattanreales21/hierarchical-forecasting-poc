@@ -21,7 +21,7 @@ def create_pipeline(**kwargs) -> Pipeline:
                     "candidate_weekly_prophet",
                     "candidate_weekly_catboost",
                     "candidate_weekly_sarimax",
-                    "model_input_monthly_prophet_test",
+                    "monthly_prophet_test",
                     "model_input_monthly_catboost_test",
                     "model_input_monthly_sarimax_test",
                     "model_input_weekly_prophet_test",

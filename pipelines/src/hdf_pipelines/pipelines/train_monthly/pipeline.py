@@ -12,8 +12,8 @@ def create_pipeline(**kwargs) -> Pipeline:
         create_prophet_pipeline(),
         namespace="train_monthly.prophet",
         inputs={
-            "train": "model_input_monthly_prophet_train",
-            "validation": "model_input_monthly_prophet_validation",
+            "train": "monthly_prophet_train",
+            "validation": "monthly_prophet_validation",
         },
         parameters={"parameters": "params:train_monthly"},
         outputs={"candidate_model": "candidate_monthly_prophet"},
