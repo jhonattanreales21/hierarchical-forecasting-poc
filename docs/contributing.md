@@ -83,10 +83,10 @@ Brief description of the change and why it is needed.
 ```bash
 # Lint all packages
 uv run --package shared ruff check shared/
-uv run --package hierarchical_demand_forecasting_poc ruff check pipelines/
+uv run --package hdf_pipelines ruff check pipelines/
 uv run --package hdf_app ruff check app/
 uv run --package hdf_api ruff check api/
 
 # Tests
-uv run --package hierarchical_demand_forecasting_poc pytest pipelines/ --cov
+uv run --package hdf_pipelines pytest pipelines/ --cov
 ```

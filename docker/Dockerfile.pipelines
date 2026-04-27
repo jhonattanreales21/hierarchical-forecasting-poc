@@ -2,5 +2,5 @@ FROM python:3.12-slim
 WORKDIR /app
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 COPY . .
-RUN uv sync --package hierarchical_demand_forecasting_poc
-CMD ["uv", "run", "--package", "hierarchical_demand_forecasting_poc", "kedro", "run"]
+RUN uv sync --package hdf_pipelines
+CMD ["uv", "run", "--package", "hdf_pipelines", "kedro", "run"]

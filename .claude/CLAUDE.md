@@ -74,7 +74,7 @@ data/
   07_model_output/          # Predictions and forecast outputs
   08_reporting/             # Evaluation reports, plots
 
-src/hierarchical_demand_forecasting_poc/
+src/hdf_pipelines/
   __init__.py               # Package version
   __main__.py               # CLI entry point
   settings.py               # Kedro project settings (OmegaConfigLoader)
