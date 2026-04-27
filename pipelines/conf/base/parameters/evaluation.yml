@@ -1,0 +1,7 @@
+evaluation:
+  metrics:
+    - "MAPE"
+    - "RMSE"
+    - "MASE"
+  seasonality_weekly: 52
+  seasonality_monthly: 12

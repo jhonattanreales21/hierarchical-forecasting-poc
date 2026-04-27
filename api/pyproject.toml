@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[project]
+name = "hdf_api"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "pandas>=2.0",
+    "shared",
+]
+
+[tool.uv.sources]
+shared = { workspace = true }
+
+[dependency-groups]
+dev = ["ruff", "httpx"]

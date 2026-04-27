@@ -1,0 +1,6 @@
+reconciliation:
+  enabled: true
+  methods:
+    - "bottom_up"
+    - "mint_shrink"
+  default_method: "mint_shrink"

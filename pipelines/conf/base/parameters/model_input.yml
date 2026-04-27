@@ -1,0 +1,7 @@
+model_input:
+  validation_size_weeks: 26
+  test_size_weeks: 14
+  validation_size_months: 6
+  test_size_months: 3
+  backtesting_strategy: "rolling_origin"
+  n_folds: 3

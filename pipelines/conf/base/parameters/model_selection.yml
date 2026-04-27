@@ -1,0 +1,7 @@
+model_selection:
+  primary_metric: "MAPE"
+  secondary_metrics:
+    - "RMSE"
+    - "MASE"
+  selection_strategy: "best_by_horizon"
+  tie_breaker: "RMSE"
