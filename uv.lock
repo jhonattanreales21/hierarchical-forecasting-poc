@@ -1389,6 +1389,7 @@ name = "hdf-pipelines"
 source = { editable = "pipelines" }
 dependencies = [
     { name = "catboost" },
+    { name = "holidays" },
     { name = "ipython" },
     { name = "jupyterlab" },
     { name = "kedro", extra = ["jupyter"] },
@@ -1427,6 +1428,7 @@ docs = [
 [package.metadata]
 requires-dist = [
     { name = "catboost", specifier = ">=1.2" },
+    { name = "holidays", specifier = ">=0.46" },
     { name = "ipython", specifier = ">=8.10" },
     { name = "jupyterlab", specifier = ">=3.0" },
     { name = "kedro", extras = ["jupyter"], specifier = "~=1.3.1" },

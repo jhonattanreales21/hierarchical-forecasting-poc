@@ -119,8 +119,9 @@ uv sync --all-packages
 cp your_demand_data.csv pipelines/data/01_raw/raw_demand_data.csv
 cp your_exogenous_data.csv pipelines/data/01_raw/raw_exogenous_data.csv
 
-# 4. Run the full pipeline
-uv run --package hdf_pipelines kedro run
+# 4. Run the full pipeline (must be run from inside pipelines/)
+cd pipelines
+uv run kedro run
 
 # 5. Launch the Streamlit app
 uv run --package hdf_app streamlit run app/app.py
@@ -133,23 +134,26 @@ uv run --package hdf_app streamlit run app/app.py
 ### Kedro (pipelines/)
 
 ```bash
+# All Kedro commands must be run from inside the pipelines/ directory.
+cd pipelines
+
 # Run the full default pipeline (ingestion → features → training → selection → reconciliation → inference)
-uv run --package hdf_pipelines kedro run
+uv run kedro run
 
 # Run only data ingestion
-uv run --package hdf_pipelines kedro run --pipeline data_ingestion
+uv run kedro run --pipeline data_ingestion
 
 # Run training (monthly + weekly, all model families)
-uv run --package hdf_pipelines kedro run --pipeline training
+uv run kedro run --pipeline training
 
 # Run model selection (champion selection on test data)
-uv run --package hdf_pipelines kedro run --pipeline model_selection
+uv run kedro run --pipeline model_selection
 
 # Run inference (generates forecast outputs under data/07_model_output/)
-uv run --package hdf_pipelines kedro run --pipeline inference
+uv run kedro run --pipeline inference
 
 # Run the full experiment without final inference
-uv run --package hdf_pipelines kedro run --pipeline full_experiment
+uv run kedro run --pipeline full_experiment
 ```
 
 ### Streamlit (app/)

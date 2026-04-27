@@ -19,7 +19,7 @@ def create_pipeline(**kwargs) -> Pipeline:
         [
             node(
                 func=build_monthly_splits_prophet,
-                inputs=["feature_monthly_data", "params:model_input"],
+                inputs=["monthly_prophet_features", "params:model_input"],
                 outputs=[
                     "model_input_monthly_prophet_train",
                     "model_input_monthly_prophet_validation",
@@ -29,7 +29,7 @@ def create_pipeline(**kwargs) -> Pipeline:
             ),
             node(
                 func=build_monthly_splits_catboost,
-                inputs=["feature_monthly_data", "params:model_input"],
+                inputs=["monthly_prophet_features", "params:model_input"],
                 outputs=[
                     "model_input_monthly_catboost_train",
                     "model_input_monthly_catboost_validation",
@@ -39,7 +39,7 @@ def create_pipeline(**kwargs) -> Pipeline:
             ),
             node(
                 func=build_monthly_splits_sarimax,
-                inputs=["feature_monthly_data", "params:model_input"],
+                inputs=["monthly_prophet_features", "params:model_input"],
                 outputs=[
                     "model_input_monthly_sarimax_train",
                     "model_input_monthly_sarimax_validation",
@@ -79,7 +79,7 @@ def create_pipeline(**kwargs) -> Pipeline:
             ),
             node(
                 func=generate_backtest_folds_monthly,
-                inputs=["feature_monthly_data", "params:model_input"],
+                inputs=["monthly_prophet_features", "params:model_input"],
                 outputs="backtest_folds_monthly",
                 name="generate_backtest_folds_monthly",
             ),

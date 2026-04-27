@@ -34,21 +34,17 @@ exogenous_monthly:
   filepath: data/03_primary/exogenous_monthly.parquet
 
 # 04_feature
-feature_weekly_prophet:
+monthly_calendar_features:
   type: pandas.ParquetDataset
-  filepath: data/04_feature/weekly_features_prophet.parquet
+  filepath: data/04_feature/monthly_calendar_features.parquet
 
-feature_monthly_prophet:
+monthly_exogenous_features:
   type: pandas.ParquetDataset
-  filepath: data/04_feature/monthly_features_prophet.parquet
+  filepath: data/04_feature/monthly_exogenous_features.parquet
 
-feature_weekly_catboost:
+monthly_prophet_features:
   type: pandas.ParquetDataset
-  filepath: data/04_feature/weekly_features_catboost.parquet
-
-feature_monthly_catboost:
-  type: pandas.ParquetDataset
-  filepath: data/04_feature/monthly_features_catboost.parquet
+  filepath: data/04_feature/monthly_prophet_features.parquet
 
 # 05_model_input — train/val/test splits per granularity × model family
 # Monthly splits

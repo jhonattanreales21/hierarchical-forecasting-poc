@@ -87,8 +87,10 @@ src/hdf_pipelines/
 
 tests/                      # pytest tests
 docs/                       # Project documentation and blueprint
-notebooks/                  # Exploratory notebooks (not for production logic)
+notebooks/                  # Kedro-coupled notebooks; launch with `kedro jupyter notebook` to get catalog injected
 ```
+
+> **Notebook placement rule:** notebooks that access the Kedro `DataCatalog` (e.g., loading pipeline outputs) live in `pipelines/notebooks/` and must be launched with `kedro jupyter notebook` from `pipelines/`. General-purpose EDA notebooks unrelated to the pipeline layer live in the root-level `notebooks/` folder.
 
 ## Temporal Hierarchy
 

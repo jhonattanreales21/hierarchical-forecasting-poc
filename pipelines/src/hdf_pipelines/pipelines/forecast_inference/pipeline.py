@@ -16,7 +16,7 @@ def create_pipeline(**kwargs) -> Pipeline:
             node(
                 func=load_inference_inputs,
                 inputs=[
-                    "feature_monthly_data",
+                    "monthly_prophet_features",
                     "feature_weekly_data",
                     "params:forecast_inference",
                 ],
