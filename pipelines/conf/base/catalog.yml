@@ -1,38 +1,54 @@
 # 01_raw
-raw_demand_data:
+raw_daily_demand:
   type: pandas.CSVDataset
-  filepath: data/01_raw/demand_data.csv
+  filepath: data/01_raw/daily_demand.csv
 
-raw_exogenous_data:
+raw_exogenous_variables:
   type: pandas.CSVDataset
-  filepath: data/01_raw/exogenous_data.csv
+  filepath: data/01_raw/exogenous_variables.csv
 
 # 02_intermediate
-intermediate_demand_data:
+demand_cleaned:
   type: pandas.ParquetDataset
-  filepath: data/02_intermediate/demand_data.parquet
+  filepath: data/02_intermediate/demand_cleaned.parquet
 
-intermediate_exogenous_data:
+exogenous_cleaned:
   type: pandas.ParquetDataset
-  filepath: data/02_intermediate/exogenous_data.parquet
+  filepath: data/02_intermediate/exogenous_cleaned.parquet
 
 # 03_primary
-primary_weekly_demand:
+demand_daily:
   type: pandas.ParquetDataset
-  filepath: data/03_primary/weekly_demand.parquet
+  filepath: data/03_primary/demand_daily.parquet
 
-primary_monthly_demand:
+demand_weekly:
   type: pandas.ParquetDataset
-  filepath: data/03_primary/monthly_demand.parquet
+  filepath: data/03_primary/demand_weekly.parquet
+
+demand_monthly:
+  type: pandas.ParquetDataset
+  filepath: data/03_primary/demand_monthly.parquet
+
+exogenous_monthly:
+  type: pandas.ParquetDataset
+  filepath: data/03_primary/exogenous_monthly.parquet
 
 # 04_feature
-feature_weekly_data:
+feature_weekly_prophet:
   type: pandas.ParquetDataset
-  filepath: data/04_feature/weekly_features.parquet
+  filepath: data/04_feature/weekly_features_prophet.parquet
 
-feature_monthly_data:
+feature_monthly_prophet:
   type: pandas.ParquetDataset
-  filepath: data/04_feature/monthly_features.parquet
+  filepath: data/04_feature/monthly_features_prophet.parquet
+
+feature_weekly_catboost:
+  type: pandas.ParquetDataset
+  filepath: data/04_feature/weekly_features_catboost.parquet
+
+feature_monthly_catboost:
+  type: pandas.ParquetDataset
+  filepath: data/04_feature/monthly_features_catboost.parquet
 
 # 05_model_input — train/val/test splits per granularity × model family
 # Monthly splits
