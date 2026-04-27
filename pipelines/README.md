@@ -10,6 +10,25 @@ The pipeline is the backbone of a multi-layer system that also includes a FastAP
 
 ---
 
+## Pipeline Status
+
+| Pipeline | Status | Tests | Notes |
+|----------|--------|-------|-------|
+| `data_ingestion` | ✅ Implemented | ✅ | Produces cleaned demand and exogenous primary datasets |
+| `feature_engineering_monthly` | ✅ Implemented | ✅ | Calendar + exogenous features; Prophet-ready output |
+| `model_input_preparation` | ✅ Implemented | ✅ | Monthly Prophet train/val/test splits + future horizons |
+| `feature_engineering_weekly` | 🔧 Wired | — | Nodes defined and wired; not yet end-to-end validated |
+| `train_monthly` | 🔧 Wired | — | Prophet, CatBoost, SARIMAX sub-pipelines scaffolded |
+| `train_weekly` | 🔧 Wired | — | Prophet, CatBoost, SARIMAX sub-pipelines scaffolded |
+| `model_selection` | 🔧 Wired | — | Evaluate candidates + elect champion per granularity |
+| `reconciliation` | 🔧 Wired | — | MinT reconciliation + diagnostics |
+| `forecast_inference` | 🔧 Wired | — | Forward-looking predictions + daily allocation |
+
+**✅ Implemented** — nodes complete, pipeline runs, outputs validated, unit tests in place.
+**🔧 Wired** — `pipeline.py` and `nodes.py` in place and registered; not yet end-to-end tested.
+
+---
+
 ## Environment Setup
 
 This project uses `uv` for dependency management. **Do not use `pip` directly.**
@@ -25,27 +44,29 @@ uv sync --no-dev           # Production dependencies only
 ## Running Pipelines
 
 ```bash
-# Run the full default pipeline (ingestion → training → reconciliation → inference)
-kedro run
-
-# Run a specific pipeline stage
+# Run only the currently validated slice (ingestion → monthly features → Prophet model input)
 kedro run --pipeline=data_ingestion
 kedro run --pipeline=feature_engineering_monthly
-kedro run --pipeline=feature_engineering_weekly
 kedro run --pipeline=model_input_preparation
+
+# Run a specific wired-but-not-yet-validated stage (use with care)
+kedro run --pipeline=feature_engineering_weekly
 kedro run --pipeline=train_monthly
 kedro run --pipeline=train_weekly
 kedro run --pipeline=model_selection
 kedro run --pipeline=reconciliation
 kedro run --pipeline=forecast_inference
 
-# Run composed pipeline shortcuts
+# Composed pipeline shortcuts
 kedro run --pipeline=training          # train_monthly + train_weekly
 kedro run --pipeline=full_experiment   # ingestion → feature engineering → model input → training → selection
 kedro run --pipeline=inference         # forecast_inference + reconciliation
+
+# Run the full default pipeline (all stages in sequence)
+kedro run
 ```
 
-### Pipeline Execution Order (default)
+### Pipeline Execution Order
 
 ```
 data_ingestion
@@ -58,6 +79,41 @@ data_ingestion
                         → forecast_inference
 ```
 
+The first three stages (up to and including `model_input_preparation`) are validated and produce real outputs. Stages after that are wired and will be fully validated in the next development iteration.
+
+---
+
+## Data Layer — Current Outputs
+
+The following catalog artifacts have been produced by the implemented pipelines:
+
+```
+data/
+├── 02_intermediate/
+│   ├── demand_cleaned.parquet
+│   └── exogenous_cleaned.parquet
+├── 03_primary/
+│   ├── demand_daily.parquet
+│   ├── demand_monthly.parquet
+│   ├── demand_weekly.parquet
+│   └── exogenous_monthly.parquet
+├── 04_feature/
+│   ├── monthly_calendar_features.parquet
+│   ├── monthly_exogenous_features.parquet
+│   └── monthly_prophet_features.parquet
+└── 05_model_input/
+    ├── monthly_prophet_modeling_data.parquet
+    ├── monthly_prophet_train.parquet
+    ├── monthly_prophet_validation.parquet
+    ├── monthly_prophet_test.parquet
+    ├── monthly_prophet_full_train.parquet
+    ├── monthly_prophet_future_3m.parquet
+    ├── monthly_prophet_future_6m.parquet
+    └── monthly_prophet_split_metadata.json
+```
+
+Layers `06_models/`, `07_model_output/`, and `08_reporting/` will be populated once the training and inference pipelines are validated.
+
 ---
 
 ## Project Structure
@@ -68,39 +124,59 @@ pipelines/
 │   ├── base/                          # Shared configuration (catalog, parameters)
 │   │   ├── catalog.yml                # Dataset definitions (all I/O goes here)
 │   │   ├── parameters.yml             # Global parameters
-│   │   ├── parameters_<pipeline>.yml  # Per-pipeline parameters
-│   │   └── logging.yml                # Logging configuration
+│   │   ├── parameters/                # Per-pipeline parameter files
+│   │   │   ├── feature_engineering.yml
+│   │   │   ├── model_input.yml
+│   │   │   ├── train_monthly.yml
+│   │   │   ├── train_weekly.yml
+│   │   │   ├── model_selection.yml
+│   │   │   ├── reconciliation.yml
+│   │   │   ├── evaluation.yml
+│   │   │   └── forecast_inference.yml
+│   │   └── logging.yml
 │   └── local/                         # Local overrides and credentials (gitignored)
 │
 ├── data/
 │   ├── 01_raw/                        # Raw input data (gitignored)
 │   ├── 02_intermediate/               # Cleaned/preprocessed data
-│   ├── 03_primary/                    # Domain-level model-ready data
+│   ├── 03_primary/                    # Domain-level aggregated data
 │   ├── 04_feature/                    # Feature-engineered datasets
-│   ├── 05_model_input/                # Final model input tables
+│   ├── 05_model_input/                # Final model input tables and splits
 │   ├── 06_models/                     # Trained model artifacts
 │   ├── 07_model_output/               # Predictions and forecast outputs
 │   └── 08_reporting/                  # Evaluation reports and plots
 │
 ├── src/hdf_pipelines/
-│   ├── __init__.py                    # Package version
-│   ├── __main__.py                    # CLI entry point
+│   ├── __init__.py
+│   ├── __main__.py
 │   ├── settings.py                    # Kedro project settings (OmegaConfigLoader)
-│   ├── pipeline_registry.py           # Registers all pipelines (including composed ones)
+│   ├── pipeline_registry.py           # Registers all pipelines and composed shortcuts
 │   └── pipelines/
-│       ├── data_ingestion/            # Load and validate raw data
-│       ├── feature_engineering_monthly/  # Monthly-level feature construction
-│       ├── feature_engineering_weekly/   # Weekly-level feature construction
-│       ├── model_input_preparation/   # Merge features → model-ready datasets
-│       ├── train_monthly/             # Train monthly forecasting models
-│       ├── train_weekly/              # Train weekly forecasting models
-│       ├── model_selection/           # Compare and select best model per horizon
-│       ├── reconciliation/            # Temporal hierarchical reconciliation
-│       └── forecast_inference/        # Generate final forecasts using selected models
+│       ├── data_ingestion/            # ✅ Load, clean, and aggregate raw demand + exogenous data
+│       ├── feature_engineering_monthly/  # ✅ Calendar and exogenous features at monthly resolution
+│       ├── feature_engineering_weekly/   # 🔧 Aggregate demand and build weekly features
+│       ├── model_input_preparation/   # ✅ Merge monthly features → Prophet train/val/test splits
+│       ├── train_monthly/             # 🔧 Train Prophet, CatBoost, SARIMAX at monthly level
+│       │   ├── prophet/
+│       │   ├── catboost/
+│       │   └── sarimax/
+│       ├── train_weekly/              # 🔧 Train Prophet, CatBoost, SARIMAX at weekly level
+│       │   ├── prophet/
+│       │   ├── catboost/
+│       │   └── sarimax/
+│       ├── model_selection/           # 🔧 Score candidates on test set and elect champions
+│       ├── reconciliation/            # 🔧 MinT reconciliation for monthly–weekly coherence
+│       └── forecast_inference/        # 🔧 Forward-looking forecasts + optional daily allocation
 │
-├── tests/                             # pytest tests
-├── notebooks/                         # Exploratory analysis (not production logic)
-├── docs/                              # Sphinx documentation
+├── notebooks/
+│   └── kedro_demo.ipynb              # Demo notebook (catalog + pipeline exploration)
+├── tests/
+│   ├── test_data_ingestion_nodes.py
+│   ├── test_feature_engineering_monthly_nodes.py
+│   ├── test_model_input_preparation_nodes.py
+│   ├── test_metrics.py
+│   ├── test_pipeline_registry.py
+│   └── test_run.py
 └── pyproject.toml
 ```
 
@@ -110,7 +186,7 @@ pipelines/
 
 All datasets are defined in `conf/base/catalog.yml`. Never read or write data files directly from node code — always go through the catalog.
 
-Per-pipeline parameters live in `conf/base/parameters_<pipeline_name>.yml`. Global parameters are in `conf/base/parameters.yml`.
+Per-pipeline parameters live in `conf/base/parameters/<pipeline_name>.yml`. Global parameters are in `conf/base/parameters.yml`.
 
 ```bash
 kedro catalog list       # List all registered datasets
@@ -131,6 +207,8 @@ pytest                          # Run all tests with coverage
 pytest tests/test_run.py        # Smoke test for Kedro bootstrap
 ```
 
+Current test coverage includes: `data_ingestion`, `feature_engineering_monthly`, `model_input_preparation`, and shared `metrics`.
+
 ---
 
 ## Visualization
@@ -145,7 +223,7 @@ Kedro-Viz renders the full DAG of nodes, datasets, and pipeline dependencies —
 
 ## Notebooks
 
-Notebooks in `notebooks/` are for exploratory analysis only. Production logic must live in pipeline nodes under `src/hdf_pipelines/pipelines/`.
+`notebooks/kedro_demo.ipynb` demonstrates how to load catalog datasets and explore pipeline outputs interactively. Production logic must live in pipeline nodes under `src/hdf_pipelines/pipelines/`.
 
 ```bash
 kedro jupyter lab       # Launch JupyterLab with catalog/context pre-loaded
