@@ -1,3 +1,22 @@
+feature_engineering_monthly:
+  date_column: "month_start_date"
+  sku_column: "sku"
+  target_column: "monthly_demand"
+
+  calendar_features:
+    enabled: true
+    country_holidays: "CO"
+    observed_holidays: true
+    weekmask: "Mon Tue Wed Thu Fri"
+
+  exogenous_features:
+    enabled: true
+    base_columns:
+      - "pfizer_limited"
+      - "surgifoam_limited"
+      - "rebate_target"
+    lags: [1, 2, 3]
+
 feature_engineering:
   monthly:
     lags: [1, 2, 3, 6, 12]

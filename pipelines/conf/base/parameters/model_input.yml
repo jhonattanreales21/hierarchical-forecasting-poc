@@ -1,7 +1,49 @@
-model_input:
-  validation_size_weeks: 26
-  test_size_weeks: 14
-  validation_size_months: 6
-  test_size_months: 3
-  backtesting_strategy: "rolling_origin"
-  n_folds: 3
+model_input_preparation:
+  monthly_prophet:
+    date_column: "month_start_date"
+    target_column: "monthly_demand"
+    sku_column: "sku"
+
+    prophet_date_column: "ds"
+    prophet_target_column: "y"
+
+    active_regressors:
+      - "business_days"
+      - "total_tuesdays"
+      - "total_thursdays"
+      - "working_tuesdays"
+      - "working_thursdays"
+      - "has_5_working_tuesdays"
+      - "has_5_working_thursdays"
+      - "tuesday_holidays"
+      - "thursday_holidays"
+      - "total_holidays"
+      - "pfizer_limited"
+      - "surgifoam_limited"
+      - "rebate_target"
+      - "pfizer_limited_lag_1"
+      - "surgifoam_limited_lag_1"
+      - "rebate_target_lag_1"
+      - "pfizer_limited_lag_2"
+      - "surgifoam_limited_lag_2"
+      - "rebate_target_lag_2"
+      - "pfizer_limited_lag_3"
+      - "surgifoam_limited_lag_3"
+      - "rebate_target_lag_3"
+
+    missing_values:
+      drop_rows_with_null_target: true
+      drop_rows_with_null_active_regressors: true
+
+    split:
+      mode: "months"
+      validation_months: 6
+      test_months: 6
+      # Date-based split mode is also supported. Switch mode to "date" and use:
+      # mode: "date"
+      # train_end_date: "2024-12-01"
+      # validation_end_date: "2025-06-01"
+      # test_end_date: "2026-03-01"
+
+    future:
+      horizons_months: [3, 6]

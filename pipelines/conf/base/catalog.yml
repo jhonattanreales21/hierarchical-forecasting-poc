@@ -1,51 +1,85 @@
 # 01_raw
-raw_demand_data:
+raw_daily_demand:
   type: pandas.CSVDataset
-  filepath: data/01_raw/demand_data.csv
+  filepath: data/01_raw/daily_demand.csv
 
-raw_exogenous_data:
+raw_exogenous_variables:
   type: pandas.CSVDataset
-  filepath: data/01_raw/exogenous_data.csv
+  filepath: data/01_raw/exogenous_variables.csv
 
 # 02_intermediate
-intermediate_demand_data:
+demand_cleaned:
   type: pandas.ParquetDataset
-  filepath: data/02_intermediate/demand_data.parquet
+  filepath: data/02_intermediate/demand_cleaned.parquet
 
-intermediate_exogenous_data:
+exogenous_cleaned:
   type: pandas.ParquetDataset
-  filepath: data/02_intermediate/exogenous_data.parquet
+  filepath: data/02_intermediate/exogenous_cleaned.parquet
 
 # 03_primary
-primary_weekly_demand:
+demand_daily:
   type: pandas.ParquetDataset
-  filepath: data/03_primary/weekly_demand.parquet
+  filepath: data/03_primary/demand_daily.parquet
 
-primary_monthly_demand:
+demand_weekly:
   type: pandas.ParquetDataset
-  filepath: data/03_primary/monthly_demand.parquet
+  filepath: data/03_primary/demand_weekly.parquet
+
+demand_monthly:
+  type: pandas.ParquetDataset
+  filepath: data/03_primary/demand_monthly.parquet
+
+exogenous_monthly:
+  type: pandas.ParquetDataset
+  filepath: data/03_primary/exogenous_monthly.parquet
 
 # 04_feature
-feature_weekly_data:
+monthly_calendar_features:
   type: pandas.ParquetDataset
-  filepath: data/04_feature/weekly_features.parquet
+  filepath: data/04_feature/monthly_calendar_features.parquet
 
-feature_monthly_data:
+monthly_exogenous_features:
   type: pandas.ParquetDataset
-  filepath: data/04_feature/monthly_features.parquet
+  filepath: data/04_feature/monthly_exogenous_features.parquet
 
-# 05_model_input — train/val/test splits per granularity × model family
-# Monthly splits
-model_input_monthly_prophet_train:
+monthly_prophet_features:
+  type: pandas.ParquetDataset
+  filepath: data/04_feature/monthly_prophet_features.parquet
+
+# 05_model_input — Monthly Prophet model-ready datasets
+monthly_prophet_modeling_data:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/monthly_prophet_modeling_data.parquet
+
+monthly_prophet_train:
   type: pandas.ParquetDataset
   filepath: data/05_model_input/monthly_prophet_train.parquet
-model_input_monthly_prophet_validation:
+
+monthly_prophet_validation:
   type: pandas.ParquetDataset
   filepath: data/05_model_input/monthly_prophet_validation.parquet
-model_input_monthly_prophet_test:
+
+monthly_prophet_test:
   type: pandas.ParquetDataset
   filepath: data/05_model_input/monthly_prophet_test.parquet
 
+monthly_prophet_full_train:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/monthly_prophet_full_train.parquet
+
+monthly_prophet_future_3m:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/monthly_prophet_future_3m.parquet
+
+monthly_prophet_future_6m:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/monthly_prophet_future_6m.parquet
+
+monthly_prophet_split_metadata:
+  type: json.JSONDataset
+  filepath: data/05_model_input/monthly_prophet_split_metadata.json
+
+# Legacy / future-stage placeholders
 model_input_monthly_catboost_train:
   type: pandas.ParquetDataset
   filepath: data/05_model_input/monthly_catboost_train.parquet
@@ -98,9 +132,6 @@ model_input_weekly_sarimax_test:
   filepath: data/05_model_input/weekly_sarimax_test.parquet
 
 # Backtesting folds metadata
-backtest_folds_monthly:
-  type: json.JSONDataset
-  filepath: data/05_model_input/backtest_folds_monthly.json
 backtest_folds_weekly:
   type: json.JSONDataset
   filepath: data/05_model_input/backtest_folds_weekly.json
