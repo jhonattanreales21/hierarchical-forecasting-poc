@@ -13,11 +13,13 @@ def create_pipeline(**kwargs) -> Pipeline:
         monthly_prophet_champion_metadata
         monthly_prophet_future_3m
         monthly_prophet_future_6m
+        monthly_prophet_future_12m
         params:forecast_inference.monthly_prophet
 
     Outputs (to catalog):
         monthly_prophet_forecast_3m
         monthly_prophet_forecast_6m
+        monthly_prophet_forecast_12m
         monthly_prophet_forecast_latest
         monthly_prophet_inference_metadata
     """
@@ -30,11 +32,13 @@ def create_pipeline(**kwargs) -> Pipeline:
                     "monthly_prophet_champion_metadata",
                     "monthly_prophet_future_3m",
                     "monthly_prophet_future_6m",
+                    "monthly_prophet_future_12m",
                     "params:forecast_inference.monthly_prophet",
                 ],
                 outputs=[
                     "monthly_prophet_forecast_3m",
                     "monthly_prophet_forecast_6m",
+                    "monthly_prophet_forecast_12m",
                     "monthly_prophet_forecast_latest",
                     "monthly_prophet_inference_metadata",
                 ],

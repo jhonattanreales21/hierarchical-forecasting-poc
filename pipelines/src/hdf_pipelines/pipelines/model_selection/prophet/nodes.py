@@ -420,6 +420,16 @@ def select_monthly_prophet_champion(
     train_summary = monthly_prophet_split_metadata.get("full_train", {})
     test_summary = monthly_prophet_split_metadata.get("test", {})
 
+    # Extract the Optuna trial number for the champion from the tuning results.
+    champion_trial_row = monthly_prophet_tuning_results[
+        monthly_prophet_tuning_results["candidate_id"] == champion_id
+    ]
+    best_trial_number = (
+        _safe_int(champion_trial_row["trial_number"].iloc[0])
+        if not champion_trial_row.empty and "trial_number" in champion_trial_row.columns
+        else None
+    )
+
     champion_metadata: dict = {
         "model_family": "prophet",
         "granularity": "monthly",
@@ -435,6 +445,10 @@ def select_monthly_prophet_champion(
         "model_params": dict(champion_config.get("model_params", {})),
         "validation_metrics": {k: _safe_float(val_metrics.get(k)) for k in metric_keys},
         "test_metrics": {k: _safe_float(test_row.get(k)) for k in metric_keys},
+        "optuna_best_trial": {
+            "trial_number": best_trial_number,
+            "training_metadata_artifact": "monthly_prophet_training_metadata",
+        },
         "train_window": {
             "start_date": train_summary.get("start_date"),
             "end_date": train_summary.get("end_date"),
@@ -814,5 +828,16 @@ def _safe_float(value: Any) -> float | None:
     try:
         result = float(value)
         return result if np.isfinite(result) else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_int(value: Any) -> int | None:
+    """Convert to Python int, returning None for missing values."""
+    if value is None:
+        return None
+    try:
+        f = float(value)
+        return int(f) if np.isfinite(f) else None
     except (TypeError, ValueError):
         return None

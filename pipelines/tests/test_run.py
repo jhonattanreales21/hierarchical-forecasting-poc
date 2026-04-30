@@ -32,6 +32,7 @@ class TestKedroRun:
             "monthly_prophet_full_train.parquet",
             "monthly_prophet_future_3m.parquet",
             "monthly_prophet_future_6m.parquet",
+            "monthly_prophet_future_12m.parquet",
             "monthly_prophet_split_metadata.json",
         ]
         output_dir = _PROJECT_ROOT / "data" / "05_model_input"

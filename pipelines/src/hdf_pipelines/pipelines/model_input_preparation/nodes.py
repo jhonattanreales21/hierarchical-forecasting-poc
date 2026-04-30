@@ -32,7 +32,7 @@ _CALENDAR_FEATURE_COLUMNS = [
     "thursday_holidays",
     "total_holidays",
 ]
-_SUPPORTED_FUTURE_HORIZONS = (3, 6)
+_SUPPORTED_FUTURE_HORIZONS = (3, 6, 12)
 _MIN_WORKING_WEEKDAY_COUNT_FOR_FLAG = 5
 
 
@@ -730,13 +730,14 @@ def build_monthly_prophet_future_regressors(
             ``observed_holidays``, and ``weekmask``.
 
     Returns:
-        Tuple of two DataFrames:
+        Tuple of three DataFrames:
             - future_3m: Future regressor table for the 3-month horizon.
             - future_6m: Future regressor table for the 6-month horizon.
-        Both share the schema ``[ds, sku, *active_regressors]``, cross-joined over all SKUs.
+            - future_12m: Future regressor table for the 12-month horizon.
+        All share the schema ``[ds, sku, *active_regressors]``, cross-joined over all SKUs.
 
     Raises:
-        ValueError: If ``horizons_months`` does not include both 3 and 6, if an active
+        ValueError: If ``horizons_months`` does not include 3, 6, and 12, if an active
             regressor cannot be sourced from either the calendar or exogenous datasets,
             if required future exogenous values are missing, or if the output accidentally
             contains the target column ``y``.
@@ -848,16 +849,17 @@ def build_monthly_prophet_future_regressors(
         "Built future Prophet datasets with columns=%s.",
         list(future_datasets[3].columns),
     )
-    return future_datasets[3], future_datasets[6]
+    return future_datasets[3], future_datasets[6], future_datasets[12]
 
 
-def build_monthly_prophet_split_metadata(  # noqa: PLR0913
+def build_monthly_prophet_split_metadata(  # noqa: PLR0912, PLR0913
     monthly_prophet_train: pd.DataFrame,
     monthly_prophet_validation: pd.DataFrame,
     monthly_prophet_test: pd.DataFrame,
     monthly_prophet_full_train: pd.DataFrame,
     monthly_prophet_future_3m: pd.DataFrame,
     monthly_prophet_future_6m: pd.DataFrame,
+    monthly_prophet_future_12m: pd.DataFrame,
     preparation_metadata: dict[str, Any],
     parameters: dict,
 ) -> dict[str, Any]:
@@ -874,6 +876,7 @@ def build_monthly_prophet_split_metadata(  # noqa: PLR0913
         monthly_prophet_full_train: Full-train split DataFrame (all partitions combined).
         monthly_prophet_future_3m: Future regressor DataFrame for the 3-month horizon.
         monthly_prophet_future_6m: Future regressor DataFrame for the 6-month horizon.
+        monthly_prophet_future_12m: Future regressor DataFrame for the 12-month horizon.
         preparation_metadata: Metadata produced by the preparation and split nodes.
             Must contain ``model_family``, ``granularity``, ``split_mode``,
             ``active_regressors``, and ``dropped_rows``.
@@ -906,6 +909,7 @@ def build_monthly_prophet_split_metadata(  # noqa: PLR0913
         "future_horizons": {
             3: _summarize_date_range(monthly_prophet_future_3m, prophet_date_column),
             6: _summarize_date_range(monthly_prophet_future_6m, prophet_date_column),
+            12: _summarize_date_range(monthly_prophet_future_12m, prophet_date_column),
         },
         "dropped_rows": preparation_metadata["dropped_rows"],
     }

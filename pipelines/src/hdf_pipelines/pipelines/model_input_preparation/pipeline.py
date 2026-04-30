@@ -51,6 +51,7 @@ def create_pipeline(**kwargs) -> Pipeline:
                 outputs=[
                     "monthly_prophet_future_3m",
                     "monthly_prophet_future_6m",
+                    "monthly_prophet_future_12m",
                 ],
                 name="build_monthly_prophet_future_regressors",
             ),
@@ -63,6 +64,7 @@ def create_pipeline(**kwargs) -> Pipeline:
                     "monthly_prophet_full_train",
                     "monthly_prophet_future_3m",
                     "monthly_prophet_future_6m",
+                    "monthly_prophet_future_12m",
                     "monthly_prophet_split_preparation_metadata",
                     "params:model_input_preparation",
                 ],

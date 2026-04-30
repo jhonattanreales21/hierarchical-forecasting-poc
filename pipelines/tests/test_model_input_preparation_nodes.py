@@ -12,6 +12,9 @@ from hdf_pipelines.pipelines.model_input_preparation.nodes import (
 _EXPECTED_MODELING_ROWS = 3  # 4 input rows - 1 null regressor row = 3
 _EXPECTED_TRAIN_ROWS = 3  # 5 rows - 1 validation month - 1 test month = 3
 _EXPECTED_FULL_TRAIN_ROWS = 5  # all rows of the modeling DataFrame (no rows excluded)
+_HORIZON_3M = 3
+_HORIZON_6M = 6
+_HORIZON_12M = 12
 
 
 def _model_input_parameters() -> dict:
@@ -174,49 +177,43 @@ def test_future_regressors_exclude_target_and_cover_configured_horizons():
             "total_holidays": [1, 0, 1, 0, 1],
         }
     )
-    # exogenous_df must cover up to Nov 2024 (last month of the 6-month horizon)
+    # exogenous_df must cover up to May 2025 (last month of the 12-month horizon:
+    # 5 historical months Jan–May 2024 + 12 future months Jun 2024–May 2025 = 17 months)
+    _n_exogenous = 17
     exogenous_df = pd.DataFrame(
         {
-            "month_start_date": pd.date_range("2024-01-01", periods=11, freq="MS"),
-            "pfizer_limited": [0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0],
-            "pfizer_limited_lag_1": [
-                0.0,
-                0.0,
-                1.0,
-                0.0,
-                0.0,
-                1.0,
-                0.0,
-                1.0,
-                0.0,
-                0.0,
-                1.0,
-            ],
+            "month_start_date": pd.date_range("2024-01-01", periods=_n_exogenous, freq="MS"),
+            "pfizer_limited": ([0.0, 1.0, 0.0] * 6)[:_n_exogenous],
+            "pfizer_limited_lag_1": ([0.0, 0.0, 1.0] * 6)[:_n_exogenous],
         }
     )
 
-    future_3m, future_6m = build_monthly_prophet_future_regressors(
+    params = _model_input_parameters()
+    params["monthly_prophet"]["future"]["horizons_months"] = [3, 6, 12]
+
+    future_3m, future_6m, future_12m = build_monthly_prophet_future_regressors(
         modeling_df,
         calendar_df,
         exogenous_df,
-        _model_input_parameters(),
+        params,
         _calendar_parameters(),
     )
 
-    assert list(future_3m.columns) == [
-        "ds",
-        "sku",
-        "business_days",
-        "pfizer_limited",
-        "pfizer_limited_lag_1",
-    ]
-    assert list(future_6m.columns) == list(future_3m.columns)
+    expected_columns = ["ds", "sku", "business_days", "pfizer_limited", "pfizer_limited_lag_1"]
+    assert list(future_3m.columns) == expected_columns
+    assert list(future_6m.columns) == expected_columns
+    assert list(future_12m.columns) == expected_columns
     assert "y" not in future_3m.columns
     assert "y" not in future_6m.columns
+    assert "y" not in future_12m.columns
     # last historical month = 2024-05-01 → future starts 2024-06-01
     assert future_3m["ds"].min() == pd.Timestamp("2024-06-01")
-    assert future_3m["ds"].max() == pd.Timestamp("2024-08-01")  # Jun + 3 months
-    assert future_6m["ds"].max() == pd.Timestamp("2024-11-01")  # Jun + 6 months
+    assert future_3m["ds"].max() == pd.Timestamp("2024-08-01")   # 3 months: Jun–Aug 2024
+    assert future_6m["ds"].max() == pd.Timestamp("2024-11-01")   # 6 months: Jun–Nov 2024
+    assert future_12m["ds"].max() == pd.Timestamp("2025-05-01")  # 12 months: Jun 2024–May 2025
+    assert len(future_3m) == _HORIZON_3M
+    assert len(future_6m) == _HORIZON_6M
+    assert len(future_12m) == _HORIZON_12M
 
 
 def test_split_date_mode_respects_boundaries():

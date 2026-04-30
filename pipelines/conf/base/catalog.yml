@@ -75,6 +75,10 @@ monthly_prophet_future_6m:
   type: pandas.ParquetDataset
   filepath: data/05_model_input/monthly_prophet_future_6m.parquet
 
+monthly_prophet_future_12m:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/monthly_prophet_future_12m.parquet
+
 monthly_prophet_split_metadata:
   type: json.JSONDataset
   filepath: data/05_model_input/monthly_prophet_split_metadata.json
@@ -248,6 +252,10 @@ monthly_prophet_forecast_3m:
 monthly_prophet_forecast_6m:
   type: pandas.ParquetDataset
   filepath: data/07_model_output/monthly_prophet_forecast_6m.parquet
+
+monthly_prophet_forecast_12m:
+  type: pandas.ParquetDataset
+  filepath: data/07_model_output/monthly_prophet_forecast_12m.parquet
 
 monthly_prophet_forecast_latest:
   type: pandas.ParquetDataset

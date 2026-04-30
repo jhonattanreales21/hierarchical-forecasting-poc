@@ -40,13 +40,14 @@ _FORECAST_COLUMN_ORDER: list[str] = [
 # ── Public node ───────────────────────────────────────────────────────────────
 
 
-def generate_monthly_prophet_forecasts(  # noqa: PLR0912
+def generate_monthly_prophet_forecasts(  # noqa: PLR0912, PLR0913
     monthly_prophet_champion_model: Any,
     monthly_prophet_champion_metadata: dict,
     monthly_prophet_future_3m: pd.DataFrame,
     monthly_prophet_future_6m: pd.DataFrame,
+    monthly_prophet_future_12m: pd.DataFrame,
     params: dict,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict]:
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, dict]:
     """Generate official monthly demand forecasts using the selected Prophet champion.
 
     Loads the champion model and metadata, validates future regressor inputs for each
@@ -61,18 +62,19 @@ def generate_monthly_prophet_forecasts(  # noqa: PLR0912
             selection_metric_value, and business_success_flag.
         monthly_prophet_future_3m: Future feature DataFrame for the 3-month horizon.
         monthly_prophet_future_6m: Future feature DataFrame for the 6-month horizon.
+        monthly_prophet_future_12m: Future feature DataFrame for the 12-month horizon.
         params: Contents of forecast_inference.monthly_prophet from the parameter file.
 
     Returns:
-        Four-element tuple:
+        Five-element tuple:
 
         1. ``forecast_3m`` — Annotated forecast DataFrame for the 3-month horizon.
         2. ``forecast_6m`` — Annotated forecast DataFrame for the 6-month horizon.
-        3. ``forecast_latest`` — Alias of forecast_6m for downstream consumption
-           (Streamlit, FastAPI, reporting). The 6-month output is preferred because it
-           spans the 3-month business window plus the extended planning horizon in a
-           single table.
-        4. ``inference_metadata`` — JSON-serialisable dict summarising the inference run.
+        3. ``forecast_12m`` — Annotated forecast DataFrame for the 12-month horizon.
+        4. ``forecast_latest`` — Copy of the forecast for the configured
+           ``latest_output_horizon_months`` (defaults to 12). Used by downstream consumers
+           (Streamlit, FastAPI, reporting) as the single authoritative forecast table.
+        5. ``inference_metadata`` — JSON-serialisable dict summarising the inference run.
 
     Raises:
         ValueError: If champion metadata is missing required keys, or if any future
@@ -106,6 +108,7 @@ def generate_monthly_prophet_forecasts(  # noqa: PLR0912
     horizon_futures: dict[int, tuple[pd.DataFrame, str]] = {
         3: (monthly_prophet_future_3m, "monthly_prophet_future_3m"),
         6: (monthly_prophet_future_6m, "monthly_prophet_future_6m"),
+        12: (monthly_prophet_future_12m, "monthly_prophet_future_12m"),
     }
 
     forecasts: dict[int, pd.DataFrame] = {}
@@ -156,10 +159,16 @@ def generate_monthly_prophet_forecasts(  # noqa: PLR0912
 
     forecast_3m = forecasts[3]
     forecast_6m = forecasts[6]
+    forecast_12m = forecasts[12]
 
-    # 6-month output is used as latest: it subsumes the 3-month window and gives
-    # downstream consumers (Streamlit, FastAPI, reporting) a single table to query.
-    forecast_latest = forecast_6m.copy()
+    # forecast_latest mirrors the configured latest_output_horizon_months (default 12)
+    # so downstream consumers always have one canonical table to query.
+    if latest_horizon not in forecasts:
+        raise ValueError(
+            f"latest_output_horizon_months={latest_horizon} is not in the generated "
+            f"horizons {list(forecasts.keys())}. Check forecast_inference.monthly_prophet."
+        )
+    forecast_latest = forecasts[latest_horizon].copy()
 
     inference_metadata = _build_inference_metadata(
         champion_metadata=monthly_prophet_champion_metadata,
@@ -171,17 +180,18 @@ def generate_monthly_prophet_forecasts(  # noqa: PLR0912
     )
 
     logger.info(
-        "Inference complete — forecast_run_id: %s | 3m rows: %d | 6m rows: %d",
+        "Inference complete — forecast_run_id: %s | 3m rows: %d | 6m rows: %d | 12m rows: %d",
         forecast_run_id,
         len(forecast_3m),
         len(forecast_6m),
+        len(forecast_12m),
     )
     logger.info(
         "Latest forecast: %dm horizon → dataset: monthly_prophet_forecast_latest",
         latest_horizon,
     )
 
-    return forecast_3m, forecast_6m, forecast_latest, inference_metadata
+    return forecast_3m, forecast_6m, forecast_12m, forecast_latest, inference_metadata
 
 
 # ── Private helpers ───────────────────────────────────────────────────────────
