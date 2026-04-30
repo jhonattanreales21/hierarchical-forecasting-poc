@@ -22,9 +22,7 @@ logging.getLogger("prophet").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
 # Public node function
-# ---------------------------------------------------------------------------
 
 
 def train_and_evaluate_monthly_prophet_candidates(  # noqa: PLR0915
@@ -128,9 +126,7 @@ def train_and_evaluate_monthly_prophet_candidates(  # noqa: PLR0915
         val_df[date_col].min().date(),
         val_df[date_col].max().date(),
     )
-    logger.info(
-        "Active regressors (%d): %s", len(active_regressors), active_regressors
-    )
+    logger.info("Active regressors (%d): %s", len(active_regressors), active_regressors)
 
     # ── build candidate grid ──────────────────────────────────────────────────────
     candidate_configs = _build_candidate_grid(candidate_grid)
@@ -170,10 +166,14 @@ def train_and_evaluate_monthly_prophet_candidates(  # noqa: PLR0915
             model = _create_prophet_model(config, active_regressors, regressor_mode)
             model.fit(train_fit_df)
 
-            forecast = _forecast_validation_period(model, val_pred_df, active_regressors)
+            forecast = _forecast_validation_period(
+                model, val_pred_df, active_regressors
+            )
             y_pred = forecast["yhat"].values.astype(float)
 
-            base = _compute_forecast_metrics(y_true, y_pred, epsilon, precision_threshold)
+            base = _compute_forecast_metrics(
+                y_true, y_pred, epsilon, precision_threshold
+            )
             horiz = _compute_horizon_metrics(
                 val_df,
                 y_pred,
@@ -220,7 +220,9 @@ def train_and_evaluate_monthly_prophet_candidates(  # noqa: PLR0915
                 }
             )
 
-        except Exception as exc:  # noqa: BLE001 — intentional: isolate per-candidate failures
+        except (
+            Exception
+        ) as exc:  # noqa: BLE001 — intentional: isolate per-candidate failures
             logger.error(
                 "Candidate %s failed: %s | config=%s", candidate_id, exc, config
             )
@@ -257,9 +259,10 @@ def train_and_evaluate_monthly_prophet_candidates(  # noqa: PLR0915
     prechampion_precisions = ranked_df.loc[
         ranked_df["is_prechampion"].eq(True), "forecast_precision"
     ].dropna()
-    if not prechampion_precisions.empty and (
-        prechampion_precisions >= precision_threshold
-    ).any():
+    if (
+        not prechampion_precisions.empty
+        and (prechampion_precisions >= precision_threshold).any()
+    ):
         logger.info(
             "At least one pre-champion meets the business success threshold "
             "(≥%.0f%% precision).",
@@ -279,9 +282,7 @@ def train_and_evaluate_monthly_prophet_candidates(  # noqa: PLR0915
     )
     # Save only top-N pre-champion models to keep the artifact lightweight
     candidate_models = {
-        cid: trained_models[cid]
-        for cid in prechampion_ids
-        if cid in trained_models
+        cid: trained_models[cid] for cid in prechampion_ids if cid in trained_models
     }
     best_model = trained_models.get(prechampion_ids[0]) if prechampion_ids else None
 
@@ -297,9 +298,7 @@ def train_and_evaluate_monthly_prophet_candidates(  # noqa: PLR0915
     return ranked_df, metrics_df, prechampion_configs, candidate_models, best_model
 
 
-# ---------------------------------------------------------------------------
 # Private helpers
-# ---------------------------------------------------------------------------
 
 
 def _validate_prophet_training_inputs(
@@ -400,9 +399,7 @@ def _create_prophet_model(
         seasonality_prior_scale=float(
             candidate_config.get("seasonality_prior_scale", 10.0)
         ),
-        holidays_prior_scale=float(
-            candidate_config.get("holidays_prior_scale", 10.0)
-        ),
+        holidays_prior_scale=float(candidate_config.get("holidays_prior_scale", 10.0)),
         seasonality_mode=str(candidate_config.get("seasonality_mode", "additive")),
         yearly_seasonality=bool(candidate_config.get("yearly_seasonality", True)),
         weekly_seasonality=bool(candidate_config.get("weekly_seasonality", False)),
