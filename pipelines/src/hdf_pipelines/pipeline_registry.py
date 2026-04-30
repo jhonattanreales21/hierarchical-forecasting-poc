@@ -13,6 +13,9 @@ from hdf_pipelines.pipelines import (
     train_monthly,
     train_weekly,
 )
+from hdf_pipelines.pipelines.train_monthly.prophet.pipeline import (
+    create_pipeline as create_prophet_monthly_pipeline,
+)
 
 
 def register_pipelines() -> dict[str, Pipeline]:
@@ -32,6 +35,9 @@ def register_pipelines() -> dict[str, Pipeline]:
     recon = reconciliation.create_pipeline()
     inference = forecast_inference.create_pipeline()
 
+    # Standalone Prophet-only training pipeline for Stage 4
+    prophet_monthly = create_prophet_monthly_pipeline()
+
     training = monthly_training + weekly_training
     full_experiment = (
         ingestion + fe_monthly + fe_weekly + model_input + training + selection
@@ -47,6 +53,7 @@ def register_pipelines() -> dict[str, Pipeline]:
         "feature_engineering_weekly": fe_weekly,
         "model_input_preparation": model_input,
         "train_monthly": monthly_training,
+        "train_monthly_prophet": prophet_monthly,
         "train_weekly": weekly_training,
         "model_selection": selection,
         "reconciliation": recon,

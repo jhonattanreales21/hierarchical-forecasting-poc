@@ -8,16 +8,9 @@ from .sarimax.pipeline import create_pipeline as create_sarimax_pipeline
 
 
 def create_pipeline(**kwargs) -> Pipeline:
-    prophet_pipe = pipeline(
-        create_prophet_pipeline(),
-        namespace="train_monthly.prophet",
-        inputs={
-            "train": "monthly_prophet_train",
-            "validation": "monthly_prophet_validation",
-        },
-        parameters={"parameters": "params:train_monthly"},
-        outputs={"candidate_model": "candidate_monthly_prophet"},
-    )
+    # Prophet pipeline directly references catalog names — no namespace remapping needed
+    prophet_pipe = create_prophet_pipeline()
+
     catboost_pipe = pipeline(
         create_catboost_pipeline(),
         namespace="train_monthly.catboost",

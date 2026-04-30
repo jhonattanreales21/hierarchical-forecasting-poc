@@ -37,8 +37,8 @@ model_input_preparation:
 
     split:
       mode: "months"
-      validation_months: 6
-      test_months: 6
+      validation_months: 3
+      test_months: 4
       # Date-based split mode is also supported. Switch mode to "date" and use:
       # mode: "date"
       # train_end_date: "2024-12-01"
