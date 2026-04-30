@@ -61,13 +61,66 @@ def load_and_clean_demand(raw_demand: pd.DataFrame) -> pd.DataFrame:
         df[col] = df[col].str.strip()
 
     # Source format is "M/D/YYYY" (e.g. "3/1/2023"); let pandas infer for flexibility.
-    df["date"] = pd.to_datetime(df["date"])
+    try:
+        df["date"] = pd.to_datetime(df["date"])
+    except Exception as exc:
+        bad_vals = (
+            df["date"][pd.to_datetime(df["date"], errors="coerce").isna()]
+            .unique()[:5]
+            .tolist()
+        )
+        raise ValueError(
+            f"Failed to parse 'date' column to datetime. "
+            f"Expected format M/D/YYYY (e.g. '3/1/2023'). "
+            f"Problematic values (up to 5): {bad_vals}"
+        ) from exc
+
     # Raw "Month" is "YYYY-MM", not a bare integer — parse then extract the month number.
-    df["month"] = pd.to_datetime(df["month"], format="%Y-%m").dt.month.astype(int)
-    df["year"] = df["year"].astype(int)
-    # errors="coerce" turns unparseable values into NaN instead of crashing.
-    df["monthly_demand"] = pd.to_numeric(df["monthly_demand"], errors="coerce")
-    df["daily_demand"] = pd.to_numeric(df["daily_demand"], errors="coerce")
+    try:
+        df["month"] = pd.to_datetime(df["month"], format="%Y-%m").dt.month.astype(int)
+    except Exception as exc:
+        bad_vals = (
+            df["month"][
+                pd.to_datetime(df["month"], format="%Y-%m", errors="coerce").isna()
+            ]
+            .unique()[:5]
+            .tolist()
+        )
+        raise ValueError(
+            f"Failed to parse 'month' column. "
+            f"Expected format YYYY-MM (e.g. '2023-01'). "
+            f"Problematic values (up to 5): {bad_vals}"
+        ) from exc
+
+    # Year should be an integer (e.g. 2023).
+    try:
+        df["year"] = df["year"].astype(int)
+    except (ValueError, TypeError) as exc:
+        bad_vals = (
+            df["year"][pd.to_numeric(df["year"], errors="coerce").isna()]
+            .unique()[:5]
+            .tolist()
+        )
+        raise ValueError(
+            f"Failed to cast 'year' column to integer. "
+            f"Expected a 4-digit year (e.g. 2023). "
+            f"Problematic values (up to 5): {bad_vals}"
+        ) from exc
+
+    # errors="coerce" turns unparseable values into NaN; we then identify and log them.
+    for _col in ("monthly_demand", "daily_demand"):
+        _original = df[_col].copy()
+        df[_col] = pd.to_numeric(df[_col], errors="coerce")
+        _failed = df[_col].isna() & _original.notna()
+        if _failed.any():
+            _bad_vals = _original[_failed].unique()[:5].tolist()
+            logger.warning(
+                "Column '%s': %d value(s) could not be cast to numeric and were set to NaN. "
+                "Expected a numeric demand figure. Problematic values (up to 5): %s",
+                _col,
+                int(_failed.sum()),
+                _bad_vals,
+            )
 
     # NaNs after casting indicate corrupted source rows that would distort forecasts.
     null_cols = df.isnull().sum()
