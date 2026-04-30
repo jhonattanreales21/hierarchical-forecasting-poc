@@ -39,10 +39,20 @@ def register_pipelines() -> dict[str, Pipeline]:
     inference = forecast_inference.create_pipeline()
 
     # Standalone Prophet-only training pipeline
-    prophet_monthly = create_prophet_monthly_pipeline()
+    prophet_monthly_training = create_prophet_monthly_pipeline()
 
     # Standalone Monthly Prophet model-selection pipeline
     prophet_monthly_selection = create_prophet_monthly_selection_pipeline()
+
+    # End-to-end Monthly Prophet MVP: ingestion → features → splits → train → select → infer
+    prophet_monthly_e2e = (
+        ingestion
+        + fe_monthly
+        + model_input
+        + prophet_monthly_training
+        + prophet_monthly_selection
+        + inference
+    )
 
     training = monthly_training + weekly_training
     full_experiment = (
@@ -59,8 +69,7 @@ def register_pipelines() -> dict[str, Pipeline]:
         "feature_engineering_weekly": fe_weekly,
         "model_input_preparation": model_input,
         "train_monthly": monthly_training,
-        "train_monthly_prophet": prophet_monthly,
-        "model_selection_monthly_prophet": prophet_monthly_selection,
+        "prophet_monthly_e2e": prophet_monthly_e2e,
         "train_weekly": weekly_training,
         "model_selection": selection,
         "reconciliation": recon,

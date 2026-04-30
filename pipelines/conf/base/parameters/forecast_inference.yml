@@ -14,10 +14,11 @@ forecast_inference:
     horizons_months:
       - 3
       - 6
+      - 12
 
     output:
       include_prediction_intervals: true
-      latest_output_horizon_months: 6
+      latest_output_horizon_months: 12
       model_family: "prophet"
       model_granularity: "monthly"
 

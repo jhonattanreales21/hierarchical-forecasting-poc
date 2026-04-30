@@ -55,6 +55,12 @@ reconcile: ## reconciliation — temporal hierarchy reconciliation
 infer: ## forecast_inference — generate forecasts with champion models
 	$(KEDRO) run --pipeline forecast_inference
 
+# ── Model based shortcuts ───────────────────────────────────────────────────────
+
+full-prophet-monthly: ## end-to-end Monthly Prophet MVP: ingestion → features → splits → train → select → infer
+	$(KEDRO) run --pipeline prophet_monthly_e2e
+
+
 # ── Composed shortcuts ───────────────────────────────────────────────────────
 
 full-experiment: ## full_experiment — ingest → FE → model input → train → select
