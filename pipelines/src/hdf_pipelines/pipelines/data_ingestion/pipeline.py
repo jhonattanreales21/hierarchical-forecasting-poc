@@ -9,6 +9,7 @@ from .nodes import (
     build_exogenous_monthly,
     load_and_clean_demand,
     load_and_clean_exogenous,
+    mask_raw_demand,
 )
 
 
@@ -16,8 +17,14 @@ def create_pipeline(**kwargs) -> Pipeline:
     return pipeline(
         [
             node(
-                func=load_and_clean_demand,
+                func=mask_raw_demand,
                 inputs="raw_daily_demand",
+                outputs="raw_daily_demand_masked",
+                name="mask_raw_demand",
+            ),
+            node(
+                func=load_and_clean_demand,
+                inputs="raw_daily_demand_masked",
                 outputs="demand_cleaned",
                 name="load_and_clean_demand",
             ),

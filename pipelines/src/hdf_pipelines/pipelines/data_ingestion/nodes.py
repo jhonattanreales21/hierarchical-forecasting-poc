@@ -6,6 +6,8 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
+_DEMAND_MASK_SCALE_FACTOR = 100.0
+
 # Raw CSV header names — used for contract validation before any renaming.
 _DEMAND_RAW_COLUMNS = frozenset(
     ["SKU", "Year", "Month", "Month Name", "Date", "Monthly Demand", "Daily Demand"]
@@ -25,6 +27,57 @@ _DEMAND_RENAME = {
 _EXOGENOUS_STRIPPED_COLUMNS = frozenset(
     ["Date", "pfizer_limited", "surgifoam_limited", "rebate_target"]
 )
+
+
+def mask_raw_demand(raw_demand: pd.DataFrame) -> pd.DataFrame:
+    """Mask raw demand values before the cleaning stage.
+
+    Replaces real SKU names with deterministic placeholders in order of first
+    appearance (``sku1``, ``sku2``, ...), and scales both raw demand measures
+    by dividing them by ``100``. Non-numeric demand values are left as-is so
+    the downstream cleaning node remains the single place responsible for
+    numeric validation and warning emission.
+
+    Args:
+        raw_demand: Raw demand DataFrame loaded by the Kedro catalog.
+
+    Returns:
+        Copy of the raw demand DataFrame with masked SKU labels and scaled
+        demand values.
+
+    Raises:
+        ValueError: If any required raw column is absent from ``raw_demand``.
+    """
+    missing = _DEMAND_RAW_COLUMNS - set(raw_demand.columns)
+    if missing:
+        raise ValueError(
+            f"Missing required columns in raw demand data: {sorted(missing)}"
+        )
+
+    df = raw_demand.copy()
+
+    normalized_sku = df["SKU"].astype("string").str.strip()
+    sku_lookup = {
+        sku_name: f"sku{idx}"
+        for idx, sku_name in enumerate(
+            normalized_sku.dropna().drop_duplicates().tolist(), start=1
+        )
+    }
+    df["SKU"] = normalized_sku.map(sku_lookup)
+
+    for col in ("Monthly Demand", "Daily Demand"):
+        numeric_values = pd.to_numeric(df[col], errors="coerce")
+        numeric_mask = numeric_values.notna()
+        df.loc[numeric_mask, col] = (
+            numeric_values.loc[numeric_mask] / _DEMAND_MASK_SCALE_FACTOR
+        )
+
+    logger.info(
+        "Masked raw demand data: %d SKU(s) anonymized and demand columns scaled by %s.",
+        len(sku_lookup),
+        int(_DEMAND_MASK_SCALE_FACTOR),
+    )
+    return df
 
 
 def load_and_clean_demand(raw_demand: pd.DataFrame) -> pd.DataFrame:
