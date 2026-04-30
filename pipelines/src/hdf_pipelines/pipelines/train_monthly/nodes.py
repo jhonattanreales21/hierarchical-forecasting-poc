@@ -3,7 +3,6 @@
 import logging
 
 import numpy as np
-
 from shared.metrics import mape
 
 logger = logging.getLogger(__name__)

@@ -131,6 +131,39 @@ uv run --package hdf_app streamlit run app/app.py
 
 ## Commands
 
+### Quick reference — Make
+
+A `Makefile` at the repo root wraps the most common Kedro commands so you don't need to `cd pipelines` or type `uv run kedro` manually. Run `make help` to see all targets with their descriptions.
+
+```bash
+make help              # Print all available targets
+
+# ── Pipeline stages ──────────────────────────────────────
+make run               # Full default pipeline (all stages)
+make ingest            # data_ingestion — load raw demand + exogenous data
+make fe-monthly        # feature_engineering_monthly — monthly feature set
+make fe-weekly         # feature_engineering_weekly — weekly feature set
+make model-input       # model_input_preparation — final model input tables
+make train-monthly     # train_monthly — train monthly forecasting models
+make train-weekly      # train_weekly — train weekly forecasting models
+make train             # training — train both monthly and weekly models
+make model-selection   # model_selection — select champion models
+make reconcile         # reconciliation — temporal hierarchy reconciliation
+make infer             # forecast_inference — generate forecasts
+
+# ── Composed shortcuts ───────────────────────────────────
+make full-prophet-monthly  # end-to-end Monthly Prophet MVP (ingest → infer)
+make full-experiment       # ingest → FE → model input → train → select
+make inference             # forecast + reconciliation
+
+# ── Kedro utilities ──────────────────────────────────────
+make viz                   # Launch Kedro-Viz in the browser
+make catalog               # List all datasets in the catalog
+make pipeline-list         # List all registered pipelines
+```
+
+---
+
 ### Kedro (pipelines/)
 
 ```bash

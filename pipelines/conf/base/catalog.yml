@@ -75,6 +75,10 @@ monthly_prophet_future_6m:
   type: pandas.ParquetDataset
   filepath: data/05_model_input/monthly_prophet_future_6m.parquet
 
+monthly_prophet_future_12m:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/monthly_prophet_future_12m.parquet
+
 monthly_prophet_split_metadata:
   type: json.JSONDataset
   filepath: data/05_model_input/monthly_prophet_split_metadata.json
@@ -136,6 +140,27 @@ backtest_folds_weekly:
   type: json.JSONDataset
   filepath: data/05_model_input/backtest_folds_weekly.json
 
+# 06_models — Monthly Prophet training and tuning artifacts
+monthly_prophet_tuning_results:
+  type: pandas.ParquetDataset
+  filepath: data/06_models/tuning/monthly_prophet_tuning_results.parquet
+
+monthly_prophet_validation_metrics:
+  type: pandas.ParquetDataset
+  filepath: data/06_models/tuning/monthly_prophet_validation_metrics.parquet
+
+monthly_prophet_prechampion_configs:
+  type: json.JSONDataset
+  filepath: data/06_models/tuning/monthly_prophet_prechampion_configs.json
+
+monthly_prophet_candidate_models:
+  type: pickle.PickleDataset
+  filepath: data/06_models/candidates/monthly_prophet_candidate_models.pkl
+
+monthly_prophet_training_metadata:
+  type: json.JSONDataset
+  filepath: data/06_models/tuning/monthly_prophet_training_metadata.json
+
 # 06_models — candidate models per granularity × family
 candidate_monthly_prophet:
   type: pickle.PickleDataset
@@ -177,6 +202,27 @@ tuning_results_weekly:
   type: pandas.ParquetDataset
   filepath: data/06_models/tuning/weekly_tuning_results.parquet
 
+# 06_models — Monthly Prophet model-selection artifacts
+monthly_prophet_test_metrics:
+  type: pandas.ParquetDataset
+  filepath: data/06_models/selection/monthly_prophet_test_metrics.parquet
+
+monthly_prophet_model_selection_summary:
+  type: pandas.ParquetDataset
+  filepath: data/06_models/selection/monthly_prophet_model_selection_summary.parquet
+
+monthly_prophet_champion_test_forecast:
+  type: pandas.ParquetDataset
+  filepath: data/06_models/selection/monthly_prophet_champion_test_forecast.parquet
+
+monthly_prophet_champion_model:
+  type: pickle.PickleDataset
+  filepath: data/06_models/champions/monthly_prophet_champion.pkl
+
+monthly_prophet_champion_metadata:
+  type: json.JSONDataset
+  filepath: data/06_models/champions/monthly_prophet_champion_metadata.json
+
 # 07_model_output
 forecast_monthly_raw:
   type: pandas.ParquetDataset
@@ -197,6 +243,27 @@ forecast_weekly_reconciled:
 forecast_daily_output:
   type: pandas.ParquetDataset
   filepath: data/07_model_output/daily_forecast.parquet
+
+# 07_model_output — Monthly Prophet forecast outputs
+monthly_prophet_forecast_3m:
+  type: pandas.ParquetDataset
+  filepath: data/07_model_output/monthly_prophet_forecast_3m.parquet
+
+monthly_prophet_forecast_6m:
+  type: pandas.ParquetDataset
+  filepath: data/07_model_output/monthly_prophet_forecast_6m.parquet
+
+monthly_prophet_forecast_12m:
+  type: pandas.ParquetDataset
+  filepath: data/07_model_output/monthly_prophet_forecast_12m.parquet
+
+monthly_prophet_forecast_latest:
+  type: pandas.ParquetDataset
+  filepath: data/07_model_output/monthly_prophet_forecast_latest.parquet
+
+monthly_prophet_inference_metadata:
+  type: json.JSONDataset
+  filepath: data/07_model_output/monthly_prophet_inference_metadata.json
 
 # 08_reporting
 model_selection_report:

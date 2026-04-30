@@ -5,3 +5,30 @@ model_selection:
     - "MASE"
   selection_strategy: "best_by_horizon"
   tie_breaker: "RMSE"
+
+  monthly_prophet:
+    date_column: "ds"
+    target_column: "y"
+    sku_column: "sku"
+
+    selection:
+      primary_metric: "mape"
+      tie_breakers:
+        - "wmape"
+        - "horizon_3_mape"
+        - "horizon_2_mape"
+        - "validation_rank"
+      business_success_precision_threshold: 0.85
+
+    metrics:
+      epsilon: 1.0
+      horizon_metrics:
+        enabled: true
+        horizons: [2, 3]
+
+    regressors:
+      mode: "additive"
+
+    refit_champion:
+      enabled: true
+      use_full_train: true

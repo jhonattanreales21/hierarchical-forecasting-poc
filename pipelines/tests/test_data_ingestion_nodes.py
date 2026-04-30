@@ -7,7 +7,14 @@ from hdf_pipelines.pipelines.data_ingestion.nodes import (
     build_demand_weekly,
     load_and_clean_demand,
     load_and_clean_exogenous,
+    mask_raw_demand,
 )
+from hdf_pipelines.pipelines.data_ingestion.pipeline import create_pipeline
+
+EXPECTED_EXOGENOUS_ROWS = 2
+EXPECTED_WEEKLY_ROWS = 2
+EXPECTED_FIRST_WEEK_TOTAL = 15.0
+EXPECTED_SECOND_WEEK_TOTAL = 8.0
 
 
 def _raw_demand_df() -> pd.DataFrame:
@@ -33,6 +40,27 @@ def test_load_and_clean_demand_raises_on_missing_columns():
         load_and_clean_demand(df)
 
 
+def test_mask_raw_demand_anonymizes_skus_and_scales_demand_columns():
+    """Raw demand is anonymized before cleaning and both demand measures are scaled."""
+    df = pd.DataFrame(
+        {
+            "SKU": [" Real SKU A ", "Real SKU A", "Real SKU B"],
+            "Year": [2024, 2024, 2024],
+            "Month": ["2024-01", "2024-01", "2024-02"],
+            "Month Name": ["January", "January", "February"],
+            "Date": ["2024-01-08", "2024-01-09", "2024-02-05"],
+            "Monthly Demand": [1000.0, 1000.0, 2500.0],
+            "Daily Demand": [50.0, 75.0, 25.0],
+        }
+    )
+
+    result = mask_raw_demand(df)
+
+    assert result["SKU"].tolist() == ["sku1", "sku1", "sku2"]
+    assert result["Monthly Demand"].tolist() == [10.0, 10.0, 25.0]
+    assert result["Daily Demand"].tolist() == [0.5, 0.75, 0.25]
+
+
 def test_load_and_clean_exogenous_strips_trailing_whitespace_from_column_names():
     """Column names with trailing spaces are normalised before the contract check.
 
@@ -52,7 +80,7 @@ def test_load_and_clean_exogenous_strips_trailing_whitespace_from_column_names()
 
     assert "surgifoam_limited" in result.columns
     assert "month_start_date" in result.columns
-    assert len(result) == 2
+    assert len(result) == EXPECTED_EXOGENOUS_ROWS
 
 
 def test_build_demand_weekly_snaps_dates_to_monday_and_sums_daily_demand():
@@ -73,8 +101,18 @@ def test_build_demand_weekly_snaps_dates_to_monday_and_sums_daily_demand():
     result = build_demand_weekly(demand_cleaned)
 
     assert list(result.columns) == ["week_start_date", "sku", "weekly_demand"]
-    assert len(result) == 2  # two distinct ISO weeks
+    assert len(result) == EXPECTED_WEEKLY_ROWS  # two distinct ISO weeks
     week1 = result[result["week_start_date"] == pd.Timestamp("2024-01-08")]
-    assert week1["weekly_demand"].iloc[0] == 15.0  # 10 + 5 from the same week
+    assert week1["weekly_demand"].iloc[0] == EXPECTED_FIRST_WEEK_TOTAL  # 10 + 5
     week2 = result[result["week_start_date"] == pd.Timestamp("2024-01-15")]
-    assert week2["weekly_demand"].iloc[0] == 8.0
+    assert week2["weekly_demand"].iloc[0] == EXPECTED_SECOND_WEEK_TOTAL
+
+
+def test_data_ingestion_pipeline_starts_with_masking_node():
+    """The ingestion pipeline should mask raw demand before cleaning it."""
+    ingestion = create_pipeline()
+    node_names = [node.name for node in ingestion.nodes]
+
+    assert "mask_raw_demand" in node_names
+    assert "load_and_clean_demand" in node_names
+    assert node_names.index("mask_raw_demand") < node_names.index("load_and_clean_demand")
