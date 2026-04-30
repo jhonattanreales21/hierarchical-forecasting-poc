@@ -198,6 +198,27 @@ tuning_results_weekly:
   type: pandas.ParquetDataset
   filepath: data/06_models/tuning/weekly_tuning_results.parquet
 
+# 06_models — Monthly Prophet model-selection artifacts
+monthly_prophet_test_metrics:
+  type: pandas.ParquetDataset
+  filepath: data/06_models/selection/monthly_prophet_test_metrics.parquet
+
+monthly_prophet_model_selection_summary:
+  type: pandas.ParquetDataset
+  filepath: data/06_models/selection/monthly_prophet_model_selection_summary.parquet
+
+monthly_prophet_champion_test_forecast:
+  type: pandas.ParquetDataset
+  filepath: data/06_models/selection/monthly_prophet_champion_test_forecast.parquet
+
+monthly_prophet_champion_model:
+  type: pickle.PickleDataset
+  filepath: data/06_models/champions/monthly_prophet_champion.pkl
+
+monthly_prophet_champion_metadata:
+  type: json.JSONDataset
+  filepath: data/06_models/champions/monthly_prophet_champion_metadata.json
+
 # 07_model_output
 forecast_monthly_raw:
   type: pandas.ParquetDataset
