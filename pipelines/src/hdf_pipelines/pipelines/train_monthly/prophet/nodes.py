@@ -1,19 +1,27 @@
 """Monthly Prophet training and tuning nodes.
 
-Implements grid-search hyperparameter tuning for Prophet on monthly demand data.
-Trains all candidate configurations on the training split, evaluates them on the
-validation split, ranks by the configured selection metric, and persists the top-N
-pre-champion configurations and their fitted models for the model-selection stage.
+Implements Optuna Bayesian hyperparameter tuning for Prophet on monthly demand
+data. Trials are trained on the training split, evaluated on the validation
+split, ranked by the configured objective metric, and the top-N pre-champions
+are persisted for the model-selection stage.
 """
 
-import itertools
 import logging
 from datetime import UTC, datetime
 from typing import Any
 
 import numpy as np
+import optuna
 import pandas as pd
 from prophet import Prophet
+
+from hdf_pipelines.utils import (
+    create_optuna_study,
+    serialize_optuna_trial,
+    suggest_trial_params,
+    validate_objective_metric_direction,
+    validate_optuna_search_space,
+)
 
 # Suppress verbose Stan/cmdstanpy progress output during Prophet fitting
 logging.getLogger("cmdstanpy").setLevel(logging.WARNING)
@@ -30,13 +38,13 @@ def train_and_evaluate_monthly_prophet_candidates(  # noqa: PLR0915
     monthly_prophet_validation: pd.DataFrame,
     monthly_prophet_split_metadata: dict,
     params: dict,
-) -> tuple[pd.DataFrame, pd.DataFrame, dict, dict, Any]:
-    """Train and evaluate all Prophet candidate configurations on the validation set.
+) -> tuple[pd.DataFrame, pd.DataFrame, dict, dict, dict, Any]:
+    """Train and evaluate Prophet Optuna trials on the validation set.
 
-    Iterates over the full Cartesian product of the configured hyperparameter grid,
-    fits each candidate on the training split, forecasts the validation period, and
-    computes validation metrics. The top-N pre-champion candidates (ranked by the
-    configured selection metric) are persisted for the downstream model-selection stage.
+    Runs one ephemeral Optuna study, fits each sampled trial on the training
+    split, forecasts the validation period, and computes validation metrics.
+    The top-N pre-champion trials (ranked by the configured objective metric)
+    are persisted for the downstream model-selection stage.
 
     Args:
         monthly_prophet_train: Prophet-ready training data with columns ds, y, sku,
@@ -48,20 +56,21 @@ def train_and_evaluate_monthly_prophet_candidates(  # noqa: PLR0915
         params: Contents of ``train_monthly.prophet`` from the parameter file.
 
     Returns:
-        Five-element tuple:
+        Six-element tuple:
 
         1. ``tuning_results`` — DataFrame, one row per candidate (ranked).
         2. ``validation_metrics`` — DataFrame, detailed per-candidate metrics.
         3. ``prechampion_configs`` — Dict with top-N pre-champion configurations.
         4. ``candidate_models`` — Dict mapping candidate_id → fitted Prophet model
            (top-N only).
-        5. ``best_prophet_model`` — Rank-1 Prophet model for downstream compatibility
+        5. ``training_metadata`` — Dict summarizing the Optuna study and trials.
+        6. ``best_prophet_model`` — Rank-1 Prophet model for downstream compatibility
            with the model-selection stage.
 
     Raises:
         ValueError: When inputs are invalid, required columns are missing, or the
-            candidate grid is empty.
-        RuntimeError: When every candidate fails to train.
+            Optuna configuration is invalid.
+        RuntimeError: When every trial fails to train.
     """
     # ── extract configuration ─────────────────────────────────────────────────────
     date_col: str = params.get("date_column", "ds")
@@ -70,9 +79,17 @@ def train_and_evaluate_monthly_prophet_candidates(  # noqa: PLR0915
     regressor_mode: str = params.get("regressors", {}).get("mode", "additive")
 
     tuning_cfg: dict = params.get("tuning", {})
-    selection_metric: str = tuning_cfg.get("selection_metric", "mape")
+    optimizer: str = str(tuning_cfg.get("optimizer", "optuna")).lower()
+    objective_cfg: dict = tuning_cfg.get("objective", {})
+    selection_metric: str = str(objective_cfg.get("metric", "mape"))
+    objective_direction: str = str(objective_cfg.get("direction", "minimize")).lower()
+    max_trials: int = int(tuning_cfg.get("max_trials", 30))
     top_n: int = int(tuning_cfg.get("top_n_prechampions", 3))
-    candidate_grid: dict = tuning_cfg.get("candidate_grid", {})
+    sampler_cfg: dict = dict(tuning_cfg.get("sampler", {}))
+    search_space = validate_optuna_search_space(
+        dict(tuning_cfg.get("search_space", {}))
+    )
+    fixed_params: dict = dict(tuning_cfg.get("fixed_params", {}))
 
     metrics_cfg: dict = params.get("metrics", {})
     epsilon: float = float(metrics_cfg.get("epsilon", 1.0))
@@ -85,6 +102,21 @@ def train_and_evaluate_monthly_prophet_candidates(  # noqa: PLR0915
         if horizon_metrics_cfg.get("enabled", True)
         else []
     )
+    supported_metrics = _build_supported_metrics(horizons)
+    selection_metric, objective_direction = validate_objective_metric_direction(
+        selection_metric,
+        objective_direction,
+        supported_metrics,
+    )
+
+    if optimizer != "optuna":
+        raise ValueError(
+            f"Unsupported monthly Prophet optimizer {optimizer!r}. Only 'optuna' is supported."
+        )
+    if max_trials <= 0:
+        raise ValueError(
+            "train_monthly.prophet.tuning.max_trials must be a positive integer."
+        )
 
     # ── validate inputs ───────────────────────────────────────────────────────────
     _validate_prophet_training_inputs(
@@ -128,14 +160,12 @@ def train_and_evaluate_monthly_prophet_candidates(  # noqa: PLR0915
     )
     logger.info("Active regressors (%d): %s", len(active_regressors), active_regressors)
 
-    # ── build candidate grid ──────────────────────────────────────────────────────
-    candidate_configs = _build_candidate_grid(candidate_grid)
-    if not candidate_configs:
-        raise ValueError(
-            "Candidate grid is empty — check "
-            "train_monthly.prophet.tuning.candidate_grid in the parameter file."
-        )
-    logger.info("Candidate configurations to train: %d", len(candidate_configs))
+    logger.info(
+        "Optuna study configuration — metric=%s  direction=%s  max_trials=%d",
+        selection_metric,
+        objective_direction,
+        max_trials,
+    )
 
     # Prophet requires columns named exactly 'ds' and 'y'
     train_fit_df = train_df[[date_col, target_col] + active_regressors].rename(
@@ -148,17 +178,23 @@ def train_and_evaluate_monthly_prophet_candidates(  # noqa: PLR0915
     y_true = val_df[target_col].values.astype(float)
 
     # ── train and evaluate each candidate ────────────────────────────────────────
-    tuning_rows: list[dict] = []
     metrics_rows: list[dict] = []
     trained_models: dict[str, Prophet] = {}
+    study = create_optuna_study(objective_direction, sampler_cfg)
 
-    for idx, config in enumerate(candidate_configs):
-        candidate_id = f"prophet_candidate_{idx + 1:03d}"
+    def objective(trial: optuna.Trial) -> float:
+        candidate_id = f"prophet_candidate_{trial.number + 1:03d}"
         trained_at = datetime.now(tz=UTC).isoformat()
+        config = suggest_trial_params(trial, search_space, fixed_params)
+
+        trial.set_user_attr("candidate_id", candidate_id)
+        trial.set_user_attr("trained_at", trained_at)
+        trial.set_user_attr("config", dict(config))
+
         logger.info(
             "[%d/%d] Training %s …",
-            idx + 1,
-            len(candidate_configs),
+            trial.number + 1,
+            max_trials,
             candidate_id,
         )
 
@@ -183,6 +219,8 @@ def train_and_evaluate_monthly_prophet_candidates(  # noqa: PLR0915
                 epsilon,
                 precision_threshold,
             )
+            all_metrics = {**base, **horiz}
+            selection_value = all_metrics[selection_metric]
 
             logger.info(
                 "%s → mape=%.4f  rmse=%.2f  wmape=%.4f  precision=%.4f",
@@ -194,61 +232,50 @@ def train_and_evaluate_monthly_prophet_candidates(  # noqa: PLR0915
             )
 
             trained_models[candidate_id] = model
-            tuning_rows.append(
-                {
-                    "candidate_id": candidate_id,
-                    "status": "success",
-                    "error_message": None,
-                    "selection_metric": selection_metric,
-                    "selection_metric_value": base[selection_metric],
-                    **base,
-                    # Only include horizon mape columns in tuning summary
-                    **{k: v for k, v in horiz.items() if k.endswith("_mape")},
-                    **config,
-                    "active_regressors": ",".join(active_regressors),
-                    "trained_at": trained_at,
-                }
-            )
+            trial.set_user_attr("status", "success")
+            trial.set_user_attr("metrics", all_metrics)
+
             metrics_rows.append(
                 {
                     "candidate_id": candidate_id,
-                    **base,
-                    **horiz,
+                    "trial_number": trial.number,
+                    **all_metrics,
                     "validation_start_date": str(val_df[date_col].min().date()),
                     "validation_end_date": str(val_df[date_col].max().date()),
                     "validation_rows": len(val_df),
                 }
             )
+            return float(selection_value)
 
-        except (
-            Exception
-        ) as exc:  # noqa: BLE001 — intentional: isolate per-candidate failures
+        except Exception as exc:  # noqa: BLE001 — intentional per-trial isolation
+            trial.set_user_attr("status", "failed")
+            trial.set_user_attr("error_message", str(exc))
             logger.error(
                 "Candidate %s failed: %s | config=%s", candidate_id, exc, config
             )
-            tuning_rows.append(
-                {
-                    "candidate_id": candidate_id,
-                    "status": "failed",
-                    "error_message": str(exc),
-                    "selection_metric": selection_metric,
-                    "selection_metric_value": None,
-                    **config,
-                    "active_regressors": ",".join(active_regressors),
-                    "trained_at": trained_at,
-                }
-            )
+            raise
+
+    study.optimize(objective, n_trials=max_trials, catch=(Exception,))
+
+    tuning_rows = _build_tuning_rows(
+        study,
+        selection_metric,
+        objective_direction,
+        optimizer,
+        fixed_params,
+        active_regressors,
+    )
 
     if not any(r["status"] == "success" for r in tuning_rows):
         raise RuntimeError(
-            "All Prophet candidates failed during training. Check logs for details."
+            "All Prophet Optuna trials failed during training. Check logs for details."
         )
 
     # ── rank candidates and select pre-champions ──────────────────────────────────
     tuning_df = pd.DataFrame(tuning_rows)
     metrics_df = pd.DataFrame(metrics_rows) if metrics_rows else pd.DataFrame()
 
-    ranked_df = _rank_candidates(tuning_df, selection_metric, top_n)
+    ranked_df = _rank_candidates(tuning_df, objective_direction, top_n)
 
     prechampion_ids: list[str] = ranked_df.loc[
         ranked_df["is_prechampion"].eq(True), "candidate_id"
@@ -280,6 +307,17 @@ def train_and_evaluate_monthly_prophet_candidates(  # noqa: PLR0915
     prechampion_configs = _build_prechampion_configs(
         ranked_df, metrics_df, active_regressors, selection_metric, top_n
     )
+    training_metadata = _build_training_metadata(
+        study,
+        ranked_df,
+        selection_metric,
+        objective_direction,
+        optimizer,
+        sampler_cfg,
+        max_trials,
+        top_n,
+        fixed_params,
+    )
     # Save only top-N pre-champion models to keep the artifact lightweight
     candidate_models = {
         cid: trained_models[cid] for cid in prechampion_ids if cid in trained_models
@@ -288,14 +326,22 @@ def train_and_evaluate_monthly_prophet_candidates(  # noqa: PLR0915
 
     logger.info(
         "Outputs — tuning_results=%s  validation_metrics=%s  "
-        "prechampions=%d  saved_models=%d",
+        "prechampions=%d  saved_models=%d  trials=%d",
         ranked_df.shape,
         metrics_df.shape,
         len(prechampion_configs.get("prechampions", [])),
         len(candidate_models),
+        len(study.trials),
     )
 
-    return ranked_df, metrics_df, prechampion_configs, candidate_models, best_model
+    return (
+        ranked_df,
+        metrics_df,
+        prechampion_configs,
+        candidate_models,
+        training_metadata,
+        best_model,
+    )
 
 
 # Private helpers
@@ -355,25 +401,6 @@ def _validate_prophet_training_inputs(
             raise ValueError(
                 f"Active regressor {col!r} has {null_val} null value(s) in validation data."
             )
-
-
-def _build_candidate_grid(grid_params: dict) -> list[dict]:
-    """Expand a hyperparameter grid dict into a list of candidate configurations.
-
-    Args:
-        grid_params: Mapping from hyperparameter name to list of values.
-            Key order is preserved (follows the YAML declaration order).
-
-    Returns:
-        List of dicts where each entry is one combination of hyperparameter values.
-        The order is deterministic (itertools.product over the declared key order).
-    """
-    if not grid_params:
-        return []
-    keys = list(grid_params.keys())
-    # Convert OmegaConf list containers to plain Python lists
-    value_lists = [list(grid_params[k]) for k in keys]
-    return [dict(zip(keys, combo)) for combo in itertools.product(*value_lists)]
 
 
 def _create_prophet_model(
@@ -533,18 +560,17 @@ def _compute_horizon_metrics(  # noqa: PLR0913
 
 def _rank_candidates(
     tuning_df: pd.DataFrame,
-    selection_metric: str,
+    objective_direction: str,
     top_n: int,
 ) -> pd.DataFrame:
     """Rank successful candidates by selection metric and mark top-N as pre-champions.
 
-    Error metrics (mae, rmse, mape, wmape) are ranked ascending (lower is better).
-    Precision-style metrics (forecast_precision) are ranked descending (higher is better).
+    Ranking direction follows the validated Optuna objective direction.
     Failed candidates are appended last with rank=None and is_prechampion=False.
 
     Args:
         tuning_df: DataFrame with one row per candidate including a 'status' column.
-        selection_metric: Column name to rank by (e.g. 'mape').
+        objective_direction: Optuna study direction ('minimize' or 'maximize').
         top_n: Number of candidates to flag as pre-champions.
 
     Returns:
@@ -554,7 +580,7 @@ def _rank_candidates(
     success_df = tuning_df[success_mask].copy()
     failed_df = tuning_df[~success_mask].copy()
 
-    ascending = selection_metric not in {"forecast_precision"}
+    ascending = objective_direction == "minimize"
     success_df = success_df.sort_values(
         "selection_metric_value", ascending=ascending, na_position="last"
     ).reset_index(drop=True)
@@ -639,6 +665,120 @@ def _build_prechampion_configs(
         "selection_metric": selection_metric,
         "top_n_prechampions": top_n,
         "prechampions": prechampions,
+    }
+
+
+def _build_supported_metrics(horizons: list[int]) -> set[str]:
+    """List all metrics that can be optimized by the monthly Prophet tuner."""
+    metrics = {"mae", "rmse", "mape", "wmape", "forecast_precision"}
+    for horizon in horizons:
+        metrics.update(
+            {
+                f"horizon_{horizon}_mae",
+                f"horizon_{horizon}_mape",
+                f"horizon_{horizon}_wmape",
+                f"horizon_{horizon}_forecast_precision",
+            }
+        )
+    return metrics
+
+
+def _build_tuning_rows(  # noqa: PLR0913
+    study: optuna.study.Study,
+    selection_metric: str,
+    objective_direction: str,
+    optimizer: str,
+    fixed_params: dict[str, Any],
+    active_regressors: list[str],
+) -> list[dict]:
+    """Build ranked tuning rows from Optuna trial history."""
+    rows: list[dict] = []
+    for trial in study.trials:
+        candidate_id = str(
+            trial.user_attrs.get(
+                "candidate_id", f"prophet_candidate_{trial.number + 1:03d}"
+            )
+        )
+        config = dict(trial.user_attrs.get("config", {}))
+        if not config:
+            config = dict(trial.params)
+            config.update(fixed_params)
+        metrics = dict(trial.user_attrs.get("metrics", {}))
+        rows.append(
+            {
+                "candidate_id": candidate_id,
+                "trial_number": int(trial.number),
+                "status": "success"
+                if trial.state == optuna.trial.TrialState.COMPLETE
+                else "failed",
+                "error_message": trial.user_attrs.get("error_message"),
+                "optimizer": optimizer,
+                "objective_direction": objective_direction,
+                "selection_metric": selection_metric,
+                "selection_metric_value": _safe_float(metrics.get(selection_metric)),
+                **metrics,
+                **config,
+                "active_regressors": ",".join(active_regressors),
+                "trained_at": trial.user_attrs.get("trained_at"),
+            }
+        )
+    return rows
+
+
+def _build_training_metadata(  # noqa: PLR0913
+    study: optuna.study.Study,
+    ranked_df: pd.DataFrame,
+    selection_metric: str,
+    objective_direction: str,
+    optimizer: str,
+    sampler_cfg: dict[str, Any],
+    max_trials: int,
+    top_n: int,
+    fixed_params: dict[str, Any],
+) -> dict:
+    """Summarize the Optuna study into a Kedro JSON artifact."""
+    completed_trials = [
+        trial
+        for trial in study.trials
+        if trial.state == optuna.trial.TrialState.COMPLETE
+    ]
+    failed_trials = [
+        trial for trial in study.trials if trial.state == optuna.trial.TrialState.FAIL
+    ]
+    best_candidate_id = None
+    best_trial_number = None
+    best_value = None
+    if not ranked_df.empty:
+        best_row = ranked_df[ranked_df["rank"] == 1]
+        if not best_row.empty:
+            best_candidate_id = str(best_row.iloc[0]["candidate_id"])
+            best_trial_number = _safe_int(best_row.iloc[0].get("trial_number"))
+            best_value = _safe_float(best_row.iloc[0].get("selection_metric_value"))
+
+    return {
+        "model_family": "prophet",
+        "granularity": "monthly",
+        "optimizer": optimizer,
+        "objective": {
+            "metric": selection_metric,
+            "direction": objective_direction,
+        },
+        "sampler": {
+            "name": str(sampler_cfg.get("name", "tpe")).lower(),
+            "seed": _safe_int(sampler_cfg.get("seed")),
+        },
+        "max_trials": max_trials,
+        "top_n_prechampions": top_n,
+        "completed_trials": len(completed_trials),
+        "failed_trials": len(failed_trials),
+        "best_trial_number": best_trial_number,
+        "best_candidate_id": best_candidate_id,
+        "best_value": best_value,
+        "fixed_params": dict(fixed_params),
+        "trials": [
+            serialize_optuna_trial(trial, fixed_params=fixed_params)
+            for trial in study.trials
+        ],
     }
 
 

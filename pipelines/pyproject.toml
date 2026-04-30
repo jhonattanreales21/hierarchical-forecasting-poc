@@ -25,6 +25,7 @@ dependencies = [
     "holidays>=0.46",
     "seaborn~=0.12.1",
     "shared",
+    "optuna>=4.8.0",
 ]
 
 [project.scripts]
