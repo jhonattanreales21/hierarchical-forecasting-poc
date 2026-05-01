@@ -47,18 +47,18 @@ After training, forecasts at all granularities are **reconciled** using MinT (`m
 
 | Area | Tool |
 |------|------|
+| Language | Python 3.12 |
 | Pipeline orchestration | [Kedro](https://kedro.org/) ~1.3 |
 | Package & env management | [uv](https://docs.astral.sh/uv/) (workspace mono-repo) |
-| Experiment tracking | [MLflow](https://mlflow.org/) *(planned)* |
 | Modeling | Statsmodels (SARIMAX), Prophet, CatBoost |
 | Data contracts | [Pydantic](https://docs.pydantic.dev/) v2 |
 | Forecast app | [Streamlit](https://streamlit.io/) |
 | Serving layer | [FastAPI](https://fastapi.tiangolo.com/) + Uvicorn |
-| Containerization | Docker + Docker Compose *(planned)* |
 | CI | GitHub Actions |
 | Linting & formatting | [Ruff](https://docs.astral.sh/ruff/) |
 | Testing | pytest |
-| Language | Python 3.12 |
+| Experiment tracking | [MLflow](https://mlflow.org/) *(planned)* |
+| Containerization | Docker + Docker Compose *(planned)* |
 | Business assistant | [LangChain](https://python.langchain.com/) + [Chroma](https://www.trychroma.com/) *(planned)* |
 
 ---
