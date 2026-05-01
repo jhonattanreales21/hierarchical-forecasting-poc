@@ -182,7 +182,9 @@ def test_future_regressors_exclude_target_and_cover_configured_horizons():
     _n_exogenous = 17
     exogenous_df = pd.DataFrame(
         {
-            "month_start_date": pd.date_range("2024-01-01", periods=_n_exogenous, freq="MS"),
+            "month_start_date": pd.date_range(
+                "2024-01-01", periods=_n_exogenous, freq="MS"
+            ),
             "pfizer_limited": ([0.0, 1.0, 0.0] * 6)[:_n_exogenous],
             "pfizer_limited_lag_1": ([0.0, 0.0, 1.0] * 6)[:_n_exogenous],
         }
@@ -199,7 +201,13 @@ def test_future_regressors_exclude_target_and_cover_configured_horizons():
         _calendar_parameters(),
     )
 
-    expected_columns = ["ds", "sku", "business_days", "pfizer_limited", "pfizer_limited_lag_1"]
+    expected_columns = [
+        "ds",
+        "sku",
+        "business_days",
+        "pfizer_limited",
+        "pfizer_limited_lag_1",
+    ]
     assert list(future_3m.columns) == expected_columns
     assert list(future_6m.columns) == expected_columns
     assert list(future_12m.columns) == expected_columns
@@ -208,9 +216,11 @@ def test_future_regressors_exclude_target_and_cover_configured_horizons():
     assert "y" not in future_12m.columns
     # last historical month = 2024-05-01 → future starts 2024-06-01
     assert future_3m["ds"].min() == pd.Timestamp("2024-06-01")
-    assert future_3m["ds"].max() == pd.Timestamp("2024-08-01")   # 3 months: Jun–Aug 2024
-    assert future_6m["ds"].max() == pd.Timestamp("2024-11-01")   # 6 months: Jun–Nov 2024
-    assert future_12m["ds"].max() == pd.Timestamp("2025-05-01")  # 12 months: Jun 2024–May 2025
+    assert future_3m["ds"].max() == pd.Timestamp("2024-08-01")  # 3 months: Jun–Aug 2024
+    assert future_6m["ds"].max() == pd.Timestamp("2024-11-01")  # 6 months: Jun–Nov 2024
+    assert future_12m["ds"].max() == pd.Timestamp(
+        "2025-05-01"
+    )  # 12 months: Jun 2024–May 2025
     assert len(future_3m) == _HORIZON_3M
     assert len(future_6m) == _HORIZON_6M
     assert len(future_12m) == _HORIZON_12M

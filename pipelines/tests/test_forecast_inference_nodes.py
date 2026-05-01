@@ -96,9 +96,19 @@ class TestGenerateMonthlyProphetForecasts:
             )
         )
 
-        required_cols = {"ds", "sku", "horizon_month", "yhat", "yhat_lower", "yhat_upper",
-                         "model_family", "model_granularity", "champion_id",
-                         "forecast_created_at", "forecast_horizon_months"}
+        required_cols = {
+            "ds",
+            "sku",
+            "horizon_month",
+            "yhat",
+            "yhat_lower",
+            "yhat_upper",
+            "model_family",
+            "model_granularity",
+            "champion_id",
+            "forecast_created_at",
+            "forecast_horizon_months",
+        }
         for df, label in [
             (forecast_3m, "3m"),
             (forecast_6m, "6m"),
@@ -113,13 +123,15 @@ class TestGenerateMonthlyProphetForecasts:
         meta = _make_champion_metadata()
         model = _make_mock_prophet(meta["active_regressors"])
 
-        forecast_3m, forecast_6m, forecast_12m, _, _ = generate_monthly_prophet_forecasts(
-            model,
-            meta,
-            _make_future_df(3),
-            _make_future_df(6),
-            _make_future_df(12),
-            _make_params(),
+        forecast_3m, forecast_6m, forecast_12m, _, _ = (
+            generate_monthly_prophet_forecasts(
+                model,
+                meta,
+                _make_future_df(3),
+                _make_future_df(6),
+                _make_future_df(12),
+                _make_params(),
+            )
         )
 
         assert len(forecast_3m) == _HORIZON_3M
@@ -141,7 +153,9 @@ class TestGenerateMonthlyProphetForecasts:
         )
 
         assert forecast_3m["horizon_month"].tolist() == list(range(1, _HORIZON_3M + 1))
-        assert forecast_12m["horizon_month"].tolist() == list(range(1, _HORIZON_12M + 1))
+        assert forecast_12m["horizon_month"].tolist() == list(
+            range(1, _HORIZON_12M + 1)
+        )
 
     def test_forecast_latest_matches_configured_latest_horizon(self):
         """forecast_latest must be an exact copy of the forecast for latest_output_horizon_months."""
@@ -168,13 +182,15 @@ class TestGenerateMonthlyProphetForecasts:
         meta = _make_champion_metadata()
         model = _make_mock_prophet(meta["active_regressors"])
 
-        forecast_3m, forecast_6m, forecast_12m, _, _ = generate_monthly_prophet_forecasts(
-            model,
-            meta,
-            _make_future_df(3),
-            _make_future_df(6),
-            _make_future_df(12),
-            _make_params(),
+        forecast_3m, forecast_6m, forecast_12m, _, _ = (
+            generate_monthly_prophet_forecasts(
+                model,
+                meta,
+                _make_future_df(3),
+                _make_future_df(6),
+                _make_future_df(12),
+                _make_params(),
+            )
         )
 
         assert (forecast_3m["forecast_horizon_months"] == _HORIZON_3M).all()
@@ -210,7 +226,9 @@ class TestGenerateMonthlyProphetForecasts:
                 _make_future_df(3),
                 _make_future_df(6),
                 _make_future_df(12),
-                _make_params(latest_horizon=24),  # noqa: PLR2004  # not a generated horizon
+                _make_params(
+                    latest_horizon=24
+                ),  # noqa: PLR2004  # not a generated horizon
             )
 
     def test_future_dataset_with_target_column_raises(self):

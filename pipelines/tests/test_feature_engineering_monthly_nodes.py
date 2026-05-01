@@ -100,13 +100,18 @@ def test_build_monthly_calendar_features_returns_one_row_per_unique_month():
     # 2 SKUs × 4 months = 8 input rows; calendar output must collapse to 4 unique months
     demand_df = pd.DataFrame(
         {
-            "month_start_date": pd.date_range("2024-01-01", periods=4, freq="MS").tolist() * 2,
+            "month_start_date": pd.date_range(
+                "2024-01-01", periods=4, freq="MS"
+            ).tolist()
+            * 2,
             "sku": ["SKU-1"] * 4 + ["SKU-2"] * 4,
             "monthly_demand": [100.0] * 8,
         }
     )
 
-    result = build_monthly_calendar_features(demand_df, _feature_engineering_parameters())
+    result = build_monthly_calendar_features(
+        demand_df, _feature_engineering_parameters()
+    )
 
     assert len(result) == 4
     assert "month_start_date" in result.columns

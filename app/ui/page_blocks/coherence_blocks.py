@@ -19,15 +19,13 @@ def render_temporal_coherence_intro() -> None:
             "the sum of weekly forecasts within a month must align with the monthly total."
         ),
     )
-    st.markdown(
-        """
+    st.markdown("""
 | Layer | Role | Coherence target |
 |-------|------|-----------------|
 | **Monthly** | Primary decision layer | Reference (top level) |
 | **Weekly** | Secondary operational layer | Must sum to monthly |
 | **Daily** | Optional extension (disabled) | Must sum to weekly |
-        """
-    )
+        """)
     st.caption(
         "Default reconciliation method: mint_shrink  "
         "(configured in conf/base/parameters/reconciliation.yml)"

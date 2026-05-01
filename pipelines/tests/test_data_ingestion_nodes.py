@@ -115,4 +115,6 @@ def test_data_ingestion_pipeline_starts_with_masking_node():
 
     assert "mask_raw_demand" in node_names
     assert "load_and_clean_demand" in node_names
-    assert node_names.index("mask_raw_demand") < node_names.index("load_and_clean_demand")
+    assert node_names.index("mask_raw_demand") < node_names.index(
+        "load_and_clean_demand"
+    )

@@ -41,7 +41,9 @@ business_flag: bool = meta.get("business_success_flag", False)
 
 render_evaluation_summary(meta, test_m, val_m, business_flag)
 
-sel_df = load_model_selection_summary() if SELECTION_SUMMARY.exists() else pd.DataFrame()
+sel_df = (
+    load_model_selection_summary() if SELECTION_SUMMARY.exists() else pd.DataFrame()
+)
 render_candidate_comparison(sel_df)
 
 tm_df = load_test_metrics() if TEST_METRICS.exists() else pd.DataFrame()

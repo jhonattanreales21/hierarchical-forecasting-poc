@@ -122,15 +122,13 @@ def render_planned_capabilities() -> None:
         "Planned Capabilities",
         description="What the business assistant will be able to answer once deployed.",
     )
-    st.markdown(
-        """
+    st.markdown("""
 - Explain forecast changes between planning cycles in plain business language
 - Summarise key demand drivers and model signals for a given period
 - Compare current forecast against historical averages and seasonal patterns
 - Flag anomalies or unusually wide prediction intervals
 - Answer questions about evaluation results and model selection rationale
-        """
-    )
+        """)
 
 
 def render_future_integration_approach() -> None:
@@ -139,8 +137,7 @@ def render_future_integration_approach() -> None:
         "Integration Architecture",
         description="How the assistant will be wired once implemented.",
     )
-    st.markdown(
-        """
+    st.markdown("""
 The assistant is designed as a **retrieval-augmented generation (RAG)** pipeline:
 
 1. **Document ingestion** — business documents, historical forecasts, and model summaries
@@ -152,5 +149,4 @@ The assistant is designed as a **retrieval-augmented generation (RAG)** pipeline
 
 The retrieval, embedding, and LLM orchestration layers live outside this page — behind
 a FastAPI endpoint or a dedicated module — keeping the Streamlit script lightweight.
-        """
-    )
+        """)

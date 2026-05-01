@@ -73,7 +73,11 @@ def render_evaluation_summary(
     with cols[1]:
         render_kpi_card(
             label="Test RMSE",
-            value=format_metric(rmse, decimals=1, suffix=" units") if rmse is not None else "N/A",
+            value=(
+                format_metric(rmse, decimals=1, suffix=" units")
+                if rmse is not None
+                else "N/A"
+            ),
         )
     with cols[2]:
         render_kpi_card(
@@ -135,14 +139,28 @@ def render_candidate_comparison(sel_df: pd.DataFrame) -> None:
         return
 
     display_cols = [
-        "candidate_id", "is_champion", "validation_rank", "test_rank",
-        "mape", "rmse", "wmape", "forecast_precision",
-        "horizon_2_mape", "horizon_3_mape", "business_success_flag",
+        "candidate_id",
+        "is_champion",
+        "validation_rank",
+        "test_rank",
+        "mape",
+        "rmse",
+        "wmape",
+        "forecast_precision",
+        "horizon_2_mape",
+        "horizon_3_mape",
+        "business_success_flag",
     ]
     available = [c for c in display_cols if c in sel_df.columns]
     display = sel_df[available].copy()
 
-    for col in ["mape", "wmape", "forecast_precision", "horizon_2_mape", "horizon_3_mape"]:
+    for col in [
+        "mape",
+        "wmape",
+        "forecast_precision",
+        "horizon_2_mape",
+        "horizon_3_mape",
+    ]:
         if col in display.columns:
             display[col] = display[col].map(format_percentage)
     if "rmse" in display.columns:
@@ -183,14 +201,30 @@ def render_test_metrics_table(tm_df: pd.DataFrame) -> None:
         return
 
     display_cols = [
-        "candidate_id", "status", "mae", "rmse", "mape", "wmape",
-        "forecast_precision", "horizon_2_mape", "horizon_3_mape",
-        "business_success_flag", "test_start_date", "test_end_date", "test_rows",
+        "candidate_id",
+        "status",
+        "mae",
+        "rmse",
+        "mape",
+        "wmape",
+        "forecast_precision",
+        "horizon_2_mape",
+        "horizon_3_mape",
+        "business_success_flag",
+        "test_start_date",
+        "test_end_date",
+        "test_rows",
     ]
     available = [c for c in display_cols if c in tm_df.columns]
     display = tm_df[available].copy()
 
-    for col in ["mape", "wmape", "forecast_precision", "horizon_2_mape", "horizon_3_mape"]:
+    for col in [
+        "mape",
+        "wmape",
+        "forecast_precision",
+        "horizon_2_mape",
+        "horizon_3_mape",
+    ]:
         if col in display.columns:
             display[col] = display[col].map(format_percentage)
     for col in ["mae", "rmse"]:

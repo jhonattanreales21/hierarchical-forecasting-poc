@@ -43,15 +43,13 @@ def render_temporal_hierarchy_overview() -> None:
             "decision layer; weekly is a secondary operational complement."
         ),
     )
-    st.markdown(
-        """
+    st.markdown("""
 | Layer | Role | Status |
 |-------|------|--------|
 | **Monthly** | Primary analytical and decision layer — main stakeholder output | Active (MVP) |
 | **Weekly** | Secondary enhancement — 14-week operational complement | Planned |
 | **Daily** | Low-priority exploratory extension | Disabled |
-        """
-    )
+        """)
     st.caption(
         "Primary coherence target: Monthly ↔ Weekly  ·  Reconciliation method: mint_shrink"
     )
@@ -63,16 +61,14 @@ def render_model_candidates_overview() -> None:
         "Model Candidates",
         description="Core model families evaluated in the monthly layer.",
     )
-    st.markdown(
-        """
+    st.markdown("""
 | Model | Description | Primary Layer |
 |-------|-------------|---------------|
 | **SARIMAX** | Structured statistical baseline with seasonal and exogenous components | Monthly |
 | **Prophet** | Existing benchmark; handles seasonality and trend changes robustly | Monthly & Weekly |
 | **CatBoost** | Main tabular candidate with full exogenous variable support | Monthly & Weekly |
 | **N-HiTS** | Optional neural benchmark (Nixtla NeuralForecast) — exploratory only | Monthly (optional) |
-        """
-    )
+        """)
 
 
 def render_granularity_levels() -> None:
@@ -81,12 +77,10 @@ def render_granularity_levels() -> None:
         "Forecast Horizons",
         description="Supported granularities and forecast horizon lengths per layer.",
     )
-    st.markdown(
-        """
+    st.markdown("""
 | Granularity | Horizons | Notes |
 |-------------|----------|-------|
 | **Monthly** | 3 months, 6 months, 12 months | Primary layer — active |
 | **Weekly** | 4 weeks, 9 weeks, 14 weeks | Secondary layer — planned |
 | **Daily** | N/A | Disabled by parameter |
-        """
-    )
+        """)

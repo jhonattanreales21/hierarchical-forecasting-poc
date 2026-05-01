@@ -59,12 +59,10 @@ render_section_header(
     "Next Implementation Milestone",
     description="Steps required before weekly forecast outputs appear on this page.",
 )
-st.markdown(
-    """
+st.markdown("""
 1. Complete weekly feature engineering pipeline (`feature_engineering_weekly`)
 2. Train and tune weekly candidates (`train_weekly`)
 3. Run weekly model selection (`model_selection` with weekly namespace)
 4. Generate weekly forecasts via `forecast_inference`
 5. Update this page to load and display `weekly_forecast_raw.parquet`
-    """
-)
+    """)

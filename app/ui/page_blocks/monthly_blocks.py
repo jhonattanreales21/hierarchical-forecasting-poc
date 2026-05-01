@@ -18,7 +18,12 @@ from ui.components import (
     render_section_header,
     render_warning_banner,
 )
-from utils.formatting import format_date, format_metric, format_optional, format_percentage
+from utils.formatting import (
+    format_date,
+    format_metric,
+    format_optional,
+    format_percentage,
+)
 from utils.paths import forecast_parquet
 
 _HORIZON_LABELS: dict[int, str] = {3: "3 months", 6: "6 months", 12: "12 months"}
@@ -91,7 +96,11 @@ def render_monthly_kpi_summary(
     with cols[2]:
         render_kpi_card(
             label="Test RMSE",
-            value=format_metric(rmse, decimals=1, suffix=" units") if rmse is not None else "N/A",
+            value=(
+                format_metric(rmse, decimals=1, suffix=" units")
+                if rmse is not None
+                else "N/A"
+            ),
             help_text="Root Mean Squared Error on test set",
         )
     with cols[3]:
@@ -275,7 +284,9 @@ def render_executive_forecast_summary(
     precision_threshold = meta.get("business_success_precision_threshold", 0.85)
 
     precision_str = format_percentage(precision) if precision is not None else "N/A"
-    target_str = format_percentage(precision_threshold) if precision_threshold else "85.0%"
+    target_str = (
+        format_percentage(precision_threshold) if precision_threshold else "85.0%"
+    )
 
     if business_flag:
         status_line = (
@@ -304,8 +315,7 @@ def render_executive_forecast_summary(
             f"{horizon_months}-month horizon."
         )
 
-    st.markdown(
-        f"""
+    st.markdown(f"""
 The active monthly Prophet champion (*{escape(champion_id)}*) provides the current forecast
 for the {horizon_months}-month horizon. {status_line}
 
@@ -313,8 +323,7 @@ for the {horizon_months}-month horizon. {status_line}
 
 > **Note:** This page reflects the Prophet MVP baseline. Forecast precision targets and model
 > candidates will continue to evolve as the project progresses toward production readiness.
-        """
-    )
+        """)
 
 
 def render_future_forecast_table(
@@ -345,7 +354,8 @@ def render_future_forecast_table(
 
     available_cols = set(future_fc.columns)
     ordered_cols = [
-        c for c in ["ds", "horizon_month", "yhat", "yhat_lower", "yhat_upper"]
+        c
+        for c in ["ds", "horizon_month", "yhat", "yhat_lower", "yhat_upper"]
         if c in available_cols
     ]
     display = future_fc[ordered_cols].copy()
@@ -360,7 +370,9 @@ def render_future_forecast_table(
         "yhat_lower": "Lower Bound (80%)",
         "yhat_upper": "Upper Bound (80%)",
     }
-    display = display.rename(columns={k: v for k, v in rename_map.items() if k in display.columns})
+    display = display.rename(
+        columns={k: v for k, v in rename_map.items() if k in display.columns}
+    )
 
     for col in ["Forecast (units)", "Lower Bound (80%)", "Upper Bound (80%)"]:
         if col in display.columns:

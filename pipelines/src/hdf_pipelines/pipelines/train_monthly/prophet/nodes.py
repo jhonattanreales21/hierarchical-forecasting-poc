@@ -708,9 +708,11 @@ def _build_tuning_rows(  # noqa: PLR0913
             {
                 "candidate_id": candidate_id,
                 "trial_number": int(trial.number),
-                "status": "success"
-                if trial.state == optuna.trial.TrialState.COMPLETE
-                else "failed",
+                "status": (
+                    "success"
+                    if trial.state == optuna.trial.TrialState.COMPLETE
+                    else "failed"
+                ),
                 "error_message": trial.user_attrs.get("error_message"),
                 "optimizer": optimizer,
                 "objective_direction": objective_direction,

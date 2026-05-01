@@ -14,9 +14,9 @@ import pandas as pd
 import plotly.graph_objects as go
 
 # Corporate color palette aligned with ui/theme.py
-_COLOR_ACTUALS = "#0057B8"       # corporate blue
-_COLOR_TEST = "#D97706"          # amber — test-period forecast
-_COLOR_FUTURE = "#00A3E0"        # accent cyan — future forecast
+_COLOR_ACTUALS = "#0057B8"  # corporate blue
+_COLOR_TEST = "#D97706"  # amber — test-period forecast
+_COLOR_FUTURE = "#00A3E0"  # accent cyan — future forecast
 _COLOR_TEST_CI = "rgba(217, 119, 6, 0.12)"
 _COLOR_FUTURE_CI = "rgba(0, 163, 224, 0.12)"
 
@@ -64,7 +64,8 @@ def plot_forecast(
         fig.add_trace(
             go.Scatter(
                 x=list(test_forecast["ds"]) + list(test_forecast["ds"])[::-1],
-                y=list(test_forecast["yhat_upper"]) + list(test_forecast["yhat_lower"])[::-1],
+                y=list(test_forecast["yhat_upper"])
+                + list(test_forecast["yhat_lower"])[::-1],
                 fill="toself",
                 fillcolor=_COLOR_TEST_CI,
                 line=dict(color="rgba(255,255,255,0)"),
@@ -107,7 +108,8 @@ def plot_forecast(
         fig.add_trace(
             go.Scatter(
                 x=list(future_forecast["ds"]) + list(future_forecast["ds"])[::-1],
-                y=list(future_forecast["yhat_upper"]) + list(future_forecast["yhat_lower"])[::-1],
+                y=list(future_forecast["yhat_upper"])
+                + list(future_forecast["yhat_lower"])[::-1],
                 fill="toself",
                 fillcolor=_COLOR_FUTURE_CI,
                 line=dict(color="rgba(255,255,255,0)"),

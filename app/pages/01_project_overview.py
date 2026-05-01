@@ -15,7 +15,12 @@ from ui.page_blocks.overview_blocks import (
 )
 from ui.styles import apply_global_styles
 from utils.data_loaders import load_champion_metadata, load_inference_metadata
-from utils.formatting import format_date, format_metric, format_optional, format_percentage
+from utils.formatting import (
+    format_date,
+    format_metric,
+    format_optional,
+    format_percentage,
+)
 from utils.paths import (
     CHAMPION_META,
     FORECAST_LATEST,
@@ -89,7 +94,11 @@ else:
     with cols[2]:
         render_kpi_card(
             label="Test RMSE",
-            value=format_metric(rmse, decimals=1, suffix=" units") if rmse is not None else "N/A",
+            value=(
+                format_metric(rmse, decimals=1, suffix=" units")
+                if rmse is not None
+                else "N/A"
+            ),
         )
     with cols[3]:
         render_kpi_card(

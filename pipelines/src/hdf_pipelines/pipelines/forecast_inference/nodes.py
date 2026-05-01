@@ -95,9 +95,7 @@ def generate_monthly_prophet_forecasts(  # noqa: PLR0912, PLR0913
     logger.info(
         "Starting Monthly Prophet forecast inference — champion: %s", champion_id
     )
-    logger.info(
-        "Active regressors (%d): %s", len(active_regressors), active_regressors
-    )
+    logger.info("Active regressors (%d): %s", len(active_regressors), active_regressors)
 
     forecast_run_id = (
         f"monthly_prophet_{datetime.now(tz=UTC).strftime('%Y%m%d_%H%M%S')}"
@@ -275,9 +273,7 @@ def _validate_future_dataset(  # noqa: PLR0912, PLR0913
         ) from exc
 
     # Active regressors
-    missing_regressors = [
-        r for r in active_regressors if r not in future_df.columns
-    ]
+    missing_regressors = [r for r in active_regressors if r not in future_df.columns]
     if missing_regressors and fail_on_missing:
         raise ValueError(
             f"Future dataset '{dataset_name}' is missing active regressor columns: "
@@ -288,9 +284,7 @@ def _validate_future_dataset(  # noqa: PLR0912, PLR0913
 
     # Null check on active regressors
     if fail_on_nulls and present_regressors:
-        null_cols = [
-            r for r in present_regressors if future_df[r].isnull().any()
-        ]
+        null_cols = [r for r in present_regressors if future_df[r].isnull().any()]
         if null_cols:
             raise ValueError(
                 f"Future dataset '{dataset_name}' has null values in active regressors: "
@@ -483,7 +477,9 @@ def _forecast_one_horizon(  # noqa: PLR0913
     Returns:
         Annotated forecast DataFrame with standardised column order.
     """
-    predict_input = _build_prophet_prediction_input(future_df, active_regressors, date_col)
+    predict_input = _build_prophet_prediction_input(
+        future_df, active_regressors, date_col
+    )
     raw_forecast = model.predict(predict_input)
 
     # Keep only the Prophet point forecast and prediction interval columns; all other
@@ -575,9 +571,7 @@ def _build_inference_metadata(  # noqa: PLR0913
         "forecast_run_id": forecast_run_id,
         "forecast_created_at": created_at,
         "active_regressors": active_regressors,
-        "horizons": {
-            str(h): summary for h, summary in horizon_summaries.items()
-        },
+        "horizons": {str(h): summary for h, summary in horizon_summaries.items()},
         "latest_output": {
             "dataset": "monthly_prophet_forecast_latest",
             "horizon_months": latest_horizon,
