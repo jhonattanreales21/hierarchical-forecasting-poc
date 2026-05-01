@@ -172,8 +172,8 @@ def _drop_null_modeling_rows(
         regressor_null_counts = cleaned_df[list(active_regressors)].isnull().sum()
         regressor_null_counts = regressor_null_counts[regressor_null_counts > 0]
         if bool(missing_value_params["drop_rows_with_null_active_regressors"]):
-            null_regressor_mask = cleaned_df[list(active_regressors)].isnull().any(
-                axis=1
+            null_regressor_mask = (
+                cleaned_df[list(active_regressors)].isnull().any(axis=1)
             )
             dropped_rows["null_active_regressors"] = int(null_regressor_mask.sum())
             dropped_rows["null_active_regressor_columns"] = {
@@ -212,7 +212,9 @@ def _split_by_dates(
     split_params: Mapping[str, Any],
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Split historical data using explicit date boundaries."""
-    train_end_date = _parse_month_start(split_params["train_end_date"], "train_end_date")
+    train_end_date = _parse_month_start(
+        split_params["train_end_date"], "train_end_date"
+    )
     validation_end_date = _parse_month_start(
         split_params["validation_end_date"], "validation_end_date"
     )
@@ -246,10 +248,9 @@ def _split_by_month_counts(
         raise ValueError("validation_months and test_months must be positive integers.")
 
     # Build an ordered list of unique month timestamps to use as positional index for slicing.
-    unique_months = (
-        pd.Series(pd.DatetimeIndex(df[date_column].drop_duplicates().sort_values()))
-        .reset_index(drop=True)
-    )
+    unique_months = pd.Series(
+        pd.DatetimeIndex(df[date_column].drop_duplicates().sort_values())
+    ).reset_index(drop=True)
     required_months = validation_months + test_months
     if len(unique_months) <= required_months:
         raise ValueError(
@@ -408,7 +409,9 @@ def _build_future_calendar_features(
     ].copy()
 
     # Set difference: future months not already covered by the catalog dataset.
-    missing_calendar_dates = sorted(set(future_dates) - set(existing_future_calendar["month_start_date"]))
+    missing_calendar_dates = sorted(
+        set(future_dates) - set(existing_future_calendar["month_start_date"])
+    )
     if missing_calendar_dates:
         logger.info(
             "Generating deterministic calendar features for %d future months not "
@@ -425,7 +428,9 @@ def _build_future_calendar_features(
         )
         generated_calendar = pd.DataFrame(
             [
-                _count_monthly_calendar_features(month_start, holiday_dates, business_weekdays)
+                _count_monthly_calendar_features(
+                    month_start, holiday_dates, business_weekdays
+                )
                 for month_start in missing_calendar_dates
             ]
         )
@@ -434,7 +439,9 @@ def _build_future_calendar_features(
             ignore_index=True,
         )
 
-    return existing_future_calendar.sort_values("month_start_date").reset_index(drop=True)
+    return existing_future_calendar.sort_values("month_start_date").reset_index(
+        drop=True
+    )
 
 
 def _build_future_exogenous_features(
@@ -536,7 +543,9 @@ def prepare_monthly_prophet_modeling_data(
         date_column,
         "monthly_prophet_features",
     )
-    _validate_unique_rows(feature_df, [sku_column, date_column], "monthly_prophet_features")
+    _validate_unique_rows(
+        feature_df, [sku_column, date_column], "monthly_prophet_features"
+    )
 
     logger.info(
         "Preparing monthly Prophet modeling data from shape=%s.",
@@ -674,12 +683,16 @@ def split_monthly_prophet_data(
         .reset_index(drop=True)
     )
 
-    logger.info("Train split summary: %s", _summarize_date_range(train, prophet_date_column))
+    logger.info(
+        "Train split summary: %s", _summarize_date_range(train, prophet_date_column)
+    )
     logger.info(
         "Validation split summary: %s",
         _summarize_date_range(validation, prophet_date_column),
     )
-    logger.info("Test split summary: %s", _summarize_date_range(test, prophet_date_column))
+    logger.info(
+        "Test split summary: %s", _summarize_date_range(test, prophet_date_column)
+    )
 
     updated_metadata = dict(preparation_metadata)
     updated_metadata["split_mode"] = split_mode
@@ -765,9 +778,14 @@ def build_monthly_prophet_future_regressors(
         monthly_exogenous_features.shape,
     )
 
-    last_historical_ds = pd.Timestamp(monthly_prophet_modeling_data[prophet_date_column].max())
+    last_historical_ds = pd.Timestamp(
+        monthly_prophet_modeling_data[prophet_date_column].max()
+    )
     sku_values = (
-        monthly_prophet_modeling_data[sku_column].dropna().drop_duplicates().sort_values()
+        monthly_prophet_modeling_data[sku_column]
+        .dropna()
+        .drop_duplicates()
+        .sort_values()
     )
     if len(sku_values) > 1:
         logger.info(
@@ -778,7 +796,9 @@ def build_monthly_prophet_future_regressors(
 
     # Split active regressors by source: those in the exogenous dataset vs. calendar-derived.
     exogenous_regressors = [
-        column for column in active_regressors if column in monthly_exogenous_features.columns
+        column
+        for column in active_regressors
+        if column in monthly_exogenous_features.columns
     ]
     # Any regressor not found in either source cannot be materialized for future horizons.
     missing_regressor_sources = sorted(
@@ -827,9 +847,11 @@ def build_monthly_prophet_future_regressors(
             columns={"month_start_date": prophet_date_column}
         )
         # Future inference only needs dates, SKU metadata, and known regressors.
-        future_dataset = future_dataset[
-            [prophet_date_column, sku_column, *active_regressors]
-        ].sort_values([sku_column, prophet_date_column]).reset_index(drop=True)
+        future_dataset = (
+            future_dataset[[prophet_date_column, sku_column, *active_regressors]]
+            .sort_values([sku_column, prophet_date_column])
+            .reset_index(drop=True)
+        )
 
         if prophet_params["prophet_target_column"] in future_dataset.columns:
             raise ValueError("Future Prophet regressor datasets must not include y.")

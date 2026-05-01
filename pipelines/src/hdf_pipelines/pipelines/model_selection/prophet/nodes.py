@@ -93,7 +93,9 @@ def evaluate_monthly_prophet_prechampions_on_test(  # noqa: PLR0915
         else []
     )
 
-    prechampions: list[dict] = monthly_prophet_prechampion_configs.get("prechampions", [])
+    prechampions: list[dict] = monthly_prophet_prechampion_configs.get(
+        "prechampions", []
+    )
     if not prechampions:
         raise ValueError(
             "No pre-champion configurations found in monthly_prophet_prechampion_configs."
@@ -144,12 +146,16 @@ def evaluate_monthly_prophet_prechampions_on_test(  # noqa: PLR0915
 
         try:
             model: Prophet = monthly_prophet_candidate_models[candidate_id]
-            forecast = _forecast_test_period(model, test_df, active_regressors, date_col)
+            forecast = _forecast_test_period(
+                model, test_df, active_regressors, date_col
+            )
 
             y_true = test_df[target_col].values.astype(float)
             y_pred = forecast["yhat"].values.astype(float)
 
-            base = _compute_forecast_metrics(y_true, y_pred, epsilon, precision_threshold)
+            base = _compute_forecast_metrics(
+                y_true, y_pred, epsilon, precision_threshold
+            )
             horiz = _compute_horizon_metrics(
                 test_df,
                 y_pred,
@@ -242,7 +248,9 @@ def evaluate_monthly_prophet_prechampions_on_test(  # noqa: PLR0915
 
     test_metrics_df = pd.DataFrame(metrics_rows)
     test_forecast_df = (
-        pd.concat(forecast_frames, ignore_index=True) if forecast_frames else pd.DataFrame()
+        pd.concat(forecast_frames, ignore_index=True)
+        if forecast_frames
+        else pd.DataFrame()
     )
 
     logger.info(
@@ -301,7 +309,9 @@ def select_monthly_prophet_champion(
     )
     refit_enabled: bool = bool(params.get("refit_champion", {}).get("enabled", True))
 
-    prechampions: list[dict] = monthly_prophet_prechampion_configs.get("prechampions", [])
+    prechampions: list[dict] = monthly_prophet_prechampion_configs.get(
+        "prechampions", []
+    )
 
     success_mask = monthly_prophet_test_metrics["status"] == "success"
     success_df = monthly_prophet_test_metrics[success_mask].copy()
@@ -313,9 +323,8 @@ def select_monthly_prophet_champion(
         )
 
     # Merge validation rank for tie-breaking; coerce to nullable Int64 to survive NaNs
-    val_ranks = (
-        monthly_prophet_tuning_results[["candidate_id", "rank"]]
-        .rename(columns={"rank": "validation_rank"})
+    val_ranks = monthly_prophet_tuning_results[["candidate_id", "rank"]].rename(
+        columns={"rank": "validation_rank"}
     )
     success_df = success_df.merge(val_ranks, on="candidate_id", how="left")
 
@@ -768,7 +777,9 @@ def _build_selection_reason(
         return ""
     metric_val = row.get(primary_metric)
     val_str = f"{float(metric_val):.4f}" if metric_val is not None else "N/A"
-    tie_label = ", ".join(tb.upper() for tb in tie_breakers[:2]) if tie_breakers else "none"
+    tie_label = (
+        ", ".join(tb.upper() for tb in tie_breakers[:2]) if tie_breakers else "none"
+    )
     return (
         f"Selected because it achieved the lowest test {primary_metric.upper()} "
         f"({val_str}) among pre-champion candidates, with {tie_label} as tie-breaker."
@@ -805,8 +816,12 @@ def _refit_prophet_champion(  # noqa: PLR0913
     )
 
     model = Prophet(
-        changepoint_prior_scale=float(model_params.get("changepoint_prior_scale", 0.05)),
-        seasonality_prior_scale=float(model_params.get("seasonality_prior_scale", 10.0)),
+        changepoint_prior_scale=float(
+            model_params.get("changepoint_prior_scale", 0.05)
+        ),
+        seasonality_prior_scale=float(
+            model_params.get("seasonality_prior_scale", 10.0)
+        ),
         holidays_prior_scale=float(model_params.get("holidays_prior_scale", 10.0)),
         seasonality_mode=str(model_params.get("seasonality_mode", "additive")),
         yearly_seasonality=bool(model_params.get("yearly_seasonality", True)),
