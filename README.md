@@ -47,18 +47,19 @@ After training, forecasts at all granularities are **reconciled** using MinT (`m
 
 | Area | Tool |
 |------|------|
+| Language | Python 3.12 |
 | Pipeline orchestration | [Kedro](https://kedro.org/) ~1.3 |
 | Package & env management | [uv](https://docs.astral.sh/uv/) (workspace mono-repo) |
-| Experiment tracking | [MLflow](https://mlflow.org/) |
 | Modeling | Statsmodels (SARIMAX), Prophet, CatBoost |
 | Data contracts | [Pydantic](https://docs.pydantic.dev/) v2 |
 | Forecast app | [Streamlit](https://streamlit.io/) |
 | Serving layer | [FastAPI](https://fastapi.tiangolo.com/) + Uvicorn |
-| Containerization | Docker + Docker Compose |
 | CI | GitHub Actions |
 | Linting & formatting | [Ruff](https://docs.astral.sh/ruff/) |
 | Testing | pytest |
-| Language | Python 3.12 |
+| Experiment tracking | [MLflow](https://mlflow.org/) *(planned)* |
+| Containerization | Docker + Docker Compose *(planned)* |
+| Business assistant | [LangChain](https://python.langchain.com/) + [Chroma](https://www.trychroma.com/) *(planned)* |
 
 ---
 
@@ -119,8 +120,9 @@ uv sync --all-packages
 cp your_demand_data.csv pipelines/data/01_raw/raw_demand_data.csv
 cp your_exogenous_data.csv pipelines/data/01_raw/raw_exogenous_data.csv
 
-# 4. Run the full pipeline
-uv run --package hdf_pipelines kedro run
+# 4. Run the full pipeline (must be run from inside pipelines/)
+cd pipelines
+uv run kedro run
 
 # 5. Launch the Streamlit app
 uv run --package hdf_app streamlit run app/app.py
@@ -130,26 +132,62 @@ uv run --package hdf_app streamlit run app/app.py
 
 ## Commands
 
+### Quick reference — Make
+
+A `Makefile` at the repo root wraps the most common Kedro commands so you don't need to `cd pipelines` or type `uv run kedro` manually. Run `make help` to see all targets with their descriptions.
+
+```bash
+make help              # Print all available targets
+
+# ── Pipeline stages ──────────────────────────────────────
+make run               # Full default pipeline (all stages)
+make ingest            # data_ingestion — load raw demand + exogenous data
+make fe-monthly        # feature_engineering_monthly — monthly feature set
+make fe-weekly         # feature_engineering_weekly — weekly feature set
+make model-input       # model_input_preparation — final model input tables
+make train-monthly     # train_monthly — train monthly forecasting models
+make train-weekly      # train_weekly — train weekly forecasting models
+make train             # training — train both monthly and weekly models
+make model-selection   # model_selection — select champion models
+make reconcile         # reconciliation — temporal hierarchy reconciliation
+make infer             # forecast_inference — generate forecasts
+
+# ── Composed shortcuts ───────────────────────────────────
+make full-prophet-monthly  # end-to-end Monthly Prophet MVP (ingest → infer)
+make full-experiment       # ingest → FE → model input → train → select
+make inference             # forecast + reconciliation
+
+# ── Kedro utilities ──────────────────────────────────────
+make viz                   # Launch Kedro-Viz in the browser
+make catalog               # List all datasets in the catalog
+make pipeline-list         # List all registered pipelines
+```
+
+---
+
 ### Kedro (pipelines/)
 
 ```bash
+# All Kedro commands must be run from inside the pipelines/ directory.
+cd pipelines
+
 # Run the full default pipeline (ingestion → features → training → selection → reconciliation → inference)
-uv run --package hdf_pipelines kedro run
+uv run kedro run
 
 # Run only data ingestion
-uv run --package hdf_pipelines kedro run --pipeline data_ingestion
+uv run kedro run --pipeline data_ingestion
 
 # Run training (monthly + weekly, all model families)
-uv run --package hdf_pipelines kedro run --pipeline training
+uv run kedro run --pipeline training
 
 # Run model selection (champion selection on test data)
-uv run --package hdf_pipelines kedro run --pipeline model_selection
+uv run kedro run --pipeline model_selection
 
 # Run inference (generates forecast outputs under data/07_model_output/)
-uv run --package hdf_pipelines kedro run --pipeline inference
+uv run kedro run --pipeline inference
 
 # Run the full experiment without final inference
-uv run --package hdf_pipelines kedro run --pipeline full_experiment
+uv run kedro run --pipeline full_experiment
 ```
 
 ### Streamlit (app/)

@@ -1,4 +1,4 @@
-"""Data ingestion nodes: load raw CSV sources and apply basic cleaning."""
+"""Data ingestion nodes: load, clean, validate, and aggregate raw CSV sources."""
 
 import logging
 
@@ -6,36 +6,432 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
+_DEMAND_MASK_SCALE_FACTOR = 100.0
 
-def load_and_clean_demand(raw_demand: pd.DataFrame) -> pd.DataFrame:
-    """Load and clean the raw demand time series.
+# Raw CSV header names — used for contract validation before any renaming.
+_DEMAND_RAW_COLUMNS = frozenset(
+    ["SKU", "Year", "Month", "Month Name", "Date", "Monthly Demand", "Daily Demand"]
+)
+
+_DEMAND_RENAME = {
+    "SKU": "sku",
+    "Year": "year",
+    "Month": "month",
+    "Month Name": "month_name",
+    "Date": "date",
+    "Monthly Demand": "monthly_demand",
+    "Daily Demand": "daily_demand",
+}
+
+# Validated after stripping whitespace; raw header has "surgifoam_limited " (trailing space).
+_EXOGENOUS_STRIPPED_COLUMNS = frozenset(
+    ["Date", "pfizer_limited", "surgifoam_limited", "rebate_target"]
+)
+
+
+def mask_raw_demand(raw_demand: pd.DataFrame) -> pd.DataFrame:
+    """Mask raw demand values before the cleaning stage.
+
+    Replaces real SKU names with deterministic placeholders in order of first
+    appearance (``sku1``, ``sku2``, ...), and scales both raw demand measures
+    by dividing them by ``100``. Non-numeric demand values are left as-is so
+    the downstream cleaning node remains the single place responsible for
+    numeric validation and warning emission.
 
     Args:
-        raw_demand: Raw demand CSV loaded by the Kedro catalog. Expected columns
-            include a date column and a numeric demand target for the critical SKU.
+        raw_demand: Raw demand DataFrame loaded by the Kedro catalog.
 
     Returns:
-        Cleaned DataFrame with validated dtypes, sorted by date, and duplicates
-        removed. Ready for downstream aggregation steps.
+        Copy of the raw demand DataFrame with masked SKU labels and scaled
+        demand values.
+
+    Raises:
+        ValueError: If any required raw column is absent from ``raw_demand``.
     """
-    raise NotImplementedError(
-        "Parse the date column to datetime, cast the target column to float, "
-        "drop duplicate rows, sort by date ascending, and return the cleaned DataFrame."
+    missing = _DEMAND_RAW_COLUMNS - set(raw_demand.columns)
+    if missing:
+        raise ValueError(
+            f"Missing required columns in raw demand data: {sorted(missing)}"
+        )
+
+    df = raw_demand.copy()
+
+    normalized_sku = df["SKU"].astype("string").str.strip()
+    sku_lookup = {
+        sku_name: f"sku{idx}"
+        for idx, sku_name in enumerate(
+            normalized_sku.dropna().drop_duplicates().tolist(), start=1
+        )
+    }
+    df["SKU"] = normalized_sku.map(sku_lookup)
+
+    for col in ("Monthly Demand", "Daily Demand"):
+        numeric_values = pd.to_numeric(df[col], errors="coerce")
+        numeric_mask = numeric_values.notna()
+        df.loc[numeric_mask, col] = (
+            numeric_values.loc[numeric_mask] / _DEMAND_MASK_SCALE_FACTOR
+        )
+
+    logger.info(
+        "Masked raw demand data: %d SKU(s) anonymized and demand columns scaled by %s.",
+        len(sku_lookup),
+        int(_DEMAND_MASK_SCALE_FACTOR),
     )
+    return df
+
+
+def load_and_clean_demand(raw_demand: pd.DataFrame) -> pd.DataFrame:
+    """Validate, rename, and type-cast the raw daily demand CSV.
+
+    Validates the expected column contract, renames headers to snake_case, parses dates
+    and numeric types, strips whitespace from string columns, removes exact duplicate
+    rows, and sorts the output by SKU and date.
+
+    Args:
+        raw_demand: Raw demand DataFrame loaded by the Kedro catalog. Must contain the
+            columns: ``SKU``, ``Year``, ``Month``, ``Month Name``, ``Date``,
+            ``Monthly Demand``, ``Daily Demand``.
+
+    Returns:
+        Cleaned demand DataFrame with snake_case column names, parsed ``date``
+        (datetime64), integer ``year`` and ``month``, and float ``monthly_demand`` /
+        ``daily_demand``. Sorted by ``(sku, date)``.
+
+    Raises:
+        ValueError: If any expected raw column is absent from ``raw_demand``.
+    """
+    # Fail early on schema drift.
+    missing = _DEMAND_RAW_COLUMNS - set(raw_demand.columns)
+    if missing:
+        raise ValueError(
+            f"Missing required columns in raw demand data: {sorted(missing)}"
+        )
+
+    df = raw_demand.rename(columns=_DEMAND_RENAME).copy()
+
+    # Strip whitespace before type casting; SKU names often carry invisible spaces from Excel.
+    for col in df.select_dtypes(include="object").columns:
+        df[col] = df[col].str.strip()
+
+    # Source format is "M/D/YYYY" (e.g. "3/1/2023"); let pandas infer for flexibility.
+    try:
+        df["date"] = pd.to_datetime(df["date"])
+    except Exception as exc:
+        bad_vals = (
+            df["date"][pd.to_datetime(df["date"], errors="coerce").isna()]
+            .unique()[:5]
+            .tolist()
+        )
+        raise ValueError(
+            f"Failed to parse 'date' column to datetime. "
+            f"Expected format M/D/YYYY (e.g. '3/1/2023'). "
+            f"Problematic values (up to 5): {bad_vals}"
+        ) from exc
+
+    # Raw "Month" is "YYYY-MM", not a bare integer — parse then extract the month number.
+    try:
+        df["month"] = pd.to_datetime(df["month"], format="%Y-%m").dt.month.astype(int)
+    except Exception as exc:
+        bad_vals = (
+            df["month"][
+                pd.to_datetime(df["month"], format="%Y-%m", errors="coerce").isna()
+            ]
+            .unique()[:5]
+            .tolist()
+        )
+        raise ValueError(
+            f"Failed to parse 'month' column. "
+            f"Expected format YYYY-MM (e.g. '2023-01'). "
+            f"Problematic values (up to 5): {bad_vals}"
+        ) from exc
+
+    # Year should be an integer (e.g. 2023).
+    try:
+        df["year"] = df["year"].astype(int)
+    except (ValueError, TypeError) as exc:
+        bad_vals = (
+            df["year"][pd.to_numeric(df["year"], errors="coerce").isna()]
+            .unique()[:5]
+            .tolist()
+        )
+        raise ValueError(
+            f"Failed to cast 'year' column to integer. "
+            f"Expected a 4-digit year (e.g. 2023). "
+            f"Problematic values (up to 5): {bad_vals}"
+        ) from exc
+
+    # errors="coerce" turns unparseable values into NaN; we then identify and log them.
+    for _col in ("monthly_demand", "daily_demand"):
+        _original = df[_col].copy()
+        df[_col] = pd.to_numeric(df[_col], errors="coerce")
+        _failed = df[_col].isna() & _original.notna()
+        if _failed.any():
+            _bad_vals = _original[_failed].unique()[:5].tolist()
+            logger.warning(
+                "Column '%s': %d value(s) could not be cast to numeric and were set to NaN. "
+                "Expected a numeric demand figure. Problematic values (up to 5): %s",
+                _col,
+                int(_failed.sum()),
+                _bad_vals,
+            )
+
+    # NaNs after casting indicate corrupted source rows that would distort forecasts.
+    null_cols = df.isnull().sum()
+    null_cols = null_cols[null_cols > 0]
+    if not null_cols.empty:
+        logger.warning(
+            "Null values detected in demand data:\n%s", null_cols.to_string()
+        )
+
+    n_before = len(df)
+    df = df.drop_duplicates()
+    n_removed = n_before - len(df)
+    if n_removed > 0:
+        logger.info("Removed %d duplicate rows from demand data.", n_removed)
+
+    df = df.sort_values(["sku", "date"]).reset_index(drop=True)
+
+    logger.info(
+        "Demand data cleaned: %d rows, date range [%s, %s].",
+        len(df),
+        df["date"].min().date(),
+        df["date"].max().date(),
+    )
+    return df
 
 
 def load_and_clean_exogenous(raw_exogenous: pd.DataFrame) -> pd.DataFrame:
-    """Load and clean exogenous variable time series.
+    """Validate, parse, and normalise the raw exogenous variables CSV.
+
+    Strips trailing whitespace from column names (the source file contains a trailing
+    space in ``surgifoam_limited ``), validates the column contract, parses YYYY-MM date
+    strings, casts indicator columns to numeric, removes blank rows and exact duplicates,
+    and adds a canonical ``month_start_date`` key aligned to the first of each month.
 
     Args:
-        raw_exogenous: Raw exogenous CSV loaded by the Kedro catalog. May include
-            macroeconomic indicators, promotional flags, or weather signals.
+        raw_exogenous: Raw exogenous DataFrame loaded by the Kedro catalog. Must contain
+            ``Date``, ``pfizer_limited``, ``surgifoam_limited``, and ``rebate_target``
+            after column-name whitespace is stripped.
 
     Returns:
-        Cleaned DataFrame aligned by date with validated dtypes, no duplicate dates,
-        and missing values handled via forward-fill or interpolation.
+        Cleaned exogenous DataFrame with a ``month_start_date`` column (first day of
+        each month) and numeric indicator columns. Sorted by ``date``.
+
+    Raises:
+        ValueError: If any required column is absent after whitespace stripping.
     """
-    raise NotImplementedError(
-        "Parse the date column, handle missing values via forward-fill, drop duplicates, "
-        "sort by date, and return the cleaned exogenous DataFrame."
+    df = raw_exogenous.copy()
+    # Strip before validation so "surgifoam_limited " matches the expected name.
+    df.columns = [col.strip() for col in df.columns]
+
+    missing = _EXOGENOUS_STRIPPED_COLUMNS - set(df.columns)
+    if missing:
+        raise ValueError(
+            f"Missing required columns in raw exogenous data: {sorted(missing)}"
+        )
+
+    df = df.rename(columns={"Date": "date"})
+    df = df.dropna(how="all")  # remove trailing blank lines from CSV exports
+    # Explicit format avoids ambiguous parsing of "YYYY-MM" strings.
+    df["date"] = pd.to_datetime(df["date"], format="%Y-%m")
+
+    for col in ["pfizer_limited", "surgifoam_limited", "rebate_target"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    null_cols = df.isnull().sum()
+    null_cols = null_cols[null_cols > 0]
+    if not null_cols.empty:
+        logger.warning(
+            "Null values detected in exogenous data:\n%s", null_cols.to_string()
+        )
+
+    n_before = len(df)
+    df = df.drop_duplicates()
+    n_removed = n_before - len(df)
+    if n_removed > 0:
+        logger.info("Removed %d duplicate rows from exogenous data.", n_removed)
+
+    # Canonical month key: always the 1st of the month, aligns with demand joins.
+    df["month_start_date"] = df["date"].dt.to_period("M").dt.to_timestamp()
+    df = df.sort_values("date").reset_index(drop=True)
+
+    logger.info(
+        "Exogenous data cleaned: %d rows, date range [%s, %s].",
+        len(df),
+        df["date"].min().date(),
+        df["date"].max().date(),
     )
+    return df
+
+
+def build_demand_daily(demand_cleaned: pd.DataFrame) -> pd.DataFrame:
+    """Build the daily demand primary dataset from the cleaned demand table.
+
+    Selects the subset of columns needed for the daily granularity layer. ``monthly_demand``
+    is retained alongside ``daily_demand`` to allow cross-validation between levels without
+    re-joining to the source.
+
+    Args:
+        demand_cleaned: Cleaned demand DataFrame from the intermediate layer, produced by
+            ``load_and_clean_demand``.
+
+    Returns:
+        Daily demand DataFrame with columns: ``date``, ``sku``, ``daily_demand``,
+        ``monthly_demand``, ``year``, ``month``, ``month_name``.
+    """
+    cols = [
+        "date",
+        "sku",
+        "daily_demand",
+        "monthly_demand",  # kept for downstream cross-validation reference
+        "year",
+        "month",
+        "month_name",
+    ]
+    return demand_cleaned[cols].copy()
+
+
+def build_demand_weekly(demand_cleaned: pd.DataFrame) -> pd.DataFrame:
+    """Build the weekly demand primary dataset by aggregating daily demand to ISO weeks.
+
+    Each day is snapped to the Monday that starts its ISO week, then daily demand values
+    are summed per SKU and week.
+
+    Args:
+        demand_cleaned: Cleaned demand DataFrame from the intermediate layer, produced by
+            ``load_and_clean_demand``. Must contain ``date``, ``sku``, and ``daily_demand``.
+
+    Returns:
+        Weekly demand DataFrame with columns: ``week_start_date``, ``sku``,
+        ``weekly_demand``. Sorted by ``(sku, week_start_date)``.
+    """
+    df = demand_cleaned[["date", "sku", "daily_demand"]].copy()
+    # dayofweek is 0 (Mon) – 6 (Sun); subtracting it snaps every date to its Monday.
+    df["week_start_date"] = df["date"] - pd.to_timedelta(
+        df["date"].dt.dayofweek, unit="D"
+    )
+
+    weekly = df.groupby(["sku", "week_start_date"], as_index=False).agg(
+        weekly_demand=("daily_demand", "sum")
+    )
+    weekly = weekly.sort_values(["sku", "week_start_date"]).reset_index(drop=True)
+    return weekly[["week_start_date", "sku", "weekly_demand"]]
+
+
+def build_demand_monthly(demand_cleaned: pd.DataFrame) -> pd.DataFrame:
+    """Build the monthly demand primary dataset using the source-reported monthly target.
+
+    Uses ``monthly_demand`` (the figure reported in the source system) as the authoritative
+    monthly target rather than re-summing daily values, since the two can diverge due to
+    rounding artefacts. Inconsistencies between the two are logged as warnings but do not
+    stop the pipeline. Cases where ``monthly_demand`` is not constant within a SKU-month
+    are also warned and resolved by taking the first value after sorting by date.
+
+    Args:
+        demand_cleaned: Cleaned demand DataFrame from the intermediate layer, produced by
+            ``load_and_clean_demand``. Must contain ``date``, ``sku``, ``daily_demand``,
+            and ``monthly_demand``.
+
+    Returns:
+        Monthly demand DataFrame with columns: ``month_start_date``, ``sku``,
+        ``monthly_demand``. One row per (SKU, month), sorted by ``(sku, month_start_date)``.
+    """
+    df = demand_cleaned.copy()
+    df["month_start_date"] = df["date"].dt.to_period("M").dt.to_timestamp()
+
+    # --- Consistency validation (log-only, pipeline does not fail) ---
+    daily_sum = (
+        df.groupby(["sku", "month_start_date"])["daily_demand"]
+        .sum()
+        .reset_index()
+        .rename(columns={"daily_demand": "daily_sum"})
+    )
+
+    # monthly_demand is expected to match the sum of daily_demand within each SKU-month.
+    monthly_reported = (
+        df.groupby(["sku", "month_start_date"])["monthly_demand"].first().reset_index()
+    )
+
+    # Merge on SKU and month to compare reported monthly_demand against summed daily_demand.
+    validation = monthly_reported.merge(daily_sum, on=["sku", "month_start_date"])
+    validation["abs_diff"] = (
+        validation["monthly_demand"] - validation["daily_sum"]
+    ).abs()
+
+    # replace(0) guards against division by zero when reported demand is zero.
+    validation["pct_diff"] = (
+        validation["abs_diff"]
+        / validation["monthly_demand"].replace(0, float("nan"))
+        * 100
+    )
+
+    # Typical discrepancies are ±1–3 units — rounding artefacts in the source system.
+    for _, row in validation[validation["abs_diff"] > 0].iterrows():
+        logger.warning(
+            "Monthly demand inconsistency — SKU=%s, month=%s: "
+            "reported=%g, daily_sum=%g, abs_diff=%g, pct_diff=%.2f%%",
+            row["sku"],
+            row["month_start_date"].date(),
+            row["monthly_demand"],
+            row["daily_sum"],
+            row["abs_diff"],
+            row["pct_diff"],
+        )
+
+    # monthly_demand should be constant within a SKU-month; multiple values would
+    # silently corrupt the monthly target if undetected.
+    monthly_unique = df.groupby(["sku", "month_start_date"])["monthly_demand"].nunique()
+    multi_valued = monthly_unique[monthly_unique > 1]
+    if not multi_valued.empty:
+        logger.warning(
+            "Multiple monthly_demand values found for %d SKU-month combinations. "
+            "Using first value after sort by date.",
+            len(multi_valued),
+        )
+
+    # Sort before groupby so "first" is deterministic when duplicate values exist.
+    monthly = (
+        df.sort_values(["sku", "month_start_date", "date"])
+        .groupby(["sku", "month_start_date"], as_index=False)
+        .agg(monthly_demand=("monthly_demand", "first"))
+    )
+    monthly = monthly.sort_values(["sku", "month_start_date"]).reset_index(drop=True)
+    return monthly[["month_start_date", "sku", "monthly_demand"]]
+
+
+def build_exogenous_monthly(exogenous_cleaned: pd.DataFrame) -> pd.DataFrame:
+    """Build the monthly exogenous primary dataset with exactly one row per month.
+
+    Deduplicates by ``month_start_date``, keeping the earliest row when multiple source
+    rows map to the same month. Duplicate months are logged as warnings before being
+    dropped. The raw ``date`` column is excluded; ``month_start_date`` is the canonical
+    join key for all downstream nodes.
+
+    Args:
+        exogenous_cleaned: Cleaned exogenous DataFrame from the intermediate layer,
+            produced by ``load_and_clean_exogenous``. Must contain ``month_start_date``,
+            ``pfizer_limited``, ``surgifoam_limited``, and ``rebate_target``.
+
+    Returns:
+        Monthly exogenous DataFrame with columns: ``month_start_date``,
+        ``pfizer_limited``, ``surgifoam_limited``, ``rebate_target``. One row per
+        month, sorted by ``month_start_date``.
+    """
+    # Sort first so keep="first" on duplicates always picks the earliest row.
+    df = exogenous_cleaned.copy().sort_values("month_start_date").reset_index(drop=True)
+
+    # keep=False marks all rows of a duplicated month so we can log before dropping.
+    duplicated = df["month_start_date"].duplicated(keep=False)
+    if duplicated.any():
+        dup_months = df.loc[duplicated, "month_start_date"].unique().tolist()
+        logger.warning(
+            "Duplicate months found in exogenous data (%d months). "
+            "Keeping first sorted row per month: %s",
+            len(dup_months),
+            dup_months,
+        )
+        df = df.drop_duplicates(subset=["month_start_date"], keep="first")
+
+    # Drop raw `date`; month_start_date is the canonical key for downstream joins.
+    cols = ["month_start_date", "pfizer_limited", "surgifoam_limited", "rebate_target"]
+    return df[cols].sort_values("month_start_date").reset_index(drop=True)

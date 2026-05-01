@@ -5,3 +5,24 @@ forecast_inference:
   daily_allocation:
     enabled: false
     method: "historical_shares"
+
+  monthly_prophet:
+    enabled: true
+    date_column: "ds"
+    sku_column: "sku"
+
+    horizons_months:
+      - 3
+      - 6
+      - 12
+
+    output:
+      include_prediction_intervals: true
+      latest_output_horizon_months: 12
+      model_family: "prophet"
+      model_granularity: "monthly"
+
+    validation:
+      fail_on_missing_regressors: true
+      fail_on_null_regressors: true
+      fail_if_future_contains_y: true

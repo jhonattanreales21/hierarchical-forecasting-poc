@@ -22,8 +22,10 @@ dependencies = [
     "pandas>=2.0",
     "numpy",
     "pyarrow",
+    "holidays>=0.46",
     "seaborn~=0.12.1",
     "shared",
+    "optuna>=4.8.0",
 ]
 
 [project.scripts]

@@ -44,17 +44,11 @@ pipelines/conf/local/**
 # Credentials anywhere in conf
 pipelines/conf/**/*credentials*
 
-# Intermediate and derived data layers (keep raw layer and directory structure)
-pipelines/data/02_intermediate/**
-pipelines/data/03_primary/**
-pipelines/data/04_feature/**
-pipelines/data/05_model_input/**
-pipelines/data/06_models/**
-pipelines/data/07_model_output/**
-pipelines/data/08_reporting/**
-
-# Keep .gitkeep markers and directory structure
-!.gitkeep
+# Ignore all data files across every layer (keep directory structure)
+pipelines/data/**
+!pipelines/data/01_raw/**
+!pipelines/data/**/
+!pipelines/data/**/.gitkeep
 
 # Kedro-Viz metadata
 .viz/
