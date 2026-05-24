@@ -15,12 +15,24 @@ This avoids creating an excessive number of independent pipelines such as `train
 ### 1. Stage-based architecture over model-based fragmentation
 Top-level pipelines should represent **major lifecycle stages** of the forecasting solution, not every possible combination of model and granularity.
 
-### 2. Monthly and weekly are first-class analytical views
-The project has two main modeling views:
-- **Monthly forecasting**, mainly as a strategic benchmark and business-aligned forecasting layer
-- **Weekly forecasting**, as the operational anchor of the solution
+### 2. Monthly-first forecasting architecture
 
-These should be reflected in the feature engineering and model training logic, but not necessarily as fully duplicated architecture.
+The project follows a **monthly-first forecasting architecture**.
+
+This means that the monthly layer is the primary analytical, modeling, evaluation, reporting, and stakeholder-facing layer of the solution. It is the level that best reflects the current business planning process and the main horizon at which forecast quality will be judged.
+
+The weekly layer remains important, but it should be treated as an operational enhancement. Its role is to provide additional short-term granularity, support the 14-week planning context, and enrich the monthly forecast with operational detail. However, it must not redefine the main modeling objective or compromise the quality, completeness, or clarity of the monthly workflow.
+
+The daily layer, if implemented, should be treated as an optional downstream extension or allocation layer, not as a core modeling target.
+
+Practical implications:
+
+- monthly forecasting receives the highest modeling priority;
+- monthly evaluation receives the highest reporting emphasis;
+- monthly outputs are the main artifacts exposed to stakeholders;
+- weekly outputs should complement and remain coherent with the monthly planning view;
+- daily outputs should only be included when they can be produced pragmatically and safely;
+- no weekly or daily workflow should delay, weaken, or overcomplicate the monthly MVP.
 
 ### 3. Reuse through modular pipelines and namespaces
 Whenever possible, the same logical pipeline should be reused with different parameters or namespaces. This keeps the codebase easier to maintain and improves consistency across workflows.
@@ -118,7 +130,7 @@ Generate the weekly-level analytical dataset used for weekly model training, eva
 - weekly modeling base dataset
 
 ### Notes
-This pipeline is especially important because the weekly view is expected to be the operational anchor of the solution.
+The weekly view is an operational enhancement that provides short-term granularity, but the monthly layer remains the primary modeling, evaluation, and business-facing layer.
 
 ---
 
@@ -147,7 +159,6 @@ Examples may include:
 - `monthly_catboost_test`
 - `weekly_prophet_train`
 - `weekly_prophet_validation`
-- `weekly_sarimax_test`
 - backtesting fold definitions
 - metadata describing split boundaries and horizon settings
 
@@ -159,7 +170,7 @@ This pipeline should be treated as a **shared preparation layer**, not as a coll
 ## 5. `train_monthly`
 
 ### Purpose
-Train and tune monthly forecasting models across the selected model families.
+Train and tune monthly forecasting models across the selected model families. This is the primary modeling pipeline of the project and the main source of business-facing forecast outputs.
 
 ### Responsibilities
 - receive prepared monthly datasets
@@ -189,7 +200,7 @@ Example conceptual structure:
 - `train_monthly.sarimax`
 
 ### Notes
-This pipeline should identify the best monthly candidate of each model family, but not yet define the final production champion.
+This pipeline should identify the best monthly candidate of each model family, but not yet define the final production champion. The monthly training workflow is the core modeling workflow of the project. It should receive the highest priority in terms of modeling effort, evaluation rigor, artifact completeness, and stakeholder-facing reporting.
 
 ---
 
@@ -208,7 +219,6 @@ Train and tune weekly forecasting models across the selected model families.
 ### Supported model families
 - Prophet
 - CatBoost
-- SARIMAX
 
 ### Expected outputs
 - trained weekly candidate models
@@ -223,7 +233,6 @@ As with the monthly pipeline, prefer **modular reuse and namespaces** over many 
 Example conceptual structure:
 - `train_weekly.prophet`
 - `train_weekly.catboost`
-- `train_weekly.sarimax`
 
 ### Notes
 This pipeline should mirror the monthly training logic while respecting weekly-specific features, horizons, and evaluation settings.
@@ -243,11 +252,18 @@ Evaluate the best trained candidates on held-out test data and select the final 
 - persist champion metadata for downstream use
 
 ### Expected outputs
+
 - monthly champion model(s)
-- weekly champion model(s)
-- test-set comparison report
+- weekly champion model(s), when the weekly workflow is active
+- validation metrics by model family, horizon, and granularity
+- test metrics by model family, horizon, and granularity
+- WAPE / MASE / RMSE comparison tables
+- secondary diagnostics tables, including bias and horizon-specific error
+- raw vs reconciled metric comparison, when reconciliation is applied
+- model ranking report
 - final selection summaries
 - champion registry or metadata artifact
+- model selection audit report
 
 ### Recommended selection logic
 Champion selection may be defined:
@@ -259,6 +275,148 @@ Champion selection may be defined:
 A practical setup would be:
 - monthly champion for each target horizon
 - weekly champion for each target horizon
+
+### Champion selection protocol
+
+The `model_selection` pipeline must implement a staged, time-aware, and leakage-safe champion selection protocol. Its purpose is to avoid selecting models directly from the final test period and to ensure that final application forecasts are generated from models trained with the maximum available historical information.
+
+The protocol should be applied independently by:
+
+- temporal granularity: `monthly` and, when active, `weekly`;
+- model family: `prophet`, `catboost`, `sarimax`;
+- forecast horizon: for example 3, 6, and 12 months for the monthly workflow, and the configured weekly horizon when the weekly workflow is active.
+
+#### Stage 1 — Time-based data split
+
+The available historical data must be split into ordered temporal blocks:
+
+- `training`: used to fit model candidates and tune hyperparameters;
+- `validation` / `evaluation`: used to compare tuned candidates and shortlist the best configurations;
+- `testing`: held out until the final comparison stage.
+
+Random splits must not be used because they break the temporal structure of the forecasting problem and may introduce leakage.
+
+#### Stage 2 — Hyperparameter tuning and validation shortlist
+
+For each model family, temporal granularity, and forecast horizon, hyperparameter tuning is performed using the training period.
+
+Each tuned configuration is evaluated on the validation period. Based on the official metrics and relevant diagnostics, the pipeline should select a controlled shortlist of candidate configurations.
+
+The default shortlist rule is:
+
+- select the top 3 candidate configurations;
+- per model family;
+- per temporal granularity;
+- per forecast horizon.
+
+This stage produces candidate configurations, not final champions.
+
+#### Stage 3 — Refit on training + validation and evaluate on test
+
+The shortlisted configurations are refitted using the combined `training + validation` data.
+
+These refitted candidates are then evaluated on the held-out testing period. This test-period evaluation is used to select the best configuration within each model family, temporal granularity, and forecast horizon.
+
+The output of this stage is the `family champion`.
+
+A family champion is the best validated configuration within a specific model family for a specific granularity and horizon.
+
+Examples:
+
+- best monthly Prophet configuration for a 3-month horizon;
+- best monthly CatBoost configuration for a 6-month horizon;
+- best monthly SARIMAX configuration for a 12-month horizon;
+- best weekly Prophet configuration for the configured weekly horizon, when the weekly workflow is active.
+
+#### Stage 4 — Select production champion
+
+After family champions are selected, the pipeline may compare them across eligible model families to define a `production champion` for each granularity and horizon.
+
+The project may therefore distinguish between two champion levels:
+
+- `family champion`: best configuration within a model family, granularity, and horizon;
+- `production champion`: final selected model across all eligible families for a given granularity and horizon.
+
+If the application exposes multiple model options, family champions may be made available for comparison. If the application exposes one official forecast, the production champion must be selected using predefined metrics and documented tie-breaker criteria.
+
+#### Stage 5 — Final refit for application forecasts
+
+Once the champion configuration is selected, the model should be refitted using all available historical data approved for final training.
+
+This final refit is used to generate the forecasts consumed by the application layer.
+
+The final application forecast should not be generated from a model trained only on the original training split if validation and testing data are already available and approved for final refitting.
+
+### Evaluation metrics and selection criteria
+
+Champion selection should not depend on a single metric. Forecasting models may behave differently depending on whether the priority is aggregate accuracy, robustness against naive baselines, large-error penalization, bias control, or horizon stability.
+
+For this reason, the `model_selection` pipeline must evaluate each candidate using a standard metric set:
+
+- `WAPE`: primary business-facing aggregate error metric.
+- `MASE`: scale-free metric used to compare performance against naive forecasting baselines.
+- `RMSE`: error metric used to penalize large forecast misses.
+
+These metrics must be computed consistently for each:
+
+- temporal granularity: `monthly` and, when active, `weekly`;
+- model family: `prophet`, `catboost`, `sarimax`;
+- forecast horizon: for example 3, 6, and 12 months in the monthly workflow;
+- evaluation stage: validation/evaluation and testing;
+- forecast version: raw and reconciled, when reconciliation is applied.
+
+The final champion should be selected using predefined criteria based on the official metric set, not by optimizing one metric in isolation.
+
+A recommended decision rule is:
+
+1. Use `WAPE` as the primary business-facing ranking metric.
+2. Use `MASE` to verify that the candidate improves meaningfully over naive baselines.
+3. Use `RMSE` to detect candidates with unacceptable large forecast errors.
+4. Use secondary diagnostics as tie-breakers or rejection criteria.
+
+Secondary diagnostics may include:
+
+- forecast bias;
+- horizon-specific degradation;
+- stability across forecast horizons;
+- performance before and after reconciliation;
+- business plausibility;
+- interpretability and operational simplicity;
+- consistency with future exogenous assumptions.
+
+A model should not be selected as champion only because it has the lowest value for one metric if it performs poorly on other critical diagnostics or produces forecasts that are not business-plausible.
+
+### Expected champion artifacts
+
+The `model_selection` pipeline should persist enough metadata to make the selection process auditable and reproducible.
+
+Expected artifacts include:
+
+- validation ranking by model family, granularity, and horizon;
+- shortlisted top 3 configurations per family, granularity, and horizon;
+- test evaluation results for shortlisted candidates;
+- selected family champion metadata;
+- selected production champion metadata, when applicable;
+- champion registry artifact;
+- selected hyperparameters;
+- model family;
+- temporal granularity;
+- forecast horizon;
+- training, validation, and test cutoffs;
+- validation and test metrics;
+- MLflow run identifiers, when available;
+- notes about future exogenous assumptions.
+
+### Notes
+
+This pipeline is a core methodological layer of the project. It must preserve the distinction between:
+
+- hyperparameter tuning on training data;
+- candidate shortlisting on validation data;
+- final unbiased comparison on test data;
+- final refit using all available historical data for application forecast generation.
+
+This separation is required for academic defensibility, reproducibility, and leakage-safe evaluation.
 
 ### Notes
 This pipeline is an important methodological layer because it separates:
@@ -287,7 +445,9 @@ Apply temporal hierarchical reconciliation to the selected forecasts, ensuring c
 - method-specific artifacts or summaries
 
 ### Notes
-This pipeline should remain independent because reconciliation is not just a post-processing detail; it is one of the key methodological elements of the solution.
+Reconciliation should preserve the monthly forecast as the controlling business-facing layer. Weekly forecasts should be adjusted or interpreted in a way that remains coherent with the monthly planning view.
+
+The primary reconciliation target is monthly ↔ weekly coherence. Full monthly ↔ weekly ↔ daily reconciliation is optional and should be treated as a secondary extension.
 
 ---
 
@@ -324,7 +484,7 @@ The core inference logic should be reused in both scenarios. Only the trigger an
 
 The high-level functional flow should be:
 
-`data_ingestion -> feature_engineering_monthly / feature_engineering_weekly -> model_input_preparation -> train_monthly / train_weekly -> model_selection -> reconciliation -> forecast_inference`
+`data_ingestion -> feature_engineering_monthly / feature_engineering_weekly -> model_input_preparation -> train_monthly / train_weekly -> model_selection -> forecast_inference_raw -> reconciliation -> publish_forecast_outputs`
 
 This sequence supports both experimentation and production-like execution in a clean and explainable way.
 
@@ -340,7 +500,6 @@ Examples:
 - `monthly.sarimax`
 - `weekly.prophet`
 - `weekly.catboost`
-- `weekly.sarimax`
 
 This allows the codebase to stay modular without multiplying top-level pipelines unnecessarily.
 

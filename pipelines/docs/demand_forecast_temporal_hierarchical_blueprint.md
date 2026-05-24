@@ -335,7 +335,7 @@ If the application exposes multiple model options, family champions may be made 
 
 The primary selection criteria should be based on the project’s official metrics:
 
-- **WAPE / WMAPE** as the main business-facing aggregate error metric.
+- **WAPE** as the main business-facing aggregate error metric.
 - **MASE** as a scale-free comparison against naive baselines.
 - **RMSE** to penalize large forecast misses.
 
