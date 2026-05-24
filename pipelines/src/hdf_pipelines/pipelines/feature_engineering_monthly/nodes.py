@@ -279,6 +279,45 @@ def build_monthly_calendar_features(
     return calendar_features
 
 
+def _compute_derived_exogenous_features(
+    df: pd.DataFrame,
+    derived_params: dict,
+) -> tuple[pd.DataFrame, list[str]]:
+    """Compute configured derived exogenous features from base columns.
+
+    Args:
+        df: Exogenous DataFrame containing the required source columns.
+        derived_params: The ``derived_features`` sub-dict from the exogenous_features
+            parameters block. Keys are feature names; each value must have ``enabled``
+            (bool) and ``source_column`` (str), plus feature-specific hyperparameters.
+
+    Returns:
+        Tuple of (updated DataFrame with new columns, list of enabled derived column names).
+    """
+    derived_cols: list[str] = []
+
+    stress_cfg = derived_params.get("market_share_stress", {})
+    if stress_cfg.get("enabled", False):
+        src = stress_cfg["source_column"]
+        exp = float(stress_cfg.get("exponent", 2.0))
+        df = df.copy()
+        df["market_share_stress"] = df[src] ** exp
+        derived_cols.append("market_share_stress")
+        logger.info("Computed market_share_stress (source=%s, exponent=%s).", src, exp)
+
+    uplift_cfg = derived_params.get("market_share_uplift", {})
+    if uplift_cfg.get("enabled", False):
+        src = uplift_cfg["source_column"]
+        baseline = float(uplift_cfg.get("baseline", 0.50))
+        if "market_share_stress" not in derived_cols:
+            df = df.copy()
+        df["market_share_uplift"] = (df[src] - baseline).clip(lower=0.0)
+        derived_cols.append("market_share_uplift")
+        logger.info("Computed market_share_uplift (source=%s, baseline=%s).", src, baseline)
+
+    return df, derived_cols
+
+
 def build_monthly_exogenous_features(
     exogenous_monthly: pd.DataFrame,
     parameters: dict,
@@ -343,10 +382,15 @@ def build_monthly_exogenous_features(
         exogenous_df[date_column].max().date(),
     )
 
-    # Add lagged features based on the configured base columns and lags.
+    # Compute optional derived features before lagging so they receive the same lag treatment.
+    derived_params = exogenous_params.get("derived_features", {})
+    exogenous_df, derived_columns = _compute_derived_exogenous_features(exogenous_df, derived_params)
+    all_lag_columns = [*base_columns, *derived_columns]
+
+    # Add lagged features based on the configured base columns, derived columns, and lags.
     exogenous_features, lagged_columns = _add_lag_features(
         exogenous_df,
-        columns=base_columns,
+        columns=all_lag_columns,
         lags=lags,
         date_column=date_column,
     )

@@ -15,17 +15,27 @@ feature_engineering_monthly:
       - "pfizer_limited"
       - "surgifoam_limited"
       - "rebate_target"
+      - "expected_market_share"
     lags: [1, 2, 3]
+    derived_features:
+      market_share_stress:
+        enabled: true
+        source_column: "expected_market_share"
+        exponent: 2.0
+      market_share_uplift:
+        enabled: true
+        source_column: "expected_market_share"
+        baseline: 0.50
 
-feature_engineering:
-  monthly:
-    lags: [1, 2, 3, 6, 12]
-    rolling_windows: [3, 6, 12]
-    calendar_features: true
-    include_exogenous: true
+# feature_engineering:
+#   monthly:
+#     lags: [1, 2, 3, 6, 12]
+#     rolling_windows: [3, 6, 12]
+#     calendar_features: true
+#     include_exogenous: true
 
-  weekly:
-    lags: [1, 2, 4, 8, 12, 26, 52]
-    rolling_windows: [4, 8, 13]
-    calendar_features: true
-    include_exogenous: true
+#   weekly:
+#     lags: [1, 2, 4, 8, 12, 26, 52]
+#     rolling_windows: [4, 8, 13]
+#     calendar_features: true
+#     include_exogenous: true
