@@ -54,27 +54,33 @@ def register_pipelines() -> dict[str, Pipeline]:
         + inference
     )
 
-    training = monthly_training + weekly_training
-    full_experiment = (
-        ingestion + fe_monthly + fe_weekly + model_input + training + selection
-    )
-    inference_flow = inference + recon
+    # Validated monthly MVP — the current stable default execution route
+    monthly_mvp = prophet_monthly_e2e
 
-    default = full_experiment + recon + inference
+    # Scaffolded composed shortcuts — include NotImplementedError stubs; not part of default
+    experimental_training = monthly_training + weekly_training
+    experimental_full_experiment = (
+        ingestion + fe_monthly + fe_weekly + model_input + experimental_training + selection
+    )
+    experimental_inference = inference + recon
 
     return {
-        "__default__": default,
+        # ── Validated routes ──────────────────────────────────────────────────
+        "__default__": monthly_mvp,
+        "monthly_mvp": monthly_mvp,
+        "prophet_monthly_e2e": prophet_monthly_e2e,
+        # ── Individual stage pipelines ────────────────────────────────────────
         "data_ingestion": ingestion,
         "feature_engineering_monthly": fe_monthly,
-        "feature_engineering_weekly": fe_weekly,
         "model_input_preparation": model_input,
         "train_monthly": monthly_training,
-        "prophet_monthly_e2e": prophet_monthly_e2e,
-        "train_weekly": weekly_training,
         "model_selection": selection,
-        "reconciliation": recon,
         "forecast_inference": inference,
-        "training": training,
-        "inference": inference_flow,
-        "full_experiment": full_experiment,
+        # ── Scaffolded / experimental (include NotImplementedError stubs) ─────
+        "feature_engineering_weekly": fe_weekly,
+        "train_weekly": weekly_training,
+        "reconciliation": recon,
+        "experimental_training": experimental_training,
+        "experimental_inference": experimental_inference,
+        "experimental_full_experiment": experimental_full_experiment,
     }

@@ -84,42 +84,55 @@ uv sync --no-dev           # Production dependencies only
 
 ## Running Pipelines
 
+### Current default route
+
 ```bash
-# Monthly Prophet MVP (fully validated)
+# Run the validated Monthly Prophet MVP — the current stable default
+kedro run --pipeline monthly_mvp
+kedro run                          # equivalent to monthly_mvp
+```
+
+This executes: `data_ingestion → feature_engineering_monthly → model_input_preparation → train_monthly_prophet → model_selection_monthly_prophet → forecast_inference`
+
+### Individual validated stages
+
+```bash
 kedro run --pipeline data_ingestion
 kedro run --pipeline feature_engineering_monthly
 kedro run --pipeline model_input_preparation
-kedro run --pipeline train_monthly_prophet
-kedro run --pipeline model_selection_monthly_prophet
-kedro run --pipeline forecast_inference
-
-# Scaffolded stages (wired but not yet end-to-end validated)
-kedro run --pipeline feature_engineering_weekly
-kedro run --pipeline train_monthly         # all monthly model families
-kedro run --pipeline train_weekly
-kedro run --pipeline model_selection
-kedro run --pipeline reconciliation
-
-# Composed pipeline shortcuts
-kedro run --pipeline training              # train_monthly + train_weekly
-kedro run --pipeline full_experiment       # ingestion → features → model input → training → selection
-kedro run --pipeline inference             # forecast_inference + reconciliation
-
-# Run the full default pipeline (all stages)
-kedro run
+kedro run --pipeline train_monthly             # Prophet only (CatBoost, SARIMAX scaffolded)
+kedro run --pipeline model_selection           # Prophet path only
+kedro run --pipeline forecast_inference        # Monthly Prophet outputs only
+kedro run --pipeline prophet_monthly_e2e       # same as monthly_mvp
 ```
 
-### Full Pipeline Execution Order
+### Scaffolded stages — ⚠️ not yet end-to-end validated
+
+```bash
+kedro run --pipeline feature_engineering_weekly    # NotImplementedError
+kedro run --pipeline train_weekly                  # NotImplementedError
+kedro run --pipeline reconciliation                # NotImplementedError
+```
+
+### Experimental composed shortcuts — ⚠️ include NotImplementedError stubs, will fail
+
+```bash
+kedro run --pipeline experimental_training              # train_monthly + train_weekly
+kedro run --pipeline experimental_full_experiment       # ingestion → all features → training → selection
+kedro run --pipeline experimental_inference             # forecast_inference + reconciliation
+```
+
+### Full intended execution order (target architecture, not yet fully executable)
 
 ```
 data_ingestion
     → feature_engineering_monthly
-    → feature_engineering_weekly
+    → feature_engineering_weekly        [🔧 scaffolded]
         → model_input_preparation
             → train_monthly (prophet · catboost · sarimax)
-            → train_weekly  (prophet · catboost · sarimax)
-                → model_selection
-                    → reconciliation
+            → train_weekly  (prophet · catboost · sarimax)  [🔧 scaffolded]
+                → model_selection                            [🔧 scaffolded]
+                    → reconciliation                         [🔧 scaffolded]
                         → forecast_inference
 ```
 

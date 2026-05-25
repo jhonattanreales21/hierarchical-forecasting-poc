@@ -7,6 +7,7 @@ are persisted for the model-selection stage.
 """
 
 import logging
+import warnings
 from datetime import UTC, datetime
 from typing import Any
 
@@ -14,6 +15,8 @@ import numpy as np
 import optuna
 import pandas as pd
 from prophet import Prophet
+from shared.metrics import mase as _shared_mase
+from shared.metrics import wape as _shared_wape
 
 from hdf_pipelines.utils import (
     create_optuna_study,
@@ -93,6 +96,7 @@ def train_and_evaluate_monthly_prophet_candidates(  # noqa: PLR0915
 
     metrics_cfg: dict = params.get("metrics", {})
     epsilon: float = float(metrics_cfg.get("epsilon", 1.0))
+    mase_seasonal_period: int = int(metrics_cfg.get("mase_seasonal_period", 12))
     precision_threshold: float = float(
         metrics_cfg.get("business_success_precision_threshold", 0.85)
     )
@@ -206,9 +210,15 @@ def train_and_evaluate_monthly_prophet_candidates(  # noqa: PLR0915
                 model, val_pred_df, active_regressors
             )
             y_pred = forecast["yhat"].values.astype(float)
+            y_train_vals = train_fit_df["y"].values.astype(float)
 
             base = _compute_forecast_metrics(
-                y_true, y_pred, epsilon, precision_threshold
+                y_true,
+                y_pred,
+                epsilon,
+                precision_threshold,
+                y_train=y_train_vals,
+                mase_seasonal_period=mase_seasonal_period,
             )
             horiz = _compute_horizon_metrics(
                 val_df,
@@ -223,12 +233,12 @@ def train_and_evaluate_monthly_prophet_candidates(  # noqa: PLR0915
             selection_value = all_metrics[selection_metric]
 
             logger.info(
-                "%s → mape=%.4f  rmse=%.2f  wmape=%.4f  precision=%.4f",
+                "%s → wape=%.4f  mase=%.4f  rmse=%.2f  mape=%.4f",
                 candidate_id,
-                base["mape"],
+                base["wape"],
+                base["mase"] if base["mase"] is not None else float("nan"),
                 base["rmse"],
-                base["wmape"],
-                base["forecast_precision"],
+                base["mape"],
             )
 
             trained_models[candidate_id] = model
@@ -464,36 +474,52 @@ def _compute_forecast_metrics(
     y_pred: np.ndarray,
     epsilon: float,
     precision_threshold: float,
+    y_train: np.ndarray | None = None,
+    mase_seasonal_period: int = 12,
 ) -> dict:
     """Compute scalar forecast accuracy metrics for a single candidate.
 
-    MAPE uses an epsilon additive guard in the denominator to avoid division by
-    zero on months with zero demand. forecast_precision = 1 - mape.
+    WAPE (primary) uses a sum-based aggregate to avoid instability from small
+    denominators. MASE requires y_train and returns NaN when history is too short.
+    MAPE is retained as a secondary diagnostic. forecast_precision = 1 - mape.
 
     Args:
         y_true: Observed values.
         y_pred: Forecasted values, same shape as y_true.
-        epsilon: Small constant added to |y_true| in percentage metric denominators.
+        epsilon: Small constant added to |y_true| in the epsilon-guarded MAPE denominator.
         precision_threshold: Threshold above which business_success_flag is True.
+        y_train: Training series used for the MASE naive denominator. If None, MASE is NaN.
+        mase_seasonal_period: Seasonal period for the MASE naive benchmark.
 
     Returns:
-        Dict with mae, rmse, mape, wmape, forecast_precision, business_success_flag.
+        Dict with wape, mase, mae, rmse, mape, wmape, forecast_precision, business_success_flag.
     """
     y_true = np.asarray(y_true, dtype=float)
     y_pred = np.asarray(y_pred, dtype=float)
     abs_errors = np.abs(y_true - y_pred)
 
     mae = float(np.mean(abs_errors))
-    rmse = float(np.sqrt(np.mean((y_true - y_pred) ** 2)))
-    mape = float(np.mean(abs_errors / (np.abs(y_true) + epsilon)))
+    rmse_val = float(np.sqrt(np.mean((y_true - y_pred) ** 2)))
+    mape_val = float(np.mean(abs_errors / (np.abs(y_true) + epsilon)))
     wmape = float(np.sum(abs_errors) / (np.sum(np.abs(y_true)) + epsilon))
-    forecast_precision = 1.0 - mape
+    wape_val = _shared_wape(y_true, y_pred)
+    forecast_precision = 1.0 - mape_val
     business_success_flag = bool(forecast_precision >= precision_threshold)
 
+    mase_val: float | None = None
+    if y_train is not None:
+        with warnings.catch_warnings():
+            warnings.simplefilter("always")
+            mase_val = _shared_mase(y_true, y_pred, y_train, mase_seasonal_period)
+        if mase_val is not None and not np.isfinite(mase_val):
+            mase_val = None
+
     return {
+        "wape": wape_val,
+        "mase": mase_val,
         "mae": mae,
-        "rmse": rmse,
-        "mape": mape,
+        "rmse": rmse_val,
+        "mape": mape_val,
         "wmape": wmape,
         "forecast_precision": forecast_precision,
         "business_success_flag": business_success_flag,
@@ -631,6 +657,8 @@ def _build_prechampion_configs(
                 "candidate_id": cid,
                 "rank": _safe_int(row.get("rank")),
                 "validation_metrics": {
+                    "wape": _safe_float(m.get("wape")),
+                    "mase": _safe_float(m.get("mase")),
                     "mae": _safe_float(m.get("mae")),
                     "rmse": _safe_float(m.get("rmse")),
                     "mape": _safe_float(m.get("mape")),
@@ -670,7 +698,7 @@ def _build_prechampion_configs(
 
 def _build_supported_metrics(horizons: list[int]) -> set[str]:
     """List all metrics that can be optimized by the monthly Prophet tuner."""
-    metrics = {"mae", "rmse", "mape", "wmape", "forecast_precision"}
+    metrics = {"wape", "mase", "mae", "rmse", "mape", "wmape", "forecast_precision"}
     for horizon in horizons:
         metrics.update(
             {

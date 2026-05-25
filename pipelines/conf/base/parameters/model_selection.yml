@@ -1,8 +1,8 @@
 model_selection:
-  primary_metric: "MAPE"
+  primary_metric: "WAPE"
   secondary_metrics:
-    - "RMSE"
     - "MASE"
+    - "RMSE"
   selection_strategy: "best_by_horizon"
   tie_breaker: "RMSE"
 
@@ -12,19 +12,27 @@ model_selection:
     sku_column: "sku"
 
     selection:
-      primary_metric: "mape"
+      primary_metric: "wape"
       tie_breakers:
-        - "wmape"
-        - "horizon_3_mape"
-        - "horizon_2_mape"
-        - "validation_rank"
+        - "test_m3_wape"
+        - "test_m2_wape"
+        - "mase"
+        - "rmse"
+      missing_metric_policy: "skip_with_audit_note"
       business_success_precision_threshold: 0.85
 
     metrics:
       epsilon: 1.0
+      mase_seasonal_period: 12
       horizon_metrics:
         enabled: true
         horizons: [2, 3]
+
+    operational_lead_time:
+      enabled: true
+      lead_times:
+        - 2
+        - 3
 
     regressors:
       mode: "additive"

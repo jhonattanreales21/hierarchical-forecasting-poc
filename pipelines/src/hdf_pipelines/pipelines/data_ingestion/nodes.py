@@ -25,7 +25,7 @@ _DEMAND_RENAME = {
 
 # Validated after stripping whitespace; raw header has "surgifoam_limited " (trailing space).
 _EXOGENOUS_STRIPPED_COLUMNS = frozenset(
-    ["Date", "pfizer_limited", "surgifoam_limited", "rebate_target"]
+    ["Date", "pfizer_limited", "surgifoam_limited", "rebate_target", "expected_market_share"]
 )
 
 
@@ -235,7 +235,7 @@ def load_and_clean_exogenous(raw_exogenous: pd.DataFrame) -> pd.DataFrame:
     # Explicit format avoids ambiguous parsing of "YYYY-MM" strings.
     df["date"] = pd.to_datetime(df["date"], format="%Y-%m")
 
-    for col in ["pfizer_limited", "surgifoam_limited", "rebate_target"]:
+    for col in ["pfizer_limited", "surgifoam_limited", "rebate_target", "expected_market_share"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
     null_cols = df.isnull().sum()
@@ -433,5 +433,5 @@ def build_exogenous_monthly(exogenous_cleaned: pd.DataFrame) -> pd.DataFrame:
         df = df.drop_duplicates(subset=["month_start_date"], keep="first")
 
     # Drop raw `date`; month_start_date is the canonical key for downstream joins.
-    cols = ["month_start_date", "pfizer_limited", "surgifoam_limited", "rebate_target"]
+    cols = ["month_start_date", "pfizer_limited", "surgifoam_limited", "rebate_target", "expected_market_share"]
     return df[cols].sort_values("month_start_date").reset_index(drop=True)

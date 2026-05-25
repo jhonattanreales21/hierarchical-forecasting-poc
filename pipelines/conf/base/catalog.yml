@@ -277,3 +277,15 @@ evaluation_report:
 reconciliation_diagnostics:
   type: pandas.ParquetDataset
   filepath: data/08_reporting/reconciliation_diagnostics.parquet
+
+monthly_operational_test_forecasts:
+  type: pandas.ParquetDataset
+  filepath: data/08_reporting/monthly_operational_test_forecasts.parquet
+
+monthly_operational_lead_time_metrics:
+  type: pandas.ParquetDataset
+  filepath: data/08_reporting/monthly_operational_lead_time_metrics.parquet
+
+monthly_model_selection_audit:
+  type: pandas.ParquetDataset
+  filepath: data/08_reporting/monthly_model_selection_audit.parquet
