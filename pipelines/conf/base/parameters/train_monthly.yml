@@ -25,20 +25,26 @@ train_monthly:
       - "pfizer_limited"
       - "surgifoam_limited"
       - "rebate_target"
+      - "expected_market_share"
       - "pfizer_limited_lag_1"
       - "surgifoam_limited_lag_1"
       - "rebate_target_lag_1"
+      - "expected_market_share_lag_1"
       - "pfizer_limited_lag_2"
       - "surgifoam_limited_lag_2"
       - "rebate_target_lag_2"
       - "pfizer_limited_lag_3"
       - "surgifoam_limited_lag_3"
       - "rebate_target_lag_3"
+      - "market_share_stress"
+      - "market_share_stress_lag_1"
+      - "market_share_uplift"
+      - "market_share_uplift_lag_1"
 
     tuning:
       optimizer: "optuna"
       objective:
-        metric: "mape"
+        metric: "wape"
         direction: "minimize"
       max_trials: 30
       top_n_prechampions: 3
@@ -75,6 +81,7 @@ train_monthly:
 
     metrics:
       epsilon: 1.0
+      mase_seasonal_period: 12
       business_success_precision_threshold: 0.85
       horizon_metrics:
         enabled: true

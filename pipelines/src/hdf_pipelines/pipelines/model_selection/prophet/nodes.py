@@ -1,18 +1,22 @@
 """Monthly Prophet model-selection nodes.
 
-Evaluates pre-champion candidates on the held-out test set, selects the final
-champion based on configurable metrics, optionally refits on all available
-historical data, and persists the champion model and metadata for Stage 6
-forecast inference.
+Evaluates pre-champion candidates on the held-out test set, computes
+rolling-origin M-2/M-3 operational metrics, selects the final champion
+based on configurable metrics (primary: WAPE), optionally refits on all
+available historical data, and persists the champion model and metadata
+for Stage 6 forecast inference.
 """
 
 import logging
+import warnings
 from datetime import UTC, datetime
 from typing import Any
 
 import numpy as np
 import pandas as pd
 from prophet import Prophet
+from shared.metrics import mase as _shared_mase
+from shared.metrics import wape as _shared_wape
 
 # Suppress verbose Stan/cmdstanpy progress output during Prophet fitting
 logging.getLogger("cmdstanpy").setLevel(logging.WARNING)
@@ -21,14 +25,15 @@ logging.getLogger("prophet").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # Metrics where lower value = better rank (ascending sort).
-# Precision-style metrics (forecast_precision, horizon_N_forecast_precision) are excluded
-# and ranked descending by default.
 _ERROR_METRICS: frozenset[str] = frozenset(
     {
+        "wape",
+        "mase",
         "mae",
         "rmse",
         "mape",
-        "wmape",
+        "test_m2_wape",
+        "test_m3_wape",
         "horizon_2_mae",
         "horizon_2_mape",
         "horizon_2_wmape",
@@ -49,13 +54,14 @@ def evaluate_monthly_prophet_prechampions_on_test(  # noqa: PLR0915
     monthly_prophet_candidate_models: dict,
     monthly_prophet_prechampion_configs: dict,
     monthly_prophet_tuning_results: pd.DataFrame,
+    monthly_prophet_train: pd.DataFrame,
     params: dict,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Evaluate each pre-champion Prophet model on the held-out test set.
 
     Loads each pre-champion model, forecasts the test period, and computes full
-    test metrics. Does not modify any candidate configuration — the test set is
-    used only for final evaluation, not for additional tuning.
+    test metrics including WAPE (primary), MASE, and RMSE. MASE uses the training
+    series for its naive denominator to prevent data leakage.
 
     Args:
         monthly_prophet_test: Test split with ds, y, sku, and active regressor columns.
@@ -63,6 +69,7 @@ def evaluate_monthly_prophet_prechampions_on_test(  # noqa: PLR0915
         monthly_prophet_prechampion_configs: Pre-champion configurations from Stage 4.
         monthly_prophet_tuning_results: Ranked tuning results from Stage 4 (unused here,
             included for pipeline lineage traceability).
+        monthly_prophet_train: Training split used for the MASE naive denominator.
         params: Contents of ``model_selection.monthly_prophet`` from the parameter file.
 
     Returns:
@@ -83,6 +90,7 @@ def evaluate_monthly_prophet_prechampions_on_test(  # noqa: PLR0915
 
     metrics_cfg: dict = params.get("metrics", {})
     epsilon: float = float(metrics_cfg.get("epsilon", 1.0))
+    mase_seasonal_period: int = int(metrics_cfg.get("mase_seasonal_period", 12))
     precision_threshold: float = float(
         params.get("selection", {}).get("business_success_precision_threshold", 0.85)
     )
@@ -110,14 +118,23 @@ def evaluate_monthly_prophet_prechampions_on_test(  # noqa: PLR0915
     test_df[date_col] = pd.to_datetime(test_df[date_col])
     test_df = test_df.sort_values(date_col).reset_index(drop=True)
 
+    # y_train for MASE — use training split values (leakage-safe: no val/test data)
+    train_df = monthly_prophet_train.copy()
+    train_df[date_col] = pd.to_datetime(train_df[date_col])
+    y_train_for_mase = train_df[target_col].values.astype(float)
+
     logger.info(
         "Test set: %d rows | %s → %s",
         len(test_df),
         test_df[date_col].min().date(),
         test_df[date_col].max().date(),
     )
+    logger.info(
+        "Train set for MASE: %d rows | seasonality=%d",
+        len(y_train_for_mase),
+        mase_seasonal_period,
+    )
     logger.info("Pre-champions to evaluate: %d", len(prechampions))
-    logger.info("Active regressors (%d): %s", len(active_regressors), active_regressors)
 
     test_start = str(test_df[date_col].min().date())
     test_end = str(test_df[date_col].max().date())
@@ -154,7 +171,12 @@ def evaluate_monthly_prophet_prechampions_on_test(  # noqa: PLR0915
             y_pred = forecast["yhat"].values.astype(float)
 
             base = _compute_forecast_metrics(
-                y_true, y_pred, epsilon, precision_threshold
+                y_true,
+                y_pred,
+                epsilon,
+                precision_threshold,
+                y_train=y_train_for_mase,
+                mase_seasonal_period=mase_seasonal_period,
             )
             horiz = _compute_horizon_metrics(
                 test_df,
@@ -167,12 +189,12 @@ def evaluate_monthly_prophet_prechampions_on_test(  # noqa: PLR0915
             )
 
             logger.info(
-                "%s → mape=%.4f  rmse=%.2f  wmape=%.4f  precision=%.4f",
+                "%s → wape=%.4f  mase=%s  rmse=%.2f  mape=%.4f",
                 candidate_id,
-                base["mape"],
+                base["wape"] if base["wape"] is not None else float("nan"),
+                f"{base['mase']:.4f}" if base["mase"] is not None else "NaN",
                 base["rmse"],
-                base["wmape"],
-                base["forecast_precision"],
+                base["mape"],
             )
 
             metrics_rows.append(
@@ -261,48 +283,265 @@ def evaluate_monthly_prophet_prechampions_on_test(  # noqa: PLR0915
     return test_metrics_df, test_forecast_df
 
 
-def select_monthly_prophet_champion(
-    monthly_prophet_test_metrics: pd.DataFrame,
-    monthly_prophet_tuning_results: pd.DataFrame,
+def evaluate_monthly_prophet_rolling_origin_metrics(  # noqa: PLR0912, PLR0915
+    monthly_prophet_full_train: pd.DataFrame,
+    monthly_prophet_test: pd.DataFrame,
     monthly_prophet_prechampion_configs: dict,
     monthly_prophet_split_metadata: dict,
     params: dict,
-) -> tuple[pd.DataFrame, dict]:
-    """Rank pre-champions on test metrics and select one final champion.
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Compute rolling-origin M-2 and M-3 lead-time metrics over the test window.
 
-    Ranks candidates by the configured primary metric, resolves ties with
-    secondary metrics, and marks exactly one candidate as champion. Builds the
-    champion metadata dict consumed by Stage 6 inference.
+    For each pre-champion and each valid origin-target pair, refits the model on
+    history up to the origin month and evaluates the forecast at the target month
+    (2 or 3 months ahead). Only target months that fall within the test window are
+    evaluated. No information after the origin month is used.
 
     Args:
-        monthly_prophet_test_metrics: Output of evaluate_monthly_prophet_prechampions_on_test.
-        monthly_prophet_tuning_results: Stage 4 ranked results (provides validation rank
-            for tie-breaking).
-        monthly_prophet_prechampion_configs: Pre-champion configurations from Stage 4
-            (provides validation metrics and model hyperparameters for metadata).
-        monthly_prophet_split_metadata: Split window metadata from model_input_preparation
-            (provides train/test date ranges for champion metadata).
+        monthly_prophet_full_train: Full historical dataset (train + val + test rows)
+            used to slice history up to each operational origin.
+        monthly_prophet_test: Test split with actual demand for the target months.
+        monthly_prophet_prechampion_configs: Pre-champion configurations with
+            fixed hyperparameters from Stage 4.
+        monthly_prophet_split_metadata: Split metadata providing train and test date ranges.
         params: Contents of ``model_selection.monthly_prophet`` from the parameter file.
 
     Returns:
         Two-element tuple:
 
-        1. ``selection_summary`` — DataFrame with one row per candidate including
-           test rank, champion flag, and selection reason.
-        2. ``champion_metadata`` — JSON-serialisable dict consumed by
-           build_monthly_prophet_champion_model and Stage 6 forecast inference.
+        1. ``operational_test_forecasts`` — DataFrame with one row per
+           (candidate, origin, target, lead_time) combination.
+        2. ``operational_lead_time_metrics`` — DataFrame with aggregated WAPE per
+           candidate and lead time (test_m2_wape, test_m3_wape).
+    """
+    date_col: str = params.get("date_column", "ds")
+    target_col: str = params.get("target_column", "y")
+    regressor_mode: str = params.get("regressors", {}).get("mode", "additive")
+
+    op_cfg: dict = params.get("operational_lead_time", {})
+    enabled: bool = bool(op_cfg.get("enabled", True))
+    lead_times: list[int] = [int(lt) for lt in op_cfg.get("lead_times", [2, 3])]
+
+    prechampions: list[dict] = monthly_prophet_prechampion_configs.get(
+        "prechampions", []
+    )
+    active_regressors: list[str] = (
+        list(prechampions[0].get("active_regressors", [])) if prechampions else []
+    )
+
+    if not enabled or not prechampions:
+        logger.info(
+            "Rolling-origin evaluation is disabled or no pre-champions available."
+        )
+        return pd.DataFrame(), pd.DataFrame()
+
+    # Determine test window from split metadata
+    test_meta = monthly_prophet_split_metadata.get("test", {})
+    test_start = pd.Timestamp(test_meta.get("start_date"))
+    test_end = pd.Timestamp(test_meta.get("end_date"))
+
+    # Earliest operational origin = 1 month before test_start
+    earliest_origin = test_start - pd.DateOffset(months=1)
+
+    # Enumerate all valid (origin, target, lead_time) triples
+    # origin iterates from earliest_origin; only include if target falls in test window
+    valid_pairs: list[tuple[pd.Timestamp, pd.Timestamp, int]] = []
+    for lt in lead_times:
+        origin = earliest_origin
+        while True:
+            target = origin + pd.DateOffset(months=lt)
+            target = target.normalize()
+            if target > test_end:
+                break
+            if target >= test_start:
+                valid_pairs.append((origin.normalize(), target, lt))
+            origin = origin + pd.DateOffset(months=1)
+
+    if not valid_pairs:
+        logger.warning(
+            "No valid rolling-origin pairs found for lead times %s in test window %s → %s.",
+            lead_times,
+            test_start.date(),
+            test_end.date(),
+        )
+        return pd.DataFrame(), pd.DataFrame()
+
+    logger.info(
+        "Rolling-origin evaluation: %d valid pairs over test window %s → %s",
+        len(valid_pairs),
+        test_start.date(),
+        test_end.date(),
+    )
+
+    # Prepare full history and test actuals
+    full_df = monthly_prophet_full_train.copy()
+    full_df[date_col] = pd.to_datetime(full_df[date_col])
+    full_df = full_df.sort_values(date_col).reset_index(drop=True)
+
+    test_df = monthly_prophet_test.copy()
+    test_df[date_col] = pd.to_datetime(test_df[date_col])
+    # Merge test actuals into a lookup keyed by date
+    actuals_lookup = dict(zip(test_df[date_col].dt.normalize(), test_df[target_col]))
+
+    forecast_rows: list[dict] = []
+
+    for prechampion in prechampions:
+        candidate_id = str(prechampion["candidate_id"])
+        model_params = dict(prechampion.get("model_params", {}))
+
+        for origin, target, lt in valid_pairs:
+            # Slice history up to and including origin (leakage-safe)
+            history = full_df[full_df[date_col].dt.normalize() <= origin].copy()
+            if history.empty:
+                logger.warning(
+                    "No history available for origin %s; skipping pair (%s, %s, L=%d).",
+                    origin.date(),
+                    origin.date(),
+                    target.date(),
+                    lt,
+                )
+                continue
+
+            training_cutoff = history[date_col].max().normalize()
+
+            # Build regressor row for the target month from test_df
+            target_rows = test_df[test_df[date_col].dt.normalize() == target]
+            if target_rows.empty:
+                logger.warning(
+                    "No regressor data available for target month %s; skipping.",
+                    target.date(),
+                )
+                continue
+
+            y_true_val = actuals_lookup.get(target)
+            if y_true_val is None:
+                continue
+
+            try:
+                model = _refit_prophet_on_history(
+                    history,
+                    model_params,
+                    active_regressors,
+                    date_col,
+                    target_col,
+                    regressor_mode,
+                )
+                # Forecast from origin for (lead_time + 1) periods to reach target
+                predict_input = target_rows[[date_col] + active_regressors].rename(
+                    columns={date_col: "ds"}
+                )
+                fc = model.predict(predict_input)
+                y_pred_val = float(fc["yhat"].iloc[0])
+
+                forecast_rows.append(
+                    {
+                        "model_family": "prophet",
+                        "candidate_id": candidate_id,
+                        "split": "test",
+                        "origin_month": origin,
+                        "target_month": target,
+                        "lead_time": lt,
+                        "training_cutoff": training_cutoff,
+                        "y_true": float(y_true_val),
+                        "y_pred": y_pred_val,
+                    }
+                )
+
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    "Rolling-origin refit failed for %s origin=%s target=%s: %s",
+                    candidate_id,
+                    origin.date(),
+                    target.date(),
+                    exc,
+                )
+
+    if not forecast_rows:
+        logger.warning("Rolling-origin evaluation produced no forecast rows.")
+        return pd.DataFrame(), pd.DataFrame()
+
+    raw_df = pd.DataFrame(forecast_rows)
+
+    # Aggregate WAPE per candidate per lead time
+    agg_rows: list[dict] = []
+    for candidate_id in raw_df["candidate_id"].unique():
+        row: dict = {"candidate_id": candidate_id}
+        for lt in lead_times:
+            col_name = f"test_m{lt}_wape"
+            pairs_col = f"n_m{lt}_pairs"
+            subset = raw_df[
+                (raw_df["candidate_id"] == candidate_id) & (raw_df["lead_time"] == lt)
+            ]
+            n_pairs = len(subset)
+            row[pairs_col] = n_pairs
+            if n_pairs == 0:
+                warnings.warn(
+                    f"No valid M-{lt} pairs for candidate {candidate_id}. "
+                    f"Setting test_m{lt}_wape to NaN.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+                row[col_name] = float("nan")
+            else:
+                row[col_name] = _shared_wape(
+                    subset["y_true"].values, subset["y_pred"].values
+                )
+        agg_rows.append(row)
+
+    agg_df = pd.DataFrame(agg_rows)
+
+    logger.info(
+        "Rolling-origin complete — %d forecast rows, %d candidates aggregated.",
+        len(raw_df),
+        len(agg_df),
+    )
+    return raw_df, agg_df
+
+
+def select_monthly_prophet_champion(
+    monthly_prophet_test_metrics: pd.DataFrame,
+    monthly_prophet_tuning_results: pd.DataFrame,
+    monthly_prophet_prechampion_configs: dict,
+    monthly_prophet_split_metadata: dict,
+    monthly_operational_lead_time_metrics: pd.DataFrame,
+    params: dict,
+) -> tuple[pd.DataFrame, dict, pd.DataFrame]:
+    """Rank pre-champions on test metrics and select one final champion.
+
+    Ranks candidates by WAPE (primary), then available operational lead-time
+    metrics (M-3 WAPE, M-2 WAPE), then MASE and RMSE. Missing operational
+    metrics are skipped per the configured policy.
+
+    Args:
+        monthly_prophet_test_metrics: Output of evaluate_monthly_prophet_prechampions_on_test.
+        monthly_prophet_tuning_results: Stage 4 ranked results (provides validation rank).
+        monthly_prophet_prechampion_configs: Pre-champion configurations from Stage 4.
+        monthly_prophet_split_metadata: Split window metadata from model_input_preparation.
+        monthly_operational_lead_time_metrics: Aggregated rolling-origin metrics
+            (test_m2_wape, test_m3_wape, n_m2_pairs, n_m3_pairs) per candidate.
+        params: Contents of ``model_selection.monthly_prophet`` from the parameter file.
+
+    Returns:
+        Three-element tuple:
+
+        1. ``selection_summary`` — DataFrame with one row per candidate.
+        2. ``champion_metadata`` — JSON-serialisable dict for Stage 6 inference.
+        3. ``model_selection_audit`` — DataFrame with selection reasoning and metric notes.
 
     Raises:
         ValueError: If no successful candidates are available for selection.
         RuntimeError: If the champion config is missing from prechampion_configs.
     """
     selection_cfg: dict = params.get("selection", {})
-    primary_metric: str = selection_cfg.get("primary_metric", "mape")
+    primary_metric: str = selection_cfg.get("primary_metric", "wape")
     tie_breakers: list[str] = list(
         selection_cfg.get(
             "tie_breakers",
-            ["wmape", "horizon_3_mape", "horizon_2_mape", "validation_rank"],
+            ["test_m3_wape", "test_m2_wape", "mase", "rmse", "validation_rank"],
         )
+    )
+    missing_policy: str = selection_cfg.get(
+        "missing_metric_policy", "skip_with_audit_note"
     )
     precision_threshold: float = float(
         selection_cfg.get("business_success_precision_threshold", 0.85)
@@ -322,13 +561,45 @@ def select_monthly_prophet_champion(
             "No successful pre-champion candidates available for champion selection."
         )
 
-    # Merge validation rank for tie-breaking; coerce to nullable Int64 to survive NaNs
+    # Merge validation rank for tie-breaking
     val_ranks = monthly_prophet_tuning_results[["candidate_id", "rank"]].rename(
         columns={"rank": "validation_rank"}
     )
     success_df = success_df.merge(val_ranks, on="candidate_id", how="left")
 
-    ranked_df = _rank_test_candidates(success_df, primary_metric, tie_breakers)
+    # Merge operational lead-time metrics when available
+    missing_op_metrics: list[str] = []
+    if not monthly_operational_lead_time_metrics.empty:
+        op_cols = [
+            c
+            for c in monthly_operational_lead_time_metrics.columns
+            if c != "candidate_id"
+        ]
+        success_df = success_df.merge(
+            monthly_operational_lead_time_metrics[["candidate_id"] + op_cols],
+            on="candidate_id",
+            how="left",
+        )
+        for col in ["test_m2_wape", "test_m3_wape"]:
+            if col in success_df.columns and success_df[col].isna().all():
+                missing_op_metrics.append(col)
+                logger.warning(
+                    "Operational metric %r is NaN for all candidates. "
+                    "Excluding from sort order per policy=%r.",
+                    col,
+                    missing_policy,
+                )
+    else:
+        logger.warning(
+            "monthly_operational_lead_time_metrics is empty. "
+            "Operational metrics will not contribute to champion selection."
+        )
+        missing_op_metrics = ["test_m2_wape", "test_m3_wape"]
+
+    # Remove missing operational metrics from tie-breakers
+    active_tie_breakers = [tb for tb in tie_breakers if tb not in missing_op_metrics]
+
+    ranked_df = _rank_test_candidates(success_df, primary_metric, active_tie_breakers)
     champion_row = ranked_df[ranked_df["test_rank"] == 1].iloc[0]
     champion_id: str = str(champion_row["candidate_id"])
 
@@ -355,16 +626,18 @@ def select_monthly_prophet_champion(
             float(fp) if fp is not None else 0.0,
         )
 
-    # Mark champion and build selection_reason on the ranked rows
+    # Mark champion and build selection_reason
     ranked_df["is_champion"] = ranked_df["candidate_id"] == champion_id
     ranked_df["primary_metric"] = primary_metric
     ranked_df["primary_metric_value"] = ranked_df.get(primary_metric)
     ranked_df["selection_reason"] = ranked_df.apply(
-        lambda r: _build_selection_reason(r, champion_id, primary_metric, tie_breakers),
+        lambda r: _build_selection_reason(
+            r, champion_id, primary_metric, active_tie_breakers, missing_op_metrics
+        ),
         axis=1,
     )
 
-    # Append failed candidates with null metrics so the summary covers all pre-champions
+    # Append failed candidates so the summary covers all pre-champions
     failed_df["test_rank"] = None
     failed_df["validation_rank"] = None
     failed_df["is_champion"] = False
@@ -379,13 +652,15 @@ def select_monthly_prophet_champion(
         "is_champion",
         "primary_metric",
         "primary_metric_value",
+        "wape",
+        "mase",
         "mae",
         "rmse",
         "mape",
         "wmape",
+        "test_m2_wape",
+        "test_m3_wape",
         "forecast_precision",
-        "horizon_2_mape",
-        "horizon_3_mape",
         "business_success_flag",
         "selection_reason",
     ]
@@ -415,21 +690,11 @@ def select_monthly_prophet_champion(
         .iloc[0]
         .to_dict()
     )
-    metric_keys = [
-        "mae",
-        "rmse",
-        "mape",
-        "wmape",
-        "forecast_precision",
-        "horizon_2_mape",
-        "horizon_3_mape",
-    ]
+    metric_keys = ["wape", "mase", "mae", "rmse", "mape", "wmape", "forecast_precision"]
 
-    # train_window uses full_train so the champion metadata reflects the actual refit window
     train_summary = monthly_prophet_split_metadata.get("full_train", {})
     test_summary = monthly_prophet_split_metadata.get("test", {})
 
-    # Extract the Optuna trial number for the champion from the tuning results.
     champion_trial_row = monthly_prophet_tuning_results[
         monthly_prophet_tuning_results["candidate_id"] == champion_id
     ]
@@ -438,6 +703,29 @@ def select_monthly_prophet_champion(
         if not champion_trial_row.empty and "trial_number" in champion_trial_row.columns
         else None
     )
+
+    # Operational metrics for champion
+    op_test_m2_wape = None
+    op_test_m3_wape = None
+    n_m2_pairs = None
+    n_m3_pairs = None
+    if not monthly_operational_lead_time_metrics.empty:
+        champ_op = monthly_operational_lead_time_metrics[
+            monthly_operational_lead_time_metrics["candidate_id"] == champion_id
+        ]
+        if not champ_op.empty:
+            op_test_m2_wape = _safe_float(
+                champ_op.get("test_m2_wape", pd.Series([None])).iloc[0]
+            )
+            op_test_m3_wape = _safe_float(
+                champ_op.get("test_m3_wape", pd.Series([None])).iloc[0]
+            )
+            n_m2_pairs = _safe_int(
+                champ_op.get("n_m2_pairs", pd.Series([None])).iloc[0]
+            )
+            n_m3_pairs = _safe_int(
+                champ_op.get("n_m3_pairs", pd.Series([None])).iloc[0]
+            )
 
     champion_metadata: dict = {
         "model_family": "prophet",
@@ -454,6 +742,12 @@ def select_monthly_prophet_champion(
         "model_params": dict(champion_config.get("model_params", {})),
         "validation_metrics": {k: _safe_float(val_metrics.get(k)) for k in metric_keys},
         "test_metrics": {k: _safe_float(test_row.get(k)) for k in metric_keys},
+        "operational_test_metrics": {
+            "test_m2_wape": op_test_m2_wape,
+            "test_m3_wape": op_test_m3_wape,
+            "n_m2_pairs": n_m2_pairs,
+            "n_m3_pairs": n_m3_pairs,
+        },
         "optuna_best_trial": {
             "trial_number": best_trial_number,
             "training_metadata_artifact": "monthly_prophet_training_metadata",
@@ -468,14 +762,43 @@ def select_monthly_prophet_champion(
         },
     }
 
+    # ── Build model selection audit ───────────────────────────────────────────
+    audit_rows: list[dict] = []
+    for _, row in selection_summary_df.iterrows():
+        cid = str(row.get("candidate_id", ""))
+        audit_rows.append(
+            {
+                "candidate_id": cid,
+                "is_champion": bool(row.get("is_champion", False)),
+                "test_rank": row.get("test_rank"),
+                "validation_rank": row.get("validation_rank"),
+                "primary_metric": primary_metric,
+                "wape": _safe_float(row.get("wape")),
+                "mase": _safe_float(row.get("mase")),
+                "rmse": _safe_float(row.get("rmse")),
+                "mape": _safe_float(row.get("mape")),
+                "test_m2_wape": _safe_float(row.get("test_m2_wape")),
+                "test_m3_wape": _safe_float(row.get("test_m3_wape")),
+                "n_m2_pairs": row.get("n_m2_pairs"),
+                "n_m3_pairs": row.get("n_m3_pairs"),
+                "missing_operational_metrics": ", ".join(missing_op_metrics) or None,
+                "selection_reason": str(row.get("selection_reason", "")),
+                "audited_at": datetime.now(tz=UTC).isoformat(),
+            }
+        )
+    audit_df = pd.DataFrame(audit_rows)
+
     logger.info(
-        "Champion metadata built — id=%s  test_%s=%.4f  refit=%s",
+        "Champion metadata built — id=%s  test_%s=%.4f  refit=%s  "
+        "test_m2_wape=%s  test_m3_wape=%s",
         champion_id,
         primary_metric,
         _safe_float(champion_row.get(primary_metric)) or 0.0,
         refit_enabled,
+        f"{op_test_m2_wape:.4f}" if op_test_m2_wape else "N/A",
+        f"{op_test_m3_wape:.4f}" if op_test_m3_wape else "N/A",
     )
-    return selection_summary_df, champion_metadata
+    return selection_summary_df, champion_metadata, audit_df
 
 
 def build_monthly_prophet_champion_model(
@@ -517,7 +840,6 @@ def build_monthly_prophet_champion_model(
     model_params: dict = dict(monthly_prophet_champion_metadata.get("model_params", {}))
 
     if not refit_enabled:
-        # Return the pre-champion model as-is; test metrics remain valid.
         logger.info(
             "Champion refit disabled — returning pre-champion model %s as-is.",
             champion_id,
@@ -528,9 +850,6 @@ def build_monthly_prophet_champion_model(
             )
         return monthly_prophet_candidate_models[champion_id]
 
-    # Refit on full_train so the champion enters inference with the most history available.
-    # This happens AFTER champion selection: the reported test metrics come from the
-    # pre-refit model and are therefore unaffected.
     date_col: str = params.get("date_column", "ds")
     target_col: str = params.get("target_column", "y")
     regressor_mode: str = params.get("regressors", {}).get("mode", "additive")
@@ -563,14 +882,7 @@ def _validate_test_inputs(
     date_col: str,
     target_col: str,
 ) -> None:
-    """Raise a descriptive error for any invalid test input.
-
-    Args:
-        test_df: Test DataFrame to validate.
-        active_regressors: Regressor columns expected in test_df.
-        date_col: Name of the date column.
-        target_col: Name of the target column.
-    """
+    """Raise a descriptive error for any invalid test input."""
     if test_df.empty:
         raise ValueError("Test DataFrame is empty.")
 
@@ -607,20 +919,7 @@ def _forecast_test_period(
     active_regressors: list[str],
     date_col: str,
 ) -> pd.DataFrame:
-    """Generate test-period forecasts from a fitted Prophet model.
-
-    The prediction input contains only ds and active regressors, not the target y,
-    to match the production inference interface.
-
-    Args:
-        model: Fitted Prophet model.
-        test_df: Test data with date_col and active regressors (datetime-converted).
-        active_regressors: Regressor column names registered with the model.
-        date_col: Name of the date column in test_df.
-
-    Returns:
-        Prophet forecast DataFrame with yhat, yhat_lower, yhat_upper, etc.
-    """
+    """Generate test-period forecasts from a fitted Prophet model."""
     predict_input = test_df[[date_col] + active_regressors].rename(
         columns={date_col: "ds"}
     )
@@ -632,36 +931,51 @@ def _compute_forecast_metrics(
     y_pred: np.ndarray,
     epsilon: float,
     precision_threshold: float,
+    y_train: np.ndarray | None = None,
+    mase_seasonal_period: int = 12,
 ) -> dict:
     """Compute scalar forecast accuracy metrics for a single candidate.
 
-    MAPE uses an epsilon additive guard in the denominator to avoid division by
-    zero on months with zero demand. forecast_precision = 1 - mape.
+    WAPE (primary) uses the clean sum-based formula; returns NaN when denominator
+    is zero. MASE uses the training series for the naive denominator (no leakage).
+    MAPE is retained as a secondary diagnostic with an epsilon guard.
 
     Args:
         y_true: Observed values.
         y_pred: Forecasted values, same shape as y_true.
-        epsilon: Small constant added to |y_true| in percentage metric denominators.
+        epsilon: Small constant added to |y_true| in the epsilon-guarded MAPE denominator.
         precision_threshold: Threshold above which business_success_flag is True.
+        y_train: Training series for the MASE naive denominator. NaN when None.
+        mase_seasonal_period: Seasonal period for the MASE naive benchmark.
 
     Returns:
-        Dict with mae, rmse, mape, wmape, forecast_precision, business_success_flag.
+        Dict with wape, mase, mae, rmse, mape, wmape, forecast_precision, business_success_flag.
     """
     y_true = np.asarray(y_true, dtype=float)
     y_pred = np.asarray(y_pred, dtype=float)
     abs_errors = np.abs(y_true - y_pred)
 
     mae = float(np.mean(abs_errors))
-    rmse = float(np.sqrt(np.mean((y_true - y_pred) ** 2)))
-    mape = float(np.mean(abs_errors / (np.abs(y_true) + epsilon)))
+    rmse_val = float(np.sqrt(np.mean((y_true - y_pred) ** 2)))
+    mape_val = float(np.mean(abs_errors / (np.abs(y_true) + epsilon)))
     wmape = float(np.sum(abs_errors) / (np.sum(np.abs(y_true)) + epsilon))
-    forecast_precision = 1.0 - mape
+    wape_val = _shared_wape(y_true, y_pred)
+    forecast_precision = 1.0 - mape_val
     business_success_flag = bool(forecast_precision >= precision_threshold)
 
+    mase_val: float | None = None
+    if y_train is not None:
+        with warnings.catch_warnings():
+            warnings.simplefilter("always")
+            raw_mase = _shared_mase(y_true, y_pred, y_train, mase_seasonal_period)
+        mase_val = raw_mase if np.isfinite(raw_mase) else None
+
     return {
+        "wape": wape_val,
+        "mase": mase_val,
         "mae": mae,
-        "rmse": rmse,
-        "mape": mape,
+        "rmse": rmse_val,
+        "mape": mape_val,
         "wmape": wmape,
         "forecast_precision": forecast_precision,
         "business_success_flag": business_success_flag,
@@ -677,22 +991,7 @@ def _compute_horizon_metrics(  # noqa: PLR0913
     epsilon: float,
     precision_threshold: float,
 ) -> dict:
-    """Compute point metrics at specified forecast horizons.
-
-    Horizon h is the h-th test month when sorted ascending by date (1-based).
-
-    Args:
-        test_df: Test DataFrame (already sorted by date_col ascending).
-        y_pred: Forecasted values aligned positionally with test_df.
-        date_col: Name of the date column.
-        target_col: Name of the target column.
-        horizons: 1-based horizon integers to evaluate.
-        epsilon: Division guard for percentage metrics.
-        precision_threshold: Threshold for business success flag.
-
-    Returns:
-        Dict with horizon_{h}_mae/mape/wmape/forecast_precision for each h in horizons.
-    """
+    """Compute point metrics at specified forecast horizons."""
     test_sorted = test_df.sort_values(date_col).reset_index(drop=True)
     y_true_all = test_sorted[target_col].values.astype(float)
     result: dict = {}
@@ -733,14 +1032,7 @@ def _rank_test_candidates(
 
     Error metrics (listed in _ERROR_METRICS) are ranked ascending (lower is better).
     Precision-style metrics are ranked descending (higher is better).
-
-    Args:
-        success_df: DataFrame of successful candidates with test metrics and validation_rank.
-        primary_metric: Column name for primary sorting.
-        tie_breakers: Ordered list of secondary sort columns.
-
-    Returns:
-        DataFrame with an additional ``test_rank`` column (integer, 1 = champion).
+    Columns absent from the DataFrame are silently skipped.
     """
     all_sort_cols = [primary_metric] + [
         tb for tb in tie_breakers if tb in success_df.columns
@@ -761,18 +1053,9 @@ def _build_selection_reason(
     champion_id: str,
     primary_metric: str,
     tie_breakers: list[str],
+    missing_op_metrics: list[str],
 ) -> str:
-    """Build a short human-readable selection reason for the summary table.
-
-    Args:
-        row: One row of the ranked selection summary.
-        champion_id: ID of the selected champion.
-        primary_metric: Metric used for primary ranking.
-        tie_breakers: Secondary tie-breaking metrics.
-
-    Returns:
-        One-line explanation string; empty string for non-champion candidates.
-    """
+    """Build a short human-readable selection reason for the summary table."""
     if str(row["candidate_id"]) != champion_id:
         return ""
     metric_val = row.get(primary_metric)
@@ -780,9 +1063,35 @@ def _build_selection_reason(
     tie_label = (
         ", ".join(tb.upper() for tb in tie_breakers[:2]) if tie_breakers else "none"
     )
+    missing_note = (
+        f" (missing operational metrics excluded from ranking: {', '.join(missing_op_metrics)})"
+        if missing_op_metrics
+        else ""
+    )
     return (
         f"Selected because it achieved the lowest test {primary_metric.upper()} "
-        f"({val_str}) among pre-champion candidates, with {tie_label} as tie-breaker."
+        f"({val_str}) among pre-champion candidates, with {tie_label} as tie-breaker"
+        f"{missing_note}."
+    )
+
+
+def _refit_prophet_on_history(  # noqa: PLR0913
+    history_df: pd.DataFrame,
+    model_params: dict,
+    active_regressors: list[str],
+    date_col: str,
+    target_col: str,
+    regressor_mode: str,
+) -> Prophet:
+    """Refit a Prophet model on a history slice for rolling-origin evaluation."""
+    fit_df = history_df.copy()
+    fit_df[date_col] = pd.to_datetime(fit_df[date_col])
+    fit_df = fit_df.sort_values(date_col).reset_index(drop=True)
+    train_fit = fit_df[[date_col, target_col] + active_regressors].rename(
+        columns={date_col: "ds", target_col: "y"}
+    )
+    return _build_and_fit_prophet(
+        train_fit, model_params, active_regressors, regressor_mode
     )
 
 
@@ -794,27 +1103,25 @@ def _refit_prophet_champion(  # noqa: PLR0913
     target_col: str,
     regressor_mode: str,
 ) -> Prophet:
-    """Refit a Prophet model on the full historical training dataset.
-
-    Args:
-        full_train_df: Combined train + validation data (all available history).
-        model_params: Champion hyperparameters from champion_metadata.model_params.
-        active_regressors: Regressor column names to register with the model.
-        date_col: Name of the date column in full_train_df.
-        target_col: Name of the target column.
-        regressor_mode: 'additive' or 'multiplicative' for all regressors.
-
-    Returns:
-        Fitted Prophet model ready for future inference.
-    """
+    """Refit a Prophet model on the full historical training dataset."""
     fit_df = full_train_df.copy()
     fit_df[date_col] = pd.to_datetime(fit_df[date_col])
     fit_df = fit_df.sort_values(date_col).reset_index(drop=True)
-
     train_fit = fit_df[[date_col, target_col] + active_regressors].rename(
         columns={date_col: "ds", target_col: "y"}
     )
+    return _build_and_fit_prophet(
+        train_fit, model_params, active_regressors, regressor_mode
+    )
 
+
+def _build_and_fit_prophet(
+    train_fit: pd.DataFrame,
+    model_params: dict,
+    active_regressors: list[str],
+    regressor_mode: str,
+) -> Prophet:
+    """Instantiate, configure, and fit a Prophet model."""
     model = Prophet(
         changepoint_prior_scale=float(
             model_params.get("changepoint_prior_scale", 0.05)
@@ -831,7 +1138,6 @@ def _refit_prophet_champion(  # noqa: PLR0913
     )
     for regressor_name in active_regressors:
         model.add_regressor(regressor_name, mode=regressor_mode)
-
     model.fit(train_fit)
     return model
 
