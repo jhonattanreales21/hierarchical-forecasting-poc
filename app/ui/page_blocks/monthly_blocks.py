@@ -68,7 +68,7 @@ def render_monthly_kpi_summary(
     render_section_header("Champion Model Summary")
 
     test_metrics = meta.get("test_metrics", {})
-    mape = test_metrics.get("mape")
+    wape = test_metrics.get("wape")
     rmse = test_metrics.get("rmse")
     precision = test_metrics.get("forecast_precision")
     business_flag = meta.get("business_success_flag", False)
@@ -76,7 +76,7 @@ def render_monthly_kpi_summary(
     created_at = inference_meta.get("forecast_created_at", "")
     last_run = format_date(created_at) if created_at else "Not available"
 
-    mape_status = "success" if (mape is not None and mape < 0.15) else "warning"
+    wape_status = "success" if (wape is not None and wape < 0.15) else "warning"
     precision_status = "success" if business_flag else "warning"
 
     cols = st.columns(5)
@@ -88,10 +88,10 @@ def render_monthly_kpi_summary(
         )
     with cols[1]:
         render_kpi_card(
-            label="Test MAPE",
-            value=format_percentage(mape) if mape is not None else "N/A",
-            help_text="Mean Absolute % Error on test set",
-            status=mape_status,
+            label="Test WAPE",
+            value=format_percentage(wape) if wape is not None else "N/A",
+            help_text="Weighted Absolute % Error on test set (primary metric)",
+            status=wape_status,
         )
     with cols[2]:
         render_kpi_card(
