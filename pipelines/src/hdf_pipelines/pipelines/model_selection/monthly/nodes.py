@@ -11,6 +11,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+from prophet import Prophet
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 
 from shared.metrics import mase as _shared_mase
@@ -27,33 +28,37 @@ def evaluate_monthly_family_candidates_on_test(
     monthly_prophet_candidate_models: dict,
     monthly_prophet_prechampion_configs: dict,
     monthly_prophet_train: pd.DataFrame,
+    monthly_prophet_validation: pd.DataFrame,
     monthly_prophet_test: pd.DataFrame,
     monthly_sarimax_candidate_models: dict,
     monthly_sarimax_prechampion_configs: dict,
     monthly_sarimax_training_metadata: dict,
     monthly_sarimax_train: pd.DataFrame,
+    monthly_sarimax_validation: pd.DataFrame,
     monthly_sarimax_test: pd.DataFrame,
-    monthly_sarimax_full_train: pd.DataFrame,
     params_monthly: dict,
     params_prophet: dict,
     params_sarimax: dict,
 ) -> pd.DataFrame:
     """Score all Prophet and SARIMAX prechampion candidates on the held-out test set.
 
-    Evaluates only the families listed in ``params_monthly.active_families``. For
-    each Prophet candidate the existing fitted model is used to forecast the test
-    dates directly. For each SARIMAX candidate the model is refitted on the
-    combined train+validation split (``monthly_sarimax_full_train``) so that the
-    forecast horizon aligns with the test period without requiring iterated
-    multi-step forecasts through the validation window.
+    Evaluates only the families listed in ``params_monthly.active_families``. Both
+    families are scored consistently: each candidate is refit on the combined
+    train+validation split and then forecast forward over the held-out test period.
+    The test split is never seen during fitting, so the reported test metrics are
+    leakage-safe and the Prophet-vs-SARIMAX comparison is fair (both see the same
+    data at test time). A full-history refit (including the test split) happens only
+    later, for the elected production champion.
 
     Args:
         monthly_prophet_candidate_models: Dict mapping candidate_id → fitted
             Prophet model from the training stage.
         monthly_prophet_prechampion_configs: Prechampion config dict emitted by
             Prophet training, containing a ``prechampions`` list.
-        monthly_prophet_train: Training-only split used as MASE denominator for
-            Prophet candidates (no validation or test rows, leakage-safe).
+        monthly_prophet_train: Training-only split; the leakage-safe MASE
+            denominator and the first part of the Prophet refit window.
+        monthly_prophet_validation: Validation split appended to train to form the
+            leakage-safe Prophet refit window for test scoring.
         monthly_prophet_test: Held-out Prophet test split with ds, y, and regressor
             columns.
         monthly_sarimax_candidate_models: Dict mapping trial_id → SARIMAX candidate
@@ -62,12 +67,12 @@ def evaluate_monthly_family_candidates_on_test(
             SARIMAX training, containing a ``candidates`` list.
         monthly_sarimax_training_metadata: Training metadata dict; used to retrieve
             the exogenous column names used during training.
-        monthly_sarimax_train: Training-only split used as MASE denominator for
-            SARIMAX candidates.
+        monthly_sarimax_train: Training-only split used as the leakage-safe MASE
+            denominator and as the first part of the SARIMAX fit window.
+        monthly_sarimax_validation: Validation split appended to train to form the
+            leakage-safe SARIMAX fit window for test scoring.
         monthly_sarimax_test: Held-out SARIMAX test split with date, target, and
             optional exogenous columns.
-        monthly_sarimax_full_train: Combined train+validation split for SARIMAX
-            refit before test scoring.
         params_monthly: Contents of ``model_selection.monthly`` from the parameter
             file (active_families, primary_metric, mase_seasonal_period, …).
         params_prophet: Contents of ``model_selection.monthly_prophet`` (column
@@ -106,6 +111,7 @@ def evaluate_monthly_family_candidates_on_test(
             candidate_models=monthly_prophet_candidate_models,
             prechampion_configs=monthly_prophet_prechampion_configs,
             train_df=monthly_prophet_train,
+            validation_df=monthly_prophet_validation,
             test_df=monthly_prophet_test,
             params=params_prophet,
             mase_period=mase_period,
@@ -119,8 +125,8 @@ def evaluate_monthly_family_candidates_on_test(
             prechampion_configs=monthly_sarimax_prechampion_configs,
             training_metadata=monthly_sarimax_training_metadata,
             train_df=monthly_sarimax_train,
+            validation_df=monthly_sarimax_validation,
             test_df=monthly_sarimax_test,
-            full_train_df=monthly_sarimax_full_train,
             params=params_sarimax,
             mase_period=mase_period,
             require_all=require_all,
@@ -319,19 +325,24 @@ def select_monthly_production_champion(
 # ── Node 4 ────────────────────────────────────────────────────────────────────
 
 
-def build_monthly_champion_artifacts(
+def build_monthly_champion_artifacts(  # noqa: PLR0913
     monthly_model_selection_summary: pd.DataFrame,
     monthly_family_champion_summary: pd.DataFrame,
     monthly_candidate_test_metrics: pd.DataFrame,
     monthly_prophet_candidate_models: dict,
     monthly_sarimax_candidate_models: dict,
+    monthly_prophet_full_train: pd.DataFrame,
+    monthly_sarimax_full_train: pd.DataFrame,
+    monthly_sarimax_training_metadata: dict,
     params_monthly: dict,
 ) -> tuple[Any, dict]:
-    """Retrieve the production champion model and build its JSON metadata.
+    """Refit the production champion on full history and build its JSON metadata.
 
-    Resolves the elected champion from ``monthly_model_selection_summary`` to the
-    actual model object and constructs a JSON-serialisable metadata dict with the
-    full selection audit trail.
+    Champion Protocol stage 5 (full-history refit): the elected champion
+    configuration is refit on all available history (train + validation + test) so
+    that production inference benefits from the full training window. Reported test
+    metrics are unchanged — they come from the pre-refit selection stage. When
+    ``refit_champion.enabled`` is false, the train-only candidate is returned as-is.
 
     Args:
         monthly_model_selection_summary: Single-row summary from
@@ -342,14 +353,19 @@ def build_monthly_champion_artifacts(
         monthly_prophet_candidate_models: Dict mapping candidate_id → Prophet model.
         monthly_sarimax_candidate_models: Dict mapping trial_id → SARIMAX candidate
             entry dict (including the ``model`` key).
+        monthly_prophet_full_train: Prophet-format full history (ds, y, regressors).
+        monthly_sarimax_full_train: SARIMAX-format full history (date, target, exog).
+        monthly_sarimax_training_metadata: SARIMAX training metadata (exogenous_columns).
         params_monthly: Contents of ``model_selection.monthly``.
 
     Returns:
         Two-element tuple:
 
-        1. ``champion_monthly_model`` — the model object for the elected champion.
+        1. ``champion_monthly_model`` — the production champion model, refit on full
+           history (Prophet model, or SARIMAX candidate dict carrying the refit
+           results object under ``"model"``).
         2. ``champion_monthly_metadata`` — JSON-serialisable dict describing the
-           champion, metrics, test period, and compatibility notes.
+           champion, metrics, test period, refit, and inference contract.
 
     Raises:
         ValueError: When the summary is empty or the champion family is unknown.
@@ -362,11 +378,20 @@ def build_monthly_champion_artifacts(
     production_family: str = str(summary_row["production_champion_family"])
     production_candidate_id: str = str(summary_row["production_champion_id"])
 
-    champion_model = _resolve_champion_model(
+    candidate_model = _resolve_champion_model(
         production_family=production_family,
         production_candidate_id=production_candidate_id,
         prophet_candidate_models=monthly_prophet_candidate_models,
         sarimax_candidate_models=monthly_sarimax_candidate_models,
+    )
+
+    champion_model, inference_contract, refit_info = _build_production_champion_model(
+        production_family=production_family,
+        candidate_model=candidate_model,
+        prophet_full_train=monthly_prophet_full_train,
+        sarimax_full_train=monthly_sarimax_full_train,
+        sarimax_training_metadata=monthly_sarimax_training_metadata,
+        params_monthly=params_monthly,
     )
 
     champ_metrics = _extract_champion_metrics(
@@ -385,8 +410,6 @@ def build_monthly_champion_artifacts(
         }
 
     test_start, test_end, n_rows = _extract_test_period(monthly_candidate_test_metrics)
-
-    inference_contract = _build_inference_contract(production_family, champion_model)
 
     metadata: dict = {
         "granularity": "monthly",
@@ -414,6 +437,7 @@ def build_monthly_champion_artifacts(
         },
         "metrics": champ_metrics,
         "inference_contract": inference_contract,
+        "refit": refit_info,
         "model_artifact": {
             "catalog_key": "champion_monthly_model",
             "source_candidate_key": f"monthly_{production_family}_candidate_models",
@@ -427,14 +451,30 @@ def build_monthly_champion_artifacts(
     }
 
     logger.info(
-        "champion_monthly_model resolved — family=%s  candidate=%s",
+        "champion_monthly_model built — family=%s  candidate=%s  refit=%s (n_obs=%s)",
         production_family,
         production_candidate_id,
+        refit_info["performed"],
+        refit_info["n_obs"],
     )
     return champion_model, metadata
 
 
 # ── Private helpers ───────────────────────────────────────────────────────────
+
+
+def _concat_sorted(frames: list[pd.DataFrame], date_col: str) -> pd.DataFrame:
+    """Concatenate frames, parse the date column, sort ascending, and reset the index.
+
+    Empty or None frames are ignored so a missing validation split degrades to the
+    train split alone rather than failing.
+    """
+    parts = [f for f in frames if f is not None and not f.empty]
+    combined = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
+    if combined.empty:
+        return combined
+    combined[date_col] = pd.to_datetime(combined[date_col])
+    return combined.sort_values(date_col).reset_index(drop=True)
 
 
 def _validate_active_families(
@@ -466,12 +506,18 @@ def _score_prophet_candidates(
     candidate_models: dict,
     prechampion_configs: dict,
     train_df: pd.DataFrame,
+    validation_df: pd.DataFrame,
     test_df: pd.DataFrame,
     params: dict,
     mase_period: int,
     require_all: bool,
 ) -> list[dict]:
-    """Score each Prophet prechampion on the held-out test set."""
+    """Score each Prophet prechampion leakage-safely on the held-out test split.
+
+    Each candidate is refit on train + validation only (mirroring the SARIMAX path),
+    then used to forecast the test period. The MASE denominator uses the train-only
+    split. The test split is never seen during fitting.
+    """
     date_col: str = params.get("date_column", "ds")
     target_col: str = params.get("target_column", "y")
 
@@ -490,11 +536,14 @@ def _score_prophet_candidates(
             f"Target column '{target_col}' missing from monthly_prophet_test."
         )
 
+    # Leakage-safe fit window: train + validation only (never the test split).
+    fit_df = _concat_sorted([train_df, validation_df], date_col)
+
     test_df = test_df.copy()
     test_df[date_col] = pd.to_datetime(test_df[date_col])
     test_df = test_df.sort_values(date_col).reset_index(drop=True)
 
-    y_train = train_df[target_col].values.astype(float)
+    y_train = train_df[target_col].values.astype(float)  # MASE denominator (train only)
     y_true = test_df[target_col].values.astype(float)
     test_start = str(test_df[date_col].min().date())
     test_end = str(test_df[date_col].max().date())
@@ -509,16 +558,20 @@ def _score_prophet_candidates(
             )
             continue
 
-        model = candidate_models[candidate_id]
+        candidate_model = candidate_models[candidate_id]
         active_regressors: list[str] = list(pc.get("active_regressors", []))
 
         try:
+            refit_model = _refit_prophet_on_frame(
+                candidate_model, fit_df, active_regressors, date_col, target_col
+            )
+
             future_df = test_df[[date_col]].rename(columns={date_col: "ds"})
             for reg in active_regressors:
                 if reg in test_df.columns:
                     future_df[reg] = test_df[reg].values
 
-            forecast = model.predict(future_df)
+            forecast = refit_model.predict(future_df)
             y_pred = forecast["yhat"].values.astype(float)[: len(y_true)]
 
             rows.append(
@@ -556,13 +609,18 @@ def _score_sarimax_candidates(
     prechampion_configs: dict,
     training_metadata: dict,
     train_df: pd.DataFrame,
+    validation_df: pd.DataFrame,
     test_df: pd.DataFrame,
-    full_train_df: pd.DataFrame,
     params: dict,
     mase_period: int,
     require_all: bool,
 ) -> list[dict]:
-    """Refit each SARIMAX prechampion on full_train, then forecast the test period."""
+    """Score each SARIMAX prechampion leakage-safely on the held-out test split.
+
+    Each candidate is refit on train + validation only (the test split is never
+    seen), then forecast forward over the test period. The MASE denominator uses
+    the train-only split, consistent with Prophet scoring.
+    """
     date_col: str = params.get("date_column", "month_start_date")
     target_col: str = params.get("target_column", "monthly_demand")
 
@@ -583,21 +641,22 @@ def _score_sarimax_candidates(
 
     exog_cols: list[str] = list(training_metadata.get("exogenous_columns", []))
 
-    full_train_df = full_train_df.copy()
-    full_train_df[date_col] = pd.to_datetime(full_train_df[date_col])
-    full_train_df = full_train_df.sort_values(date_col).reset_index(drop=True)
+    # Leakage-safe fit window: train + validation only (never the test split).
+    fit_df = _concat_sorted([train_df, validation_df], date_col)
 
     test_df = test_df.copy()
     test_df[date_col] = pd.to_datetime(test_df[date_col])
     test_df = test_df.sort_values(date_col).reset_index(drop=True)
 
-    y_train = train_df[target_col].values.astype(float)
+    y_train = train_df[target_col].values.astype(float)  # MASE denominator (train only)
     y_true = test_df[target_col].values.astype(float)
-    full_train_y = full_train_df[target_col].values.astype(float)
+    fit_y = fit_df[target_col].values.astype(float)
     n_test = len(test_df)
 
     test_start = str(test_df[date_col].min().date())
     test_end = str(test_df[date_col].max().date())
+
+    available_exog = [c for c in exog_cols if c in fit_df.columns]
 
     rows: list[dict] = []
     for pc in candidates_list:
@@ -612,11 +671,10 @@ def _score_sarimax_candidates(
         entry = candidate_models[trial_id]
         config = entry.get("config", {})
         use_exog: bool = bool(config.get("use_exog", False))
-        available_exog = [c for c in exog_cols if c in full_train_df.columns]
 
         try:
-            full_train_exog = (
-                full_train_df[available_exog].values.astype(float)
+            fit_exog = (
+                fit_df[available_exog].values.astype(float)
                 if (use_exog and available_exog)
                 else None
             )
@@ -627,8 +685,8 @@ def _score_sarimax_candidates(
             )
 
             model_obj = SARIMAX(
-                endog=full_train_y,
-                exog=full_train_exog,
+                endog=fit_y,
+                exog=fit_exog,
                 order=tuple(config["order"]),
                 seasonal_order=tuple(config["seasonal_order"]),
                 trend=config.get("trend"),
@@ -754,31 +812,219 @@ def _resolve_champion_model(
     )
 
 
-def _build_inference_contract(production_family: str, champion_model: Any) -> dict:
-    """Describe how the champion must be consumed at inference time.
+def _build_production_champion_model(  # noqa: PLR0913
+    production_family: str,
+    candidate_model: Any,
+    prophet_full_train: pd.DataFrame,
+    sarimax_full_train: pd.DataFrame,
+    sarimax_training_metadata: dict,
+    params_monthly: dict,
+) -> tuple[Any, dict, dict]:
+    """Refit the elected champion on full history and build its inference contract.
 
-    The contract is self-describing so that metadata-driven inference does not need
-    to introspect the model object. Prophet regressors are read from the fitted
-    model (the exact set the model was trained with); SARIMAX carries its order
-    configuration. Column names follow each family's training convention.
+    Implements Champion Protocol stage 5. The winning configuration is refit on all
+    available history so production forecasts use the full training window. When
+    ``refit_champion.enabled`` is false, the train-only candidate is returned
+    unchanged (useful for fast debugging runs).
 
     Args:
         production_family: Elected production champion family.
-        champion_model: Resolved champion artifact (Prophet model or SARIMAX dict).
+        candidate_model: Train-only champion artifact resolved from the candidate
+            pool (Prophet model or SARIMAX candidate dict).
+        prophet_full_train: Prophet-format full history (ds, y, regressors).
+        sarimax_full_train: SARIMAX-format full history (date, target, exog).
+        sarimax_training_metadata: SARIMAX training metadata (exogenous_columns).
+        params_monthly: Contents of ``model_selection.monthly``.
+
+    Returns:
+        Tuple ``(champion_model, inference_contract, refit_info)``.
+    """
+    refit_enabled = bool(params_monthly.get("refit_champion", {}).get("enabled", True))
+
+    if production_family == "prophet":
+        active_regressors = _prophet_regressor_names(candidate_model)
+        if refit_enabled:
+            champion_model = _refit_prophet_on_frame(
+                candidate_model, prophet_full_train, active_regressors
+            )
+            refit_info = _refit_info(True, prophet_full_train, "ds")
+        else:
+            champion_model = candidate_model
+            refit_info = _refit_info(False, prophet_full_train, "ds")
+        contract = _build_inference_contract("prophet", active_regressors)
+        return champion_model, contract, refit_info
+
+    if production_family == "sarimax":
+        config = (
+            dict(candidate_model.get("config", {}))
+            if isinstance(candidate_model, dict)
+            else {}
+        )
+        exog_cols = list(sarimax_training_metadata.get("exogenous_columns", []))
+        date_col = "month_start_date"
+        if refit_enabled:
+            champion_model, used_exog = _refit_sarimax_full_history(
+                config, sarimax_full_train, exog_cols
+            )
+            refit_info = _refit_info(True, sarimax_full_train, date_col)
+        else:
+            champion_model = candidate_model
+            used_exog = exog_cols if config.get("use_exog", False) else []
+            refit_info = _refit_info(False, sarimax_full_train, date_col)
+        contract = _build_inference_contract("sarimax", used_exog, sarimax_config=config)
+        return champion_model, contract, refit_info
+
+    raise ValueError(
+        f"Cannot build a production champion model for unknown family "
+        f"'{production_family}'."
+    )
+
+
+def _prophet_regressor_names(model: Any) -> list[str]:
+    """Return the regressor names registered on a fitted Prophet model."""
+    extra = getattr(model, "extra_regressors", None)
+    return list(extra.keys()) if isinstance(extra, dict) else []
+
+
+def _refit_prophet_on_frame(
+    candidate_model: Any,
+    fit_df: pd.DataFrame,
+    active_regressors: list[str],
+    date_col: str = "ds",
+    target_col: str = "y",
+) -> Any:
+    """Rebuild a Prophet model from a candidate's configuration and fit it on ``fit_df``.
+
+    Hyperparameters and regressor modes are read from the fitted candidate so the
+    refit reproduces the selected configuration exactly, on a different data window
+    (train+validation for test scoring, or full history for the champion). Only
+    regressors present in ``fit_df`` are used, so minimal frames degrade gracefully.
+
+    Returns:
+        The newly fitted Prophet model.
+    """
+    model_params = _extract_prophet_params(candidate_model)
+    extra = getattr(candidate_model, "extra_regressors", None) or {}
+    regressors = [r for r in active_regressors if r in fit_df.columns]
+
+    prepared = fit_df.copy()
+    prepared[date_col] = pd.to_datetime(prepared[date_col])
+    prepared = prepared.sort_values(date_col).reset_index(drop=True)
+    fit_input = prepared[[date_col, target_col, *regressors]].rename(
+        columns={date_col: "ds", target_col: "y"}
+    )
+
+    model = Prophet(**model_params)
+    for name in regressors:
+        mode = extra[name].get("mode", "additive") if isinstance(extra.get(name), dict) else "additive"
+        model.add_regressor(name, mode=mode)
+    model.fit(fit_input)
+    return model
+
+
+def _extract_prophet_params(model: Any) -> dict:
+    """Extract Prophet constructor hyperparameters from a fitted model (with defaults)."""
+    return {
+        "changepoint_prior_scale": float(getattr(model, "changepoint_prior_scale", 0.05)),
+        "seasonality_prior_scale": float(getattr(model, "seasonality_prior_scale", 10.0)),
+        "holidays_prior_scale": float(getattr(model, "holidays_prior_scale", 10.0)),
+        "seasonality_mode": str(getattr(model, "seasonality_mode", "additive")),
+        "yearly_seasonality": getattr(model, "yearly_seasonality", True),
+        "weekly_seasonality": getattr(model, "weekly_seasonality", False),
+        "daily_seasonality": getattr(model, "daily_seasonality", False),
+        "interval_width": float(getattr(model, "interval_width", 0.8)),
+    }
+
+
+def _refit_sarimax_full_history(
+    config: dict,
+    full_train_df: pd.DataFrame,
+    exog_cols: list[str],
+    date_col: str = "month_start_date",
+    target_col: str = "monthly_demand",
+) -> tuple[dict, list[str]]:
+    """Refit a SARIMAX champion on full history using the candidate's order config.
+
+    Returns the refit in the candidate-dict shape so the inference adapter unwraps
+    it uniformly, plus the exogenous column names actually used.
+
+    Returns:
+        Tuple ``(champion_entry, used_exog_cols)``.
+    """
+    df = full_train_df.copy()
+    df[date_col] = pd.to_datetime(df[date_col])
+    df = df.sort_values(date_col).reset_index(drop=True)
+
+    y = df[target_col].to_numpy(dtype=float)
+    available_exog = [c for c in exog_cols if c in df.columns]
+    use_exog = bool(config.get("use_exog", False)) and bool(available_exog)
+    exog = df[available_exog].to_numpy(dtype=float) if use_exog else None
+
+    model = SARIMAX(
+        endog=y,
+        exog=exog,
+        order=tuple(config["order"]),
+        seasonal_order=tuple(config["seasonal_order"]),
+        trend=config.get("trend"),
+        enforce_stationarity=bool(config.get("enforce_stationarity", False)),
+        enforce_invertibility=bool(config.get("enforce_invertibility", False)),
+    )
+    result = model.fit(disp=False)
+
+    champion_entry = {
+        "model_family": "sarimax",
+        "granularity": "monthly",
+        "config": config,
+        "model": result,
+        "refit_scope": "full_history",
+    }
+    return champion_entry, (available_exog if use_exog else [])
+
+
+def _refit_info(performed: bool, full_train_df: pd.DataFrame, date_col: str) -> dict:
+    """Build the refit audit block for champion metadata."""
+    dates = pd.to_datetime(full_train_df[date_col]) if date_col in full_train_df.columns else None
+    return {
+        "performed": performed,
+        "data_scope": "full_history",  # train + validation + test
+        "n_obs": int(len(full_train_df)),
+        "start_date": str(dates.min().date()) if dates is not None and not dates.empty else None,
+        "end_date": str(dates.max().date()) if dates is not None and not dates.empty else None,
+        "refit_at": datetime.now(tz=UTC).isoformat(),
+        "note": (
+            "Champion refit on all available history for production forecasting. "
+            "Reported test metrics come from the pre-refit selection stage."
+        ),
+    }
+
+
+def _build_inference_contract(
+    production_family: str,
+    active_regressors: list[str],
+    sarimax_config: dict | None = None,
+) -> dict:
+    """Describe how the champion must be consumed at inference time.
+
+    The contract is self-describing so metadata-driven inference does not need to
+    introspect the model object. ``active_regressors`` reflects the exact features
+    the (refit) champion was fit with; column names follow each family's convention.
+
+    Args:
+        production_family: Elected production champion family.
+        active_regressors: Regressor/exogenous column names the champion uses.
+        sarimax_config: SARIMAX order configuration, when applicable.
 
     Returns:
         Dict describing column conventions, active regressors, interval support, and
         (for SARIMAX) the model order configuration.
     """
     if production_family == "prophet":
-        extra = getattr(champion_model, "extra_regressors", None)
-        active_regressors = list(extra.keys()) if isinstance(extra, dict) else []
         return {
             "model_family": "prophet",
             "date_column": "ds",
             "target_column": "y",
             "sku_column": "sku",
-            "active_regressors": active_regressors,
+            "active_regressors": list(active_regressors),
             "forecast_horizons": [3, 6, 12],
             "has_prediction_intervals": True,
             "interval_method": "prophet_native",
@@ -786,19 +1032,13 @@ def _build_inference_contract(production_family: str, champion_model: Any) -> di
         }
 
     if production_family == "sarimax":
-        config = (
-            dict(champion_model.get("config", {}))
-            if isinstance(champion_model, dict)
-            else {}
-        )
+        config = dict(sarimax_config or {})
         return {
             "model_family": "sarimax",
             "date_column": "month_start_date",
             "target_column": "monthly_demand",
             "sku_column": "sku",
-            # SARIMAX exogenous column names are sourced from training metadata;
-            # the current configuration trains without exogenous regressors.
-            "active_regressors": [],
+            "active_regressors": list(active_regressors),
             "forecast_horizons": [3, 6, 12],
             "has_prediction_intervals": True,
             "interval_method": "sarimax_get_forecast_conf_int",

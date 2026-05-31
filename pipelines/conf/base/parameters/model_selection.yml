@@ -22,6 +22,10 @@ model_selection:
     require_all_active_families: true
     allow_missing_optional_metrics: true
     mase_seasonal_period: 12
+    # Champion Protocol stage 5: refit the elected champion on all available
+    # history (train + validation + test) before production inference.
+    refit_champion:
+      enabled: true
     output:
       produce_generic_champion: true
       preserve_legacy_prophet_champion: true

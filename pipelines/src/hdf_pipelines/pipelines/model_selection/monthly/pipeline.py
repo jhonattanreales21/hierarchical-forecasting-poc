@@ -8,13 +8,16 @@ Inputs (from catalog):
     monthly_prophet_candidate_models
     monthly_prophet_prechampion_configs
     monthly_prophet_train
+    monthly_prophet_validation
     monthly_prophet_test
     monthly_sarimax_candidate_models
     monthly_sarimax_prechampion_configs
     monthly_sarimax_training_metadata
     monthly_sarimax_train
+    monthly_sarimax_validation
     monthly_sarimax_test
     monthly_sarimax_full_train
+    monthly_prophet_full_train
     params:model_selection.monthly
     params:model_selection.monthly_prophet
     params:model_selection.monthly_sarimax
@@ -47,13 +50,14 @@ def create_pipeline(**kwargs) -> Pipeline:
                     "monthly_prophet_candidate_models",
                     "monthly_prophet_prechampion_configs",
                     "monthly_prophet_train",
+                    "monthly_prophet_validation",
                     "monthly_prophet_test",
                     "monthly_sarimax_candidate_models",
                     "monthly_sarimax_prechampion_configs",
                     "monthly_sarimax_training_metadata",
                     "monthly_sarimax_train",
+                    "monthly_sarimax_validation",
                     "monthly_sarimax_test",
-                    "monthly_sarimax_full_train",
                     "params:model_selection.monthly",
                     "params:model_selection.monthly_prophet",
                     "params:model_selection.monthly_sarimax",
@@ -88,6 +92,9 @@ def create_pipeline(**kwargs) -> Pipeline:
                     "monthly_candidate_test_metrics",
                     "monthly_prophet_candidate_models",
                     "monthly_sarimax_candidate_models",
+                    "monthly_prophet_full_train",
+                    "monthly_sarimax_full_train",
+                    "monthly_sarimax_training_metadata",
                     "params:model_selection.monthly",
                 ],
                 outputs=["champion_monthly_model", "champion_monthly_metadata"],

@@ -231,7 +231,9 @@ def _validate_future_frame(future_df: pd.DataFrame, horizon: int, name: str) -> 
         ValueError: If the frame is empty, lacks a date column, or leaks a target.
     """
     if future_df is None or future_df.empty:
-        raise ValueError(f"Future frame '{name}' for the {horizon}-month horizon is empty.")
+        raise ValueError(
+            f"Future frame '{name}' for the {horizon}-month horizon is empty."
+        )
 
     date_candidates = ("ds", "month_start_date", "date")
     if not any(col in future_df.columns for col in date_candidates):
@@ -473,8 +475,6 @@ def _safe_float(value: Any) -> float | None:
 
 
 # ── Future inference stage stubs ──────────────────────────────────────────────
-# Weekly inference and daily allocation are out of scope for Phase 6. These stubs
-# document the intended contracts and will be implemented in their own phases.
 
 
 def generate_weekly_forecast(

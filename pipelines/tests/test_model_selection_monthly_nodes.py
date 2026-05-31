@@ -19,6 +19,7 @@ import pandas as pd
 import pytest
 
 from hdf_pipelines.pipelines.model_selection.monthly.nodes import (
+    _score_prophet_candidates,
     build_monthly_champion_artifacts,
     evaluate_monthly_family_candidates_on_test,
     select_monthly_family_champions,
@@ -67,6 +68,17 @@ def _make_prophet_train_df(n: int = 24) -> pd.DataFrame:
     )
 
 
+def _make_prophet_validation_df(n: int = 3) -> pd.DataFrame:
+    # Validation period immediately follows the 24-month train split.
+    return pd.DataFrame(
+        {
+            "ds": pd.date_range("2023-01-01", periods=n, freq="MS"),
+            "y": np.linspace(9.5, 10.5, n),
+            "sku": ["SKU_001"] * n,
+        }
+    )
+
+
 def _make_prophet_prechampion_configs(
     candidate_ids: list[str] | None = None,
 ) -> dict:
@@ -98,6 +110,16 @@ def _make_sarimax_train_df(n: int = 24) -> pd.DataFrame:
         {
             "month_start_date": pd.date_range("2021-01-01", periods=n, freq="MS"),
             "monthly_demand": np.linspace(8.0, 12.0, n),
+        }
+    )
+
+
+def _make_sarimax_validation_df(n: int = 3) -> pd.DataFrame:
+    # Validation period immediately follows the 24-month train split.
+    return pd.DataFrame(
+        {
+            "month_start_date": pd.date_range("2023-01-01", periods=n, freq="MS"),
+            "monthly_demand": np.linspace(10.0, 11.0, n),
         }
     )
 
@@ -177,6 +199,7 @@ def _make_sarimax_candidate_models(
 
 def _make_params_monthly(
     active_families: list[str] | None = None,
+    refit_enabled: bool = False,
 ) -> dict:
     return {
         "active_families": active_families or ["prophet", "sarimax"],
@@ -185,6 +208,7 @@ def _make_params_monthly(
         "tie_breakers": ["mase", "rmse", "abs_bias"],
         "require_all_active_families": True,
         "mase_seasonal_period": 12,
+        "refit_champion": {"enabled": refit_enabled},
     }
 
 
@@ -304,8 +328,8 @@ def test_evaluate_monthly_candidates_scores_prophet_and_sarimax():
     sarimax_configs = _make_sarimax_prechampion_configs()
     sarimax_metadata = _make_sarimax_training_metadata()
     sarimax_train = _make_sarimax_train_df()
+    sarimax_validation = _make_sarimax_validation_df()
     sarimax_test = _make_sarimax_test_df()
-    sarimax_full_train = _make_sarimax_full_train_df()
 
     params_monthly = _make_params_monthly()
     params_prophet = _make_params_prophet()
@@ -322,13 +346,14 @@ def test_evaluate_monthly_candidates_scores_prophet_and_sarimax():
             monthly_prophet_candidate_models=prophet_models,
             monthly_prophet_prechampion_configs=prophet_configs,
             monthly_prophet_train=prophet_train,
+            monthly_prophet_validation=_make_prophet_validation_df(),
             monthly_prophet_test=prophet_test,
             monthly_sarimax_candidate_models=sarimax_models,
             monthly_sarimax_prechampion_configs=sarimax_configs,
             monthly_sarimax_training_metadata=sarimax_metadata,
             monthly_sarimax_train=sarimax_train,
+            monthly_sarimax_validation=sarimax_validation,
             monthly_sarimax_test=sarimax_test,
-            monthly_sarimax_full_train=sarimax_full_train,
             params_monthly=params_monthly,
             params_prophet=params_prophet,
             params_sarimax=params_sarimax,
@@ -347,6 +372,83 @@ def test_evaluate_monthly_candidates_scores_prophet_and_sarimax():
         assert col in result.columns, f"Column '{col}' missing"
     # granularity must be monthly
     assert (result["granularity"] == "monthly").all()
+
+
+def test_sarimax_test_scoring_is_leakage_safe():
+    """SARIMAX must fit on train+validation only; the held-out test split is never in endog."""
+    n_train, n_val, n_test = 24, 3, 6
+
+    prophet_models = {
+        "prophet_candidate_001": _FakeProphetModel(),
+        "prophet_candidate_002": _FakeProphetModel(),
+    }
+    fake_fit_result = _make_fake_sarimax_result(n_forecast=n_test, value=10.0)
+
+    with patch(
+        "hdf_pipelines.pipelines.model_selection.monthly.nodes.SARIMAX"
+    ) as mock_sarimax_cls:
+        mock_sarimax_cls.return_value.fit.return_value = fake_fit_result
+
+        evaluate_monthly_family_candidates_on_test(
+            monthly_prophet_candidate_models=prophet_models,
+            monthly_prophet_prechampion_configs=_make_prophet_prechampion_configs(),
+            monthly_prophet_train=_make_prophet_train_df(),
+            monthly_prophet_validation=_make_prophet_validation_df(),
+            monthly_prophet_test=_make_prophet_test_df(),
+            monthly_sarimax_candidate_models=_make_sarimax_candidate_models(n_test=n_test),
+            monthly_sarimax_prechampion_configs=_make_sarimax_prechampion_configs(),
+            monthly_sarimax_training_metadata=_make_sarimax_training_metadata(),
+            monthly_sarimax_train=_make_sarimax_train_df(n_train),
+            monthly_sarimax_validation=_make_sarimax_validation_df(n_val),
+            monthly_sarimax_test=_make_sarimax_test_df(n_test),
+            params_monthly=_make_params_monthly(active_families=["sarimax"]),
+            params_prophet=_make_params_prophet(),
+            params_sarimax=_make_params_sarimax(),
+        )
+
+    # Every SARIMAX fit must use exactly train + validation rows — never the test split.
+    assert mock_sarimax_cls.call_count >= 1
+    for call in mock_sarimax_cls.call_args_list:
+        endog = call.kwargs["endog"]
+        assert len(endog) == n_train + n_val
+        assert len(endog) != n_train + n_val + n_test
+
+
+def test_prophet_test_scoring_is_leakage_safe():
+    """Prophet must refit on train+validation only; the test split must never be in the fit frame."""
+    n_train, n_val, n_test = 24, 3, 6
+    expected_candidates = 2
+    captured: dict[str, int] = {}
+
+    fake_model = MagicMock()
+    fake_model.predict.return_value = pd.DataFrame({"yhat": np.ones(n_test) * 10.0})
+
+    def _spy_refit(candidate_model, fit_df, active_regressors, date_col="ds", target_col="y"):
+        captured["n"] = len(fit_df)
+        return fake_model
+
+    with patch(
+        "hdf_pipelines.pipelines.model_selection.monthly.nodes._refit_prophet_on_frame",
+        side_effect=_spy_refit,
+    ):
+        rows = _score_prophet_candidates(
+            candidate_models={
+                "prophet_candidate_001": _FakeProphetModel(),
+                "prophet_candidate_002": _FakeProphetModel(),
+            },
+            prechampion_configs=_make_prophet_prechampion_configs(),
+            train_df=_make_prophet_train_df(n_train),
+            validation_df=_make_prophet_validation_df(n_val),
+            test_df=_make_prophet_test_df(n_test),
+            params=_make_params_prophet(),
+            mase_period=12,
+            require_all=True,
+        )
+
+    assert len(rows) == expected_candidates
+    # The refit frame must be train + validation only — never including the test split.
+    assert captured["n"] == n_train + n_val
+    assert captured["n"] != n_train + n_val + n_test
 
 
 # ── Test 2: select_monthly_family_champions returns exactly one per family ────
@@ -489,7 +591,8 @@ def test_build_monthly_champion_metadata_has_required_schema():
     prophet_model = _FakeProphetModel()
     prophet_models = {"prophet_candidate_001": prophet_model, "prophet_candidate_002": _FakeProphetModel()}
     sarimax_models = _make_sarimax_candidate_models(n_test=6)
-    params = _make_params_monthly()
+    # Refit disabled: the train-only candidate is returned as-is, so identity holds.
+    params = _make_params_monthly(refit_enabled=False)
 
     champion_model, metadata = build_monthly_champion_artifacts(
         monthly_model_selection_summary=prod_summary,
@@ -497,11 +600,16 @@ def test_build_monthly_champion_metadata_has_required_schema():
         monthly_candidate_test_metrics=metrics_df,
         monthly_prophet_candidate_models=prophet_models,
         monthly_sarimax_candidate_models=sarimax_models,
+        monthly_prophet_full_train=_make_prophet_train_df(24),
+        monthly_sarimax_full_train=_make_sarimax_full_train_df(30),
+        monthly_sarimax_training_metadata=_make_sarimax_training_metadata(),
         params_monthly=params,
     )
 
-    # Model object must be the prophet model
+    # Refit disabled → champion model is the resolved candidate
     assert champion_model is prophet_model
+    assert metadata["refit"]["performed"] is False
+    assert metadata["refit"]["data_scope"] == "full_history"
 
     # Top-level keys
     required_top_keys = {
@@ -541,6 +649,107 @@ def test_build_monthly_champion_metadata_has_required_schema():
 
     # metrics block
     assert "wape" in metadata["metrics"]
+
+
+# ── Test 4b: full-history champion refit (Champion Protocol stage 5) ──────────
+
+
+def _make_family_champion_summary() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "family": "prophet",
+                "granularity": "monthly",
+                "family_champion_id": "prophet_candidate_001",
+                "family_champion_rank": 1,
+                "wape": 0.08,
+                "mase": 0.80,
+                "rmse": 4.0,
+                "bias": 0.01,
+                "selection_reason": "best wape",
+                "model_artifact_key": "monthly_prophet_candidate_models",
+                "metadata_artifact_key": "monthly_prophet_prechampion_configs",
+            },
+            {
+                "family": "sarimax",
+                "granularity": "monthly",
+                "family_champion_id": "sarimax_trial_001",
+                "family_champion_rank": 1,
+                "wape": 0.10,
+                "mase": 0.85,
+                "rmse": 4.5,
+                "bias": 0.00,
+                "selection_reason": "best wape",
+                "model_artifact_key": "monthly_sarimax_candidate_models",
+                "metadata_artifact_key": "monthly_sarimax_prechampion_configs",
+            },
+        ]
+    )
+
+
+def _make_production_summary(family: str, candidate_id: str, metric_value: float) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "granularity": "monthly",
+                "active_families": ["prophet", "sarimax"],
+                "production_champion_family": family,
+                "production_champion_id": candidate_id,
+                "primary_metric": "wape",
+                "primary_metric_value": metric_value,
+                "tie_breakers": ["mase", "rmse", "abs_bias"],
+                "selection_timestamp": "2025-01-01T00:00:00+00:00",
+                "selection_reason": f"Best wape {family}",
+                "candidate_count": 4,
+                "family_champion_count": 2,
+            }
+        ]
+    )
+
+
+def _build_champion(family: str, candidate_id: str, metric_value: float):
+    return build_monthly_champion_artifacts(
+        monthly_model_selection_summary=_make_production_summary(
+            family, candidate_id, metric_value
+        ),
+        monthly_family_champion_summary=_make_family_champion_summary(),
+        monthly_candidate_test_metrics=_make_candidate_metrics_df(),
+        monthly_prophet_candidate_models={"prophet_candidate_001": _FakeProphetModel()},
+        monthly_sarimax_candidate_models=_make_sarimax_candidate_models(n_test=6),
+        monthly_prophet_full_train=_make_prophet_train_df(24),
+        monthly_sarimax_full_train=_make_sarimax_full_train_df(30),
+        monthly_sarimax_training_metadata=_make_sarimax_training_metadata(),
+        params_monthly=_make_params_monthly(refit_enabled=True),
+    )
+
+
+def test_build_champion_refits_sarimax_on_full_history():
+    """SARIMAX champion must be refit on full history into a forecastable results object."""
+    champion_model, metadata = _build_champion("sarimax", "sarimax_trial_001", 0.10)
+
+    assert metadata["model_family"] == "sarimax"
+    assert metadata["refit"]["performed"] is True
+    assert metadata["refit"]["n_obs"] == 30  # noqa: PLR2004
+    assert metadata["inference_contract"]["model_family"] == "sarimax"
+
+    # The champion carries a real fitted results object (not the candidate MagicMock).
+    assert isinstance(champion_model, dict)
+    assert champion_model["refit_scope"] == "full_history"
+    forecast = champion_model["model"].get_forecast(steps=3)
+    assert len(np.asarray(forecast.predicted_mean)) == 3  # noqa: PLR2004
+
+
+def test_build_champion_refits_prophet_on_full_history():
+    """Prophet champion must be refit on full history into a new fitted model."""
+    champion_model, metadata = _build_champion("prophet", "prophet_candidate_001", 0.08)
+
+    assert metadata["model_family"] == "prophet"
+    assert metadata["refit"]["performed"] is True
+    assert metadata["refit"]["n_obs"] == 24  # noqa: PLR2004
+
+    # A new model was fit on full history (not the train-only candidate).
+    assert hasattr(champion_model, "predict")
+    assert metadata["inference_contract"]["model_family"] == "prophet"
 
 
 # ── Test 5: Phase 5 scope — no CatBoost or weekly inputs required ─────────────
@@ -597,8 +806,8 @@ def test_monthly_model_selection_fails_when_active_family_artifacts_missing():
     sarimax_models = _make_sarimax_candidate_models(n_test=6)
     sarimax_metadata = _make_sarimax_training_metadata()
     sarimax_train = _make_sarimax_train_df()
+    sarimax_validation = _make_sarimax_validation_df()
     sarimax_test = _make_sarimax_test_df()
-    sarimax_full_train = _make_sarimax_full_train_df()
 
     params_monthly = _make_params_monthly()  # require_all_active_families=True
     params_prophet = _make_params_prophet()
@@ -609,13 +818,14 @@ def test_monthly_model_selection_fails_when_active_family_artifacts_missing():
             monthly_prophet_candidate_models=prophet_models,
             monthly_prophet_prechampion_configs=prophet_configs,
             monthly_prophet_train=prophet_train,
+            monthly_prophet_validation=_make_prophet_validation_df(),
             monthly_prophet_test=prophet_test,
             monthly_sarimax_candidate_models=sarimax_models,
             monthly_sarimax_prechampion_configs=sarimax_configs_empty,
             monthly_sarimax_training_metadata=sarimax_metadata,
             monthly_sarimax_train=sarimax_train,
+            monthly_sarimax_validation=sarimax_validation,
             monthly_sarimax_test=sarimax_test,
-            monthly_sarimax_full_train=sarimax_full_train,
             params_monthly=params_monthly,
             params_prophet=params_prophet,
             params_sarimax=params_sarimax,
