@@ -78,14 +78,25 @@ def test_train_monthly_prophet_is_namespaced():
 
 
 def test_monthly_mvp_excludes_sarimax_and_catboost_stub_nodes():
-    """monthly_mvp must not include any scaffolded CatBoost or SARIMAX stub nodes."""
+    """monthly_mvp must not include scaffolded CatBoost or SARIMAX training stub nodes.
+
+    The SARIMAX model-input adapter (adapt_monthly_data_for_sarimax) is a legitimate
+    data-preparation step added in Phase 3 and is allowed in monthly_mvp.  What must
+    remain excluded are SARIMAX training stubs (tune_hyperparameters, train_best_candidate)
+    and all CatBoost nodes.
+    """
     pipelines = register_pipelines()
     mvp_node_names = {n.name for n in pipelines["monthly_mvp"].nodes}
     assert not any("catboost" in n for n in mvp_node_names), (
         "monthly_mvp contains CatBoost stub nodes"
     )
-    assert not any("sarimax" in n for n in mvp_node_names), (
-        "monthly_mvp contains SARIMAX stub nodes"
+    # Adapter nodes are allowed; only exclude training-level SARIMAX stubs.
+    sarimax_training_stubs = {
+        n for n in mvp_node_names
+        if "sarimax" in n and "adapt" not in n
+    }
+    assert not sarimax_training_stubs, (
+        f"monthly_mvp contains SARIMAX training stub nodes: {sarimax_training_stubs}"
     )
 
 

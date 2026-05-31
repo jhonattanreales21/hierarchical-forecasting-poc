@@ -5,6 +5,7 @@ import pytest
 
 from hdf_pipelines.pipelines.model_input_preparation.nodes import (
     adapt_monthly_data_for_prophet,
+    adapt_monthly_data_for_sarimax,
     build_monthly_modeling_data,
     build_monthly_prophet_future_regressors,
     build_monthly_split_metadata,
@@ -485,3 +486,132 @@ def test_future_regressors_exclude_target_and_cover_configured_horizons():
     assert len(future_3m) == _HORIZON_3M
     assert len(future_6m) == _HORIZON_6M
     assert len(future_12m) == _HORIZON_12M
+
+
+# ── SARIMAX adapter ────────────────────────────────────────────────────────────
+
+def _sarimax_params() -> dict:
+    """Minimal SARIMAX parameter block with no exogenous columns."""
+    return {
+        "monthly_sarimax": {
+            "enabled": True,
+            "date_column": "month_start_date",
+            "target_column": "monthly_demand",
+            "sku_column": "sku",
+            "frequency": "MS",
+            "exogenous_columns": [],
+            "allow_empty_exog": True,
+            "require_regular_frequency": True,
+            "sort_by_date": True,
+            "drop_rows_with_null_target": True,
+            "drop_rows_with_null_exog": False,
+            "impute_exog": False,
+            "output_format": "tabular",
+        },
+    }
+
+
+def _make_generic_splits() -> tuple:
+    """Return (train, validation, test, full_train, split_metadata) for SARIMAX tests."""
+    modeling_df = pd.DataFrame(
+        {
+            "month_start_date": pd.date_range("2024-01-01", periods=5, freq="MS"),
+            "monthly_demand": [10.0, 12.0, 14.0, 16.0, 18.0],
+            "sku": ["SKU-1"] * 5,
+            "business_days": [22, 20, 21, 22, 20],
+            "pfizer_limited": [0.0, 1.0, 0.0, 0.0, 1.0],
+        }
+    )
+    train = modeling_df.iloc[:3].copy().reset_index(drop=True)
+    validation = modeling_df.iloc[3:4].copy().reset_index(drop=True)
+    test = modeling_df.iloc[4:5].copy().reset_index(drop=True)
+    full_train = modeling_df.copy()
+    meta = {
+        "granularity": "monthly",
+        "date_column": "month_start_date",
+        "target_column": "monthly_demand",
+        "sku_column": "sku",
+        "split_mode": "months",
+        "active_features": ["business_days", "pfizer_limited"],
+        "dropped_rows": {"null_target": 0, "null_active_regressors": 0},
+        "created_by": "model_input_preparation",
+        "train": {"rows": 3},
+        "validation": {"rows": 1},
+        "test": {"rows": 1},
+        "full_train": {"rows": 5},
+    }
+    return train, validation, test, full_train, meta
+
+
+def test_sarimax_adapter_creates_all_five_outputs():
+    """Adapter returns four DataFrames and a metadata dict."""
+    train, validation, test, full_train, meta = _make_generic_splits()
+
+    result = adapt_monthly_data_for_sarimax(train, validation, test, full_train, meta, _sarimax_params())
+
+    assert len(result) == 5
+    for item in result[:4]:
+        assert isinstance(item, pd.DataFrame)
+    assert isinstance(result[4], dict)
+
+
+def test_sarimax_adapter_output_columns_exclude_sku_and_unused_regressors():
+    """Output keeps only [date_column, target_column]; sku and other regressors are dropped."""
+    train, validation, test, full_train, meta = _make_generic_splits()
+
+    sarimax_train, *_ = adapt_monthly_data_for_sarimax(
+        train, validation, test, full_train, meta, _sarimax_params()
+    )
+
+    assert list(sarimax_train.columns) == ["month_start_date", "monthly_demand"]
+    assert "sku" not in sarimax_train.columns
+    assert "business_days" not in sarimax_train.columns
+
+
+def test_sarimax_adapter_raises_on_missing_required_column():
+    """Adapter raises ValueError with a clear message when date or target column is absent."""
+    train, validation, test, full_train, meta = _make_generic_splits()
+
+    with pytest.raises(ValueError, match="Missing required columns"):
+        adapt_monthly_data_for_sarimax(
+            train.drop(columns=["month_start_date"]), validation, test, full_train, meta, _sarimax_params()
+        )
+
+    with pytest.raises(ValueError, match="Missing required columns"):
+        adapt_monthly_data_for_sarimax(
+            train.drop(columns=["monthly_demand"]), validation, test, full_train, meta, _sarimax_params()
+        )
+
+
+def test_sarimax_adapter_null_target_dropped_and_counted_in_metadata():
+    """Null target rows are dropped and null_target_rows_dropped is recorded in metadata."""
+    train, validation, test, full_train, meta = _make_generic_splits()
+    train_with_null = train.copy()
+    train_with_null.loc[0, "monthly_demand"] = None
+    params = _sarimax_params()
+
+    _, _, _, _, sarimax_meta = adapt_monthly_data_for_sarimax(
+        train_with_null, validation, test, full_train, meta, params
+    )
+
+    assert sarimax_meta["splits"]["train"]["null_target_rows_dropped"] == 1
+    assert sarimax_meta["splits"]["train"]["rows"] == len(train) - 1
+
+
+def test_sarimax_adapter_metadata_contract():
+    """sarimax_split_metadata contains model_family, granularity, frequency, and per-split diagnostics."""
+    train, validation, test, full_train, meta = _make_generic_splits()
+
+    _, _, _, _, sarimax_meta = adapt_monthly_data_for_sarimax(
+        train, validation, test, full_train, meta, _sarimax_params()
+    )
+
+    assert sarimax_meta["model_family"] == "sarimax"
+    assert sarimax_meta["granularity"] == "monthly"
+    assert sarimax_meta["frequency"] == "MS"
+    assert sarimax_meta["date_column"] == "month_start_date"
+    assert sarimax_meta["target_column"] == "monthly_demand"
+    for split_name in ("train", "validation", "test", "full_train"):
+        info = sarimax_meta["splits"][split_name]
+        assert {"rows", "start", "end", "missing_periods"} <= info.keys()
+    assert sarimax_meta["created_by"] == "model_input_preparation.sarimax_adapter"

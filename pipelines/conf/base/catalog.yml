@@ -108,6 +108,27 @@ monthly_split_metadata:
   type: json.JSONDataset
   filepath: data/05_model_input/monthly_split_metadata.json
 
+# 05_model_input — SARIMAX monthly model-ready datasets
+monthly_sarimax_train:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/monthly_sarimax_train.parquet
+
+monthly_sarimax_validation:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/monthly_sarimax_validation.parquet
+
+monthly_sarimax_test:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/monthly_sarimax_test.parquet
+
+monthly_sarimax_full_train:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/monthly_sarimax_full_train.parquet
+
+monthly_sarimax_split_metadata:
+  type: json.JSONDataset
+  filepath: data/05_model_input/monthly_sarimax_split_metadata.json
+
 # Legacy / future-stage placeholders
 model_input_monthly_catboost_train:
   type: pandas.ParquetDataset

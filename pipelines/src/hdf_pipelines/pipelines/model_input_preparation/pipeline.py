@@ -7,12 +7,14 @@ Flow:
   4. adapt_monthly_data_for_prophet    → monthly_prophet_modeling_data/train/validation/test/full_train
   5. build_monthly_prophet_future_regressors → monthly_prophet_future_3m/6m/12m
   6. build_monthly_prophet_split_metadata   → monthly_prophet_split_metadata
+  7. adapt_monthly_data_for_sarimax    → monthly_sarimax_train/validation/test/full_train/split_metadata
 """
 
 from kedro.pipeline import Pipeline, node, pipeline
 
 from .nodes import (
     adapt_monthly_data_for_prophet,
+    adapt_monthly_data_for_sarimax,
     build_monthly_modeling_data,
     build_monthly_prophet_future_regressors,
     build_monthly_prophet_split_metadata,
@@ -124,6 +126,26 @@ def create_pipeline(**kwargs) -> Pipeline:
                 ],
                 outputs="monthly_prophet_split_metadata",
                 name="build_monthly_prophet_split_metadata",
+            ),
+            # ── Step 7: SARIMAX adapter ───────────────────────────────────────
+            node(
+                func=adapt_monthly_data_for_sarimax,
+                inputs=[
+                    "monthly_train",
+                    "monthly_validation",
+                    "monthly_test",
+                    "monthly_full_train",
+                    "monthly_split_metadata",
+                    "params:model_input_preparation",
+                ],
+                outputs=[
+                    "monthly_sarimax_train",
+                    "monthly_sarimax_validation",
+                    "monthly_sarimax_test",
+                    "monthly_sarimax_full_train",
+                    "monthly_sarimax_split_metadata",
+                ],
+                name="adapt_monthly_data_for_sarimax",
             ),
         ]
     )

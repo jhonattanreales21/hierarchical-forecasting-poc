@@ -61,6 +61,13 @@ def _get_monthly_prophet_params(parameters: Mapping[str, Any]) -> dict[str, Any]
     return dict(parameters)
 
 
+def _get_monthly_sarimax_params(parameters: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the Monthly SARIMAX configuration block."""
+    if "monthly_sarimax" in parameters:
+        return dict(parameters["monthly_sarimax"])
+    return dict(parameters)
+
+
 # ── Shared validation and utility helpers ─────────────────────────────────────
 
 def _validate_required_columns(
@@ -807,6 +814,214 @@ def adapt_monthly_data_for_prophet(
         prophet_test,
         prophet_full_train,
         prophet_adapter_metadata,
+    )
+
+
+# ── SARIMAX adapter ───────────────────────────────────────────────────────────
+
+def _validate_monthly_frequency(
+    date_series: pd.Series,
+    split_name: str,
+    require_regular_frequency: bool,
+) -> list[str]:
+    """Check for missing monthly periods and return a list of ISO date strings."""
+    if len(date_series) < 2:
+        return []
+
+    sorted_dates = pd.DatetimeIndex(date_series.sort_values())
+    expected_range = pd.date_range(
+        start=sorted_dates.min(),
+        end=sorted_dates.max(),
+        freq="MS",
+    )
+    missing_periods = sorted(set(expected_range) - set(sorted_dates))
+    missing_strs = [pd.Timestamp(p).date().isoformat() for p in missing_periods]
+
+    if missing_strs and require_regular_frequency:
+        raise ValueError(
+            f"Missing monthly periods in {split_name!r} split while "
+            f"require_regular_frequency is enabled: {missing_strs}"
+        )
+    if missing_strs:
+        logger.warning(
+            "Missing monthly periods in %r split: %s", split_name, missing_strs
+        )
+    return missing_strs
+
+
+def _prepare_sarimax_split(
+    df: pd.DataFrame,
+    date_column: str,
+    target_column: str,
+    exogenous_columns: list[str],
+    sarimax_params: Mapping[str, Any],
+    split_name: str,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Validate and prepare one split DataFrame for SARIMAX consumption.
+
+    Returns a tabular DataFrame [date_column, target_column, *exogenous_columns]
+    and a split-level info dict with row counts, date range, and diagnostics.
+    """
+    prepared = df.copy().sort_values(date_column).reset_index(drop=True)
+
+    if not is_datetime64_any_dtype(prepared[date_column]):
+        prepared[date_column] = pd.to_datetime(prepared[date_column])
+
+    # Duplicate dates in a single-SKU monthly series indicate upstream data quality issues.
+    duplicate_mask = prepared[date_column].duplicated(keep=False)
+    if duplicate_mask.any():
+        duped = prepared.loc[duplicate_mask, [date_column]].drop_duplicates()
+        duped_dates = duped[date_column].dt.date.tolist()
+        raise ValueError(
+            f"Duplicate dates found in {split_name!r} split after SARIMAX adapter: "
+            f"{duped_dates}. The SARIMAX adapter expects a unique monthly date index."
+        )
+
+    missing_periods = _validate_monthly_frequency(
+        prepared[date_column],
+        split_name,
+        bool(sarimax_params.get("require_regular_frequency", True)),
+    )
+
+    # Null target handling
+    null_target_mask = prepared[target_column].isna()
+    null_target_rows_dropped = 0
+    if bool(sarimax_params.get("drop_rows_with_null_target", True)):
+        null_target_rows_dropped = int(null_target_mask.sum())
+        prepared = prepared.loc[~null_target_mask].copy()
+    elif null_target_mask.any():
+        raise ValueError(
+            f"Null values in target column {target_column!r} in {split_name!r} split "
+            "while drop_rows_with_null_target is disabled."
+        )
+
+    # Null exogenous handling
+    if exogenous_columns:
+        null_exog_mask = prepared[exogenous_columns].isna().any(axis=1)
+        if bool(sarimax_params.get("drop_rows_with_null_exog", False)):
+            prepared = prepared.loc[~null_exog_mask].copy()
+        elif null_exog_mask.any() and not bool(sarimax_params.get("impute_exog", False)):
+            null_exog_counts = (
+                prepared[exogenous_columns].isna().sum()
+            )
+            raise ValueError(
+                f"Null values in exogenous columns in {split_name!r} split. "
+                "Set drop_rows_with_null_exog or impute_exog to handle nulls:\n"
+                f"{null_exog_counts[null_exog_counts > 0].to_string()}"
+            )
+
+    # Guard against accidental duplication when target is also listed in exogenous_columns.
+    unique_exog = [c for c in exogenous_columns if c not in {date_column, target_column}]
+    output_columns = [date_column, target_column, *unique_exog]
+    output_df = prepared[output_columns].reset_index(drop=True)
+
+    split_info: dict[str, Any] = {
+        "rows": len(output_df),
+        "start": output_df[date_column].min().date().isoformat() if not output_df.empty else None,
+        "end": output_df[date_column].max().date().isoformat() if not output_df.empty else None,
+        "missing_periods": missing_periods,
+        "null_target_rows_dropped": null_target_rows_dropped,
+    }
+    return output_df, split_info
+
+
+def adapt_monthly_data_for_sarimax(
+    monthly_train: pd.DataFrame,
+    monthly_validation: pd.DataFrame,
+    monthly_test: pd.DataFrame,
+    monthly_full_train: pd.DataFrame,
+    monthly_split_metadata: dict[str, Any],
+    parameters: dict,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, Any]]:
+    """Transform generic monthly splits into SARIMAX-ready tabular datasets.
+
+    Produces tabular DataFrames with ``[date_column, target_column, *exogenous_columns]``
+    for each split.  Validates temporal index quality, enforces monthly frequency,
+    separates target from exogenous features, and emits SARIMAX-specific split metadata.
+
+    Consumes generic ``monthly_*`` datasets; never reads Prophet-renamed columns.
+
+    Args:
+        monthly_train: Generic train split.
+        monthly_validation: Generic validation split.
+        monthly_test: Generic test split.
+        monthly_full_train: Generic full-train split.
+        monthly_split_metadata: Generic split metadata dict.
+        parameters: Pipeline parameters. Reads the ``monthly_sarimax`` block.
+
+    Returns:
+        Tuple of five items:
+            - sarimax_train: SARIMAX-ready train split DataFrame.
+            - sarimax_validation: SARIMAX-ready validation split DataFrame.
+            - sarimax_test: SARIMAX-ready test split DataFrame.
+            - sarimax_full_train: SARIMAX-ready full-train split DataFrame.
+            - sarimax_split_metadata: Metadata dict for the SARIMAX splits.
+    """
+    sarimax_params = _get_monthly_sarimax_params(parameters)
+    date_column: str = sarimax_params.get("date_column", "month_start_date")
+    target_column: str = sarimax_params.get("target_column", "monthly_demand")
+    sku_column: str = sarimax_params.get("sku_column", "sku")
+    exogenous_columns: list[str] = list(sarimax_params.get("exogenous_columns", []))
+
+    splits_raw = {
+        "train": monthly_train,
+        "validation": monthly_validation,
+        "test": monthly_test,
+        "full_train": monthly_full_train,
+    }
+
+    # Fail early when required columns are missing in any split.
+    required_cols = [date_column, target_column, *exogenous_columns]
+    for split_name, split_df in splits_raw.items():
+        _validate_required_columns(
+            split_df,
+            required_cols,
+            f"monthly_{split_name} (sarimax adapter)",
+        )
+
+    logger.info(
+        "Adapting generic monthly splits for SARIMAX: date=%s, target=%s, exog=%s.",
+        date_column,
+        target_column,
+        exogenous_columns if exogenous_columns else "(none)",
+    )
+
+    prepared_splits: dict[str, pd.DataFrame] = {}
+    split_infos: dict[str, Any] = {}
+    for split_name, split_df in splits_raw.items():
+        prepared, info = _prepare_sarimax_split(
+            split_df,
+            date_column=date_column,
+            target_column=target_column,
+            exogenous_columns=exogenous_columns,
+            sarimax_params=sarimax_params,
+            split_name=split_name,
+        )
+        prepared_splits[split_name] = prepared
+        split_infos[split_name] = info
+        logger.info("SARIMAX %s split prepared: %s", split_name, info)
+
+    sarimax_metadata: dict[str, Any] = {
+        "granularity": "monthly",
+        "model_family": "sarimax",
+        "date_column": date_column,
+        "target_column": target_column,
+        "sku_column": sku_column,
+        "frequency": sarimax_params.get("frequency", "MS"),
+        "exogenous_columns": exogenous_columns,
+        "allow_empty_exog": bool(sarimax_params.get("allow_empty_exog", True)),
+        "splits": split_infos,
+        "source_metadata": {"from": "monthly_split_metadata"},
+        "created_by": "model_input_preparation.sarimax_adapter",
+    }
+    logger.info("Built monthly_sarimax_split_metadata: %s", sarimax_metadata)
+
+    return (
+        prepared_splits["train"],
+        prepared_splits["validation"],
+        prepared_splits["test"],
+        prepared_splits["full_train"],
+        sarimax_metadata,
     )
 
 

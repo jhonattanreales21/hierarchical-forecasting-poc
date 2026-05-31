@@ -97,3 +97,18 @@ model_input_preparation:
 
     future:
       horizons_months: [3, 6, 12]
+
+  monthly_sarimax:
+    enabled: true
+    date_column: "month_start_date"
+    target_column: "monthly_demand"
+    sku_column: "sku"
+    frequency: "MS"
+    exogenous_columns: []
+    allow_empty_exog: true
+    require_regular_frequency: true
+    sort_by_date: true
+    drop_rows_with_null_target: true
+    drop_rows_with_null_exog: false
+    impute_exog: false
+    output_format: "tabular"
