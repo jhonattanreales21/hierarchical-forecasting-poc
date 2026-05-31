@@ -96,11 +96,32 @@ train_monthly:
 
   sarimax:
     enabled: true
+    date_column: "month_start_date"
+    target_column: "monthly_demand"
+    objective:
+      metric: "wape"
+      direction: "minimize"
+    top_n_prechampions: 3
+    max_failed_trials: null
+    validation:
+      forecast_steps: null
+    metrics:
+      mase_seasonal_period: 12
+      epsilon: 1.0
     tuning:
       order_grid:
+        - [0, 1, 1]
+        - [1, 1, 0]
         - [1, 1, 1]
         - [2, 1, 1]
-        - [1, 1, 2]
       seasonal_order_grid:
-        - [1, 1, 1, 12]
         - [0, 1, 1, 12]
+        - [1, 1, 0, 12]
+        - [1, 1, 1, 12]
+      trend_options:
+        - null
+      enforce_stationarity_options:
+        - false
+      enforce_invertibility_options:
+        - false
+      use_exog: true

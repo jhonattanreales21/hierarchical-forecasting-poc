@@ -207,6 +207,27 @@ monthly_prophet_training_metadata:
   type: json.JSONDataset
   filepath: data/06_models/tuning/monthly_prophet_training_metadata.json
 
+# 06_models — Monthly SARIMAX training and tuning artifacts
+monthly_sarimax_tuning_results:
+  type: pandas.ParquetDataset
+  filepath: data/06_models/tuning/monthly_sarimax_tuning_results.parquet
+
+monthly_sarimax_validation_metrics:
+  type: pandas.ParquetDataset
+  filepath: data/06_models/tuning/monthly_sarimax_validation_metrics.parquet
+
+monthly_sarimax_prechampion_configs:
+  type: json.JSONDataset
+  filepath: data/06_models/tuning/monthly_sarimax_prechampion_configs.json
+
+monthly_sarimax_candidate_models:
+  type: pickle.PickleDataset
+  filepath: data/06_models/tuning/monthly_sarimax_candidate_models.pkl
+
+monthly_sarimax_training_metadata:
+  type: json.JSONDataset
+  filepath: data/06_models/tuning/monthly_sarimax_training_metadata.json
+
 # 06_models — candidate models per granularity × family
 candidate_monthly_prophet:
   type: pickle.PickleDataset

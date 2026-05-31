@@ -41,10 +41,18 @@ def create_pipeline(**kwargs) -> Pipeline:
         create_sarimax_pipeline(),
         namespace="train_monthly.sarimax",
         inputs={
-            "train": "model_input_monthly_sarimax_train",
-            "validation": "model_input_monthly_sarimax_validation",
+            "monthly_sarimax_train": "monthly_sarimax_train",
+            "monthly_sarimax_validation": "monthly_sarimax_validation",
+            "monthly_sarimax_split_metadata": "monthly_sarimax_split_metadata",
         },
-        parameters={"parameters": "params:train_monthly"},
-        outputs={"candidate_model": "candidate_monthly_sarimax"},
+        outputs={
+            "monthly_sarimax_tuning_results": "monthly_sarimax_tuning_results",
+            "monthly_sarimax_validation_metrics": "monthly_sarimax_validation_metrics",
+            "monthly_sarimax_prechampion_configs": "monthly_sarimax_prechampion_configs",
+            "monthly_sarimax_candidate_models": "monthly_sarimax_candidate_models",
+            "monthly_sarimax_training_metadata": "monthly_sarimax_training_metadata",
+            "candidate_monthly_sarimax": "candidate_monthly_sarimax",
+        },
+        parameters={"train_monthly.sarimax": "train_monthly.sarimax"},
     )
     return prophet_pipe + catboost_pipe + sarimax_pipe
