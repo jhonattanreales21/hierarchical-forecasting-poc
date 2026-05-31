@@ -5,7 +5,31 @@ They are used both inside Kedro pipeline nodes (evaluation step)
 and in backtesting utilities.
 """
 
+import warnings
+
 import numpy as np
+
+
+def wape(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    """Weighted Absolute Percentage Error (WAPE) — primary business metric.
+
+    Aggregates using sums rather than averaging individual percentage errors,
+    which avoids instability when individual y_true values are small or zero.
+
+    Args:
+        y_true: Array of actual observed values.
+        y_pred: Array of forecasted values, same shape as y_true.
+
+    Returns:
+        WAPE as a float in [0, inf). Expressed as a fraction (e.g. 0.15 = 15%).
+        Returns NaN when sum(|y_true|) == 0.
+    """
+    y_true = np.asarray(y_true, dtype=float)
+    y_pred = np.asarray(y_pred, dtype=float)
+    denom = np.sum(np.abs(y_true))
+    if denom == 0:
+        return float("nan")
+    return float(np.sum(np.abs(y_true - y_pred)) / denom)
 
 
 def mape(y_true: np.ndarray, y_pred: np.ndarray) -> float:
@@ -70,19 +94,21 @@ def mase(
 
     Returns:
         MASE as a float. Values < 1 indicate better-than-naive performance.
-
-    Raises:
-        ValueError: If y_train is too short to compute the naive scale.
+        Returns NaN when y_train is too short to compute the naive scale or
+        when the naive scale is zero.
     """
     y_true = np.asarray(y_true, dtype=float)
     y_pred = np.asarray(y_pred, dtype=float)
     y_train = np.asarray(y_train, dtype=float)
 
     if len(y_train) <= seasonality:
-        raise ValueError(
-            f"y_train length ({len(y_train)}) must be greater than "
-            f"seasonality ({seasonality}) to compute MASE."
+        warnings.warn(
+            f"y_train length ({len(y_train)}) must be greater than seasonality "
+            f"({seasonality}) to compute MASE. Returning NaN.",
+            UserWarning,
+            stacklevel=2,
         )
+        return float("nan")
 
     naive_errors = np.abs(y_train[seasonality:] - y_train[:-seasonality])
     scale = np.mean(naive_errors)

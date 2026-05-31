@@ -6,23 +6,30 @@ forecast_inference:
     enabled: false
     method: "historical_shares"
 
-  monthly_prophet:
+  # Metadata-driven monthly inference: one configuration block for every
+  # supported champion family. Dispatch is decided by champion_monthly_metadata.
+  monthly:
     enabled: true
-    date_column: "ds"
+    default_horizon: 12
+    supported_horizons: [3, 6, 12]
+    output_schema_version: "monthly_forecast_v1"
+    allow_null_intervals: true
+    supported_families:
+      - prophet
+      - sarimax
     sku_column: "sku"
 
-    horizons_months:
-      - 3
-      - 6
-      - 12
+    # Prophet adapter: native ds/yhat column conventions.
+    prophet:
+      date_column: "ds"
+      prediction_column: "yhat"
+      lower_column: "yhat_lower"
+      upper_column: "yhat_upper"
 
-    output:
-      include_prediction_intervals: true
-      latest_output_horizon_months: 12
-      model_family: "prophet"
-      model_granularity: "monthly"
-
-    validation:
-      fail_on_missing_regressors: true
-      fail_on_null_regressors: true
-      fail_if_future_contains_y: true
+    # SARIMAX adapter: confidence intervals from get_forecast().conf_int.
+    sarimax:
+      date_column: "month_start_date"
+      confidence_level: 0.90
+      interval_strategy: "conf_int"
+      require_future_exogenous_if_trained_with_exog: true
+      exogenous_columns: []

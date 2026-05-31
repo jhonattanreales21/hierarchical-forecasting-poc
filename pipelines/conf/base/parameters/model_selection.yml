@@ -1,30 +1,63 @@
 model_selection:
-  primary_metric: "MAPE"
+  primary_metric: "WAPE"
   secondary_metrics:
-    - "RMSE"
     - "MASE"
+    - "RMSE"
   selection_strategy: "best_by_horizon"
   tie_breaker: "RMSE"
 
+  # --- Monthly multi-family selection ---
+  monthly:
+    enabled: true
+    active_families:
+      - prophet
+      - sarimax
+    primary_metric: wape
+    direction: minimize
+    tie_breakers:
+      - mase
+      - rmse
+      - abs_bias
+    # Fail loudly when any active family has no prechampion artifacts.
+    require_all_active_families: true
+    allow_missing_optional_metrics: true
+    mase_seasonal_period: 12
+    # Champion Protocol stage 5: refit the elected champion on all available
+    # history (train + validation + test) before production inference.
+    refit_champion:
+      enabled: true
+    output:
+      produce_generic_champion: true
+      preserve_legacy_prophet_champion: true
+
+  # --- Prophet-specific selection ---
   monthly_prophet:
     date_column: "ds"
     target_column: "y"
     sku_column: "sku"
 
     selection:
-      primary_metric: "mape"
+      primary_metric: "wape"
       tie_breakers:
-        - "wmape"
-        - "horizon_3_mape"
-        - "horizon_2_mape"
-        - "validation_rank"
+        - "test_m3_wape"
+        - "test_m2_wape"
+        - "mase"
+        - "rmse"
+      missing_metric_policy: "skip_with_audit_note"
       business_success_precision_threshold: 0.85
 
     metrics:
       epsilon: 1.0
+      mase_seasonal_period: 12
       horizon_metrics:
         enabled: true
         horizons: [2, 3]
+
+    operational_lead_time:
+      enabled: true
+      lead_times:
+        - 2
+        - 3
 
     regressors:
       mode: "additive"
@@ -32,3 +65,10 @@ model_selection:
     refit_champion:
       enabled: true
       use_full_train: true
+
+  # --- SARIMAX adapter settings for multi-family selection ---
+  monthly_sarimax:
+    enabled: true
+    date_column: "month_start_date"
+    target_column: "monthly_demand"
+    model_family: sarimax

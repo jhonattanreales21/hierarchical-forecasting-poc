@@ -1,7 +1,21 @@
 evaluation:
   metrics:
-    - "MAPE"
-    - "RMSE"
-    - "MASE"
+    primary: "wape"
+    static:
+      - "wape"
+      - "mase"
+      - "rmse"
+    secondary:
+      - "mape"
+      - "bias"
   seasonality_weekly: 52
   seasonality_monthly: 12
+
+  operational_lead_time:
+    enabled: true
+    split: "test"
+    lead_times:
+      - 2
+      - 3
+    primary_operational_metric: "wape"
+    missing_pair_policy: "nan_with_warning"

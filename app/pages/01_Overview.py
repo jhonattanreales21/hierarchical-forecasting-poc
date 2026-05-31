@@ -60,7 +60,7 @@ else:
 
     test_m: dict = meta.get("test_metrics", {})
     business_flag: bool = meta.get("business_success_flag", False)
-    mape = test_m.get("mape")
+    wape = test_m.get("wape")
     rmse = test_m.get("rmse")
     precision = test_m.get("forecast_precision")
 
@@ -87,9 +87,9 @@ else:
         )
     with cols[1]:
         render_kpi_card(
-            label="Test MAPE",
-            value=format_percentage(mape) if mape is not None else "N/A",
-            status="success" if (mape is not None and mape < 0.15) else "warning",
+            label="Test WAPE",
+            value=format_percentage(wape) if wape is not None else "N/A",
+            status="success" if (wape is not None and wape < 0.15) else "warning",
         )
     with cols[2]:
         render_kpi_card(

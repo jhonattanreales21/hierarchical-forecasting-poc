@@ -1,24 +1,51 @@
-"""Monthly SARIMAX sub-pipeline: tune then train."""
+"""Monthly SARIMAX training and tuning pipeline.
+
+Produces all SARIMAX artifacts: tuning results, validation metrics,
+pre-champion configurations, candidate model artifacts, training metadata,
+and the rank-1 candidate for model-selection.
+"""
 
 from kedro.pipeline import Pipeline, node, pipeline
 
-from .nodes import train_best_candidate, tune_hyperparameters
+from .nodes import train_and_evaluate_monthly_sarimax_candidates
 
 
 def create_pipeline(**kwargs) -> Pipeline:
+    """Create the monthly SARIMAX training and tuning pipeline.
+
+    Inputs (from catalog):
+        monthly_sarimax_train
+        monthly_sarimax_validation
+        monthly_sarimax_split_metadata
+        params:train_monthly.sarimax
+
+    Outputs (to catalog):
+        monthly_sarimax_tuning_results
+        monthly_sarimax_validation_metrics
+        monthly_sarimax_prechampion_configs
+        monthly_sarimax_candidate_models
+        monthly_sarimax_training_metadata
+        candidate_monthly_sarimax          ← rank-1 model for model-selection stage
+    """
     return pipeline(
         [
             node(
-                func=tune_hyperparameters,
-                inputs=["train", "validation", "parameters"],
-                outputs="tuning_result",
-                name="tune_hyperparameters",
-            ),
-            node(
-                func=train_best_candidate,
-                inputs=["train", "validation", "tuning_result"],
-                outputs="candidate_model",
-                name="train_best_candidate",
+                func=train_and_evaluate_monthly_sarimax_candidates,
+                inputs=[
+                    "monthly_sarimax_train",
+                    "monthly_sarimax_validation",
+                    "monthly_sarimax_split_metadata",
+                    "params:train_monthly.sarimax",
+                ],
+                outputs=[
+                    "monthly_sarimax_tuning_results",
+                    "monthly_sarimax_validation_metrics",
+                    "monthly_sarimax_prechampion_configs",
+                    "monthly_sarimax_candidate_models",
+                    "monthly_sarimax_training_metadata",
+                    "candidate_monthly_sarimax",
+                ],
+                name="train_and_evaluate_monthly_sarimax_candidates",
             ),
         ]
     )

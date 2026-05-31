@@ -83,6 +83,52 @@ monthly_prophet_split_metadata:
   type: json.JSONDataset
   filepath: data/05_model_input/monthly_prophet_split_metadata.json
 
+# 05_model_input — Generic monthly model-ready datasets (model-family agnostic)
+monthly_modeling_data:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/monthly_modeling_data.parquet
+
+monthly_train:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/monthly_train.parquet
+
+monthly_validation:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/monthly_validation.parquet
+
+monthly_test:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/monthly_test.parquet
+
+monthly_full_train:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/monthly_full_train.parquet
+
+monthly_split_metadata:
+  type: json.JSONDataset
+  filepath: data/05_model_input/monthly_split_metadata.json
+
+# 05_model_input — SARIMAX monthly model-ready datasets
+monthly_sarimax_train:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/monthly_sarimax_train.parquet
+
+monthly_sarimax_validation:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/monthly_sarimax_validation.parquet
+
+monthly_sarimax_test:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/monthly_sarimax_test.parquet
+
+monthly_sarimax_full_train:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/monthly_sarimax_full_train.parquet
+
+monthly_sarimax_split_metadata:
+  type: json.JSONDataset
+  filepath: data/05_model_input/monthly_sarimax_split_metadata.json
+
 # Legacy / future-stage placeholders
 model_input_monthly_catboost_train:
   type: pandas.ParquetDataset
@@ -161,6 +207,27 @@ monthly_prophet_training_metadata:
   type: json.JSONDataset
   filepath: data/06_models/tuning/monthly_prophet_training_metadata.json
 
+# 06_models — Monthly SARIMAX training and tuning artifacts
+monthly_sarimax_tuning_results:
+  type: pandas.ParquetDataset
+  filepath: data/06_models/tuning/monthly_sarimax_tuning_results.parquet
+
+monthly_sarimax_validation_metrics:
+  type: pandas.ParquetDataset
+  filepath: data/06_models/tuning/monthly_sarimax_validation_metrics.parquet
+
+monthly_sarimax_prechampion_configs:
+  type: json.JSONDataset
+  filepath: data/06_models/tuning/monthly_sarimax_prechampion_configs.json
+
+monthly_sarimax_candidate_models:
+  type: pickle.PickleDataset
+  filepath: data/06_models/tuning/monthly_sarimax_candidate_models.pkl
+
+monthly_sarimax_training_metadata:
+  type: json.JSONDataset
+  filepath: data/06_models/tuning/monthly_sarimax_training_metadata.json
+
 # 06_models — candidate models per granularity × family
 candidate_monthly_prophet:
   type: pickle.PickleDataset
@@ -193,6 +260,23 @@ champion_weekly_model:
 champion_registry:
   type: json.JSONDataset
   filepath: data/06_models/champions/champion_registry.json
+
+# 06_models — Monthly multi-family selection artifacts
+monthly_candidate_test_metrics:
+  type: pandas.ParquetDataset
+  filepath: data/06_models/selection/monthly_candidate_test_metrics.parquet
+
+monthly_family_champion_summary:
+  type: pandas.ParquetDataset
+  filepath: data/06_models/selection/monthly_family_champion_summary.parquet
+
+monthly_model_selection_summary:
+  type: pandas.ParquetDataset
+  filepath: data/06_models/selection/monthly_model_selection_summary.parquet
+
+champion_monthly_metadata:
+  type: json.JSONDataset
+  filepath: data/06_models/champions/champion_monthly_metadata.json
 
 # Tuning and validation results
 tuning_results_monthly:
@@ -244,26 +328,26 @@ forecast_daily_output:
   type: pandas.ParquetDataset
   filepath: data/07_model_output/daily_forecast.parquet
 
-# 07_model_output — Monthly Prophet forecast outputs
-monthly_prophet_forecast_3m:
+# 07_model_output — Monthly champion forecast outputs (family-agnostic)
+monthly_forecast_3m:
   type: pandas.ParquetDataset
-  filepath: data/07_model_output/monthly_prophet_forecast_3m.parquet
+  filepath: data/07_model_output/monthly_forecast_3m.parquet
 
-monthly_prophet_forecast_6m:
+monthly_forecast_6m:
   type: pandas.ParquetDataset
-  filepath: data/07_model_output/monthly_prophet_forecast_6m.parquet
+  filepath: data/07_model_output/monthly_forecast_6m.parquet
 
-monthly_prophet_forecast_12m:
+monthly_forecast_12m:
   type: pandas.ParquetDataset
-  filepath: data/07_model_output/monthly_prophet_forecast_12m.parquet
+  filepath: data/07_model_output/monthly_forecast_12m.parquet
 
-monthly_prophet_forecast_latest:
+monthly_forecast_latest:
   type: pandas.ParquetDataset
-  filepath: data/07_model_output/monthly_prophet_forecast_latest.parquet
+  filepath: data/07_model_output/monthly_forecast_latest.parquet
 
-monthly_prophet_inference_metadata:
+monthly_inference_metadata:
   type: json.JSONDataset
-  filepath: data/07_model_output/monthly_prophet_inference_metadata.json
+  filepath: data/07_model_output/monthly_inference_metadata.json
 
 # 08_reporting
 model_selection_report:
@@ -277,3 +361,15 @@ evaluation_report:
 reconciliation_diagnostics:
   type: pandas.ParquetDataset
   filepath: data/08_reporting/reconciliation_diagnostics.parquet
+
+monthly_operational_test_forecasts:
+  type: pandas.ParquetDataset
+  filepath: data/08_reporting/monthly_operational_test_forecasts.parquet
+
+monthly_operational_lead_time_metrics:
+  type: pandas.ParquetDataset
+  filepath: data/08_reporting/monthly_operational_lead_time_metrics.parquet
+
+monthly_model_selection_audit:
+  type: pandas.ParquetDataset
+  filepath: data/08_reporting/monthly_model_selection_audit.parquet

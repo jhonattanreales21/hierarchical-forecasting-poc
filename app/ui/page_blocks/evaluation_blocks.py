@@ -56,21 +56,30 @@ def render_evaluation_summary(
         description="Key performance metrics on the held-out test window.",
     )
 
-    mape = test_m.get("mape")
+    wape = test_m.get("wape")
+    mase = test_m.get("mase")
     rmse = test_m.get("rmse")
-    wmape = test_m.get("wmape")
-    h2_mape = test_m.get("horizon_2_mape")
-    h3_mape = test_m.get("horizon_3_mape")
-    val_mape = val_m.get("mape")
+    mape = test_m.get("mape")
+    h2_wape = test_m.get("horizon_2_wape")
+    h3_wape = test_m.get("horizon_3_wape")
+    val_wape = val_m.get("wape")
 
     cols = st.columns(4)
     with cols[0]:
         render_kpi_card(
-            label="Test MAPE",
-            value=format_percentage(mape) if mape is not None else "N/A",
-            status="success" if (mape is not None and mape < 0.15) else "warning",
+            label="Test WAPE",
+            value=format_percentage(wape) if wape is not None else "N/A",
+            status="success" if (wape is not None and wape < 0.15) else "warning",
+            help_text="Primary metric: weighted absolute % error",
         )
     with cols[1]:
+        render_kpi_card(
+            label="Test MASE",
+            value=f"{mase:.3f}" if mase is not None else "N/A",
+            help_text="MASE < 1: better than seasonal naïve",
+            status="success" if (mase is not None and mase < 1.0) else "warning",
+        )
+    with cols[2]:
         render_kpi_card(
             label="Test RMSE",
             value=(
@@ -79,40 +88,45 @@ def render_evaluation_summary(
                 else "N/A"
             ),
         )
-    with cols[2]:
-        render_kpi_card(
-            label="Test wMAPE",
-            value=format_percentage(wmape) if wmape is not None else "N/A",
-        )
     with cols[3]:
         render_kpi_card(
             label="Forecast Precision",
             value=format_percentage(precision) if precision is not None else "N/A",
-            help_text="1 − MAPE  ·  business target ≥ 85%",
+            help_text="1 − WAPE  ·  business target ≥ 85%",
             status="success" if business_flag else "warning",
         )
 
     cols2 = st.columns(4)
     with cols2[0]:
         render_kpi_card(
-            label="H+2 MAPE",
-            value=format_percentage(h2_mape) if h2_mape is not None else "N/A",
-            help_text="2-month ahead error",
+            label="H+2 WAPE",
+            value=format_percentage(h2_wape) if h2_wape is not None else "N/A",
+            help_text="2-month ahead weighted error",
         )
     with cols2[1]:
         render_kpi_card(
-            label="H+3 MAPE",
-            value=format_percentage(h3_mape) if h3_mape is not None else "N/A",
-            help_text="3-month ahead error",
+            label="H+3 WAPE",
+            value=format_percentage(h3_wape) if h3_wape is not None else "N/A",
+            help_text="3-month ahead weighted error",
         )
     with cols2[2]:
         render_kpi_card(
-            label="Val MAPE",
-            value=format_percentage(val_mape) if val_mape is not None else "N/A",
-            help_text="Validation set MAPE",
+            label="Val WAPE",
+            value=format_percentage(val_wape) if val_wape is not None else "N/A",
+            help_text="Validation set WAPE",
         )
     with cols2[3]:
         render_kpi_card(label="Champion ID", value=champion_id)
+
+    if mape is not None:
+        with st.expander("Diagnostic metrics"):
+            dcols = st.columns(3)
+            with dcols[0]:
+                render_kpi_card(label="MAPE (diag)", value=format_percentage(mape))
+            with dcols[1]:
+                render_kpi_card(label="wMAPE (diag)", value=format_percentage(test_m.get("wmape")))
+            with dcols[2]:
+                render_kpi_card(label="Val MAPE (diag)", value=format_percentage(val_m.get("mape")))
 
     train_w = meta.get("train_window", {})
     test_w = meta.get("test_window", {})
@@ -131,7 +145,7 @@ def render_candidate_comparison(sel_df: pd.DataFrame) -> None:
     """
     render_section_header(
         "Candidate Comparison",
-        description="All evaluated candidates ranked by test MAPE on the held-out window.",
+        description="All evaluated candidates ranked by test WAPE on the held-out window.",
     )
 
     if sel_df.empty:
@@ -143,26 +157,24 @@ def render_candidate_comparison(sel_df: pd.DataFrame) -> None:
         "is_champion",
         "validation_rank",
         "test_rank",
-        "mape",
+        "wape",
+        "mase",
         "rmse",
-        "wmape",
+        "test_m2_wape",
+        "test_m3_wape",
         "forecast_precision",
-        "horizon_2_mape",
-        "horizon_3_mape",
         "business_success_flag",
     ]
     available = [c for c in display_cols if c in sel_df.columns]
     display = sel_df[available].copy()
 
-    for col in [
-        "mape",
-        "wmape",
-        "forecast_precision",
-        "horizon_2_mape",
-        "horizon_3_mape",
-    ]:
+    for col in ["wape", "test_m2_wape", "test_m3_wape", "forecast_precision"]:
         if col in display.columns:
             display[col] = display[col].map(format_percentage)
+    if "mase" in display.columns:
+        display["mase"] = display["mase"].map(
+            lambda v: f"{v:.3f}" if v is not None and not pd.isna(v) else "N/A"
+        )
     if "rmse" in display.columns:
         display["rmse"] = display["rmse"].map(lambda v: format_metric(v, decimals=1))
 
@@ -172,17 +184,17 @@ def render_candidate_comparison(sel_df: pd.DataFrame) -> None:
             "is_champion": "Champion",
             "validation_rank": "Val rank",
             "test_rank": "Test rank",
-            "mape": "MAPE",
+            "wape": "WAPE",
+            "mase": "MASE",
             "rmse": "RMSE",
-            "wmape": "wMAPE",
+            "test_m2_wape": "M+2 WAPE",
+            "test_m3_wape": "M+3 WAPE",
             "forecast_precision": "Precision",
-            "horizon_2_mape": "H+2 MAPE",
-            "horizon_3_mape": "H+3 MAPE",
             "business_success_flag": "Target met",
         }
     )
     st.dataframe(display, use_container_width=True, hide_index=True)
-    st.caption("Accuracy target: ≥ 85% forecast precision.")
+    st.caption("Accuracy target: ≥ 85% forecast precision. MASE < 1 beats seasonal naïve.")
 
 
 def render_test_metrics_table(tm_df: pd.DataFrame) -> None:
@@ -203,13 +215,11 @@ def render_test_metrics_table(tm_df: pd.DataFrame) -> None:
     display_cols = [
         "candidate_id",
         "status",
+        "wape",
+        "mase",
         "mae",
         "rmse",
-        "mape",
-        "wmape",
         "forecast_precision",
-        "horizon_2_mape",
-        "horizon_3_mape",
         "business_success_flag",
         "test_start_date",
         "test_end_date",
@@ -218,15 +228,13 @@ def render_test_metrics_table(tm_df: pd.DataFrame) -> None:
     available = [c for c in display_cols if c in tm_df.columns]
     display = tm_df[available].copy()
 
-    for col in [
-        "mape",
-        "wmape",
-        "forecast_precision",
-        "horizon_2_mape",
-        "horizon_3_mape",
-    ]:
+    for col in ["wape", "forecast_precision"]:
         if col in display.columns:
             display[col] = display[col].map(format_percentage)
+    if "mase" in display.columns:
+        display["mase"] = display["mase"].map(
+            lambda v: f"{v:.3f}" if v is not None and not pd.isna(v) else "N/A"
+        )
     for col in ["mae", "rmse"]:
         if col in display.columns:
             display[col] = display[col].map(lambda v: format_metric(v, decimals=2))
@@ -235,13 +243,11 @@ def render_test_metrics_table(tm_df: pd.DataFrame) -> None:
         columns={
             "candidate_id": "Candidate",
             "status": "Status",
+            "wape": "WAPE",
+            "mase": "MASE",
             "mae": "MAE",
             "rmse": "RMSE",
-            "mape": "MAPE",
-            "wmape": "wMAPE",
             "forecast_precision": "Precision",
-            "horizon_2_mape": "H+2 MAPE",
-            "horizon_3_mape": "H+3 MAPE",
             "business_success_flag": "Target met",
             "test_start_date": "Test start",
             "test_end_date": "Test end",

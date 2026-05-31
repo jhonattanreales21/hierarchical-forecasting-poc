@@ -17,7 +17,7 @@ render_hero(
     title="Demand Forecast PoC",
     subtitle=(
         "Temporal hierarchical forecasting for a critical SKU. "
-        "Explore the monthly forecast, model evaluation, temporal hierarchy, "
+        "Explore the monthly forecast, model evaluation, project status, "
         "and future business assistant capabilities from the sidebar."
     ),
     eyebrow="Hierarchical Demand Forecasting",
@@ -58,18 +58,6 @@ _SECTIONS = [
         "Active",
         "Live champion status, pipeline artifact health, and PoC scope summary.",
         "success",
-    ),
-    (
-        "Weekly Anchor",
-        "Planned",
-        "14-week operational forecast — secondary enhancement layer.",
-        "info",
-    ),
-    (
-        "Temporal Coherence",
-        "Planned",
-        "Monthly ↔ Weekly reconciliation diagnostics and coherence validation.",
-        "info",
     ),
     (
         "Business Assistant",

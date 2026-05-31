@@ -36,7 +36,7 @@ Raw data (CSV)
 
 ```
 Monthly  <->  Weekly  <->  Daily (disabled)
-[primary]     [anchor]     [optional extension]
+[primary]     [complementary]     [optional extension]
 ```
 
 - **Monthly** is the primary analytical and stakeholder-facing layer.
