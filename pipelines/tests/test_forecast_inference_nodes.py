@@ -1,4 +1,4 @@
-"""Tests for metadata-driven monthly champion forecast inference (Phase 6).
+"""Tests for metadata-driven monthly champion forecast inference.
 
 Covers:
 - metadata-driven dispatch to the Prophet and SARIMAX adapters;
@@ -183,7 +183,7 @@ def test_dispatch_routes_to_sarimax_adapter():
 
 
 def test_unsupported_family_raises_clear_error():
-    """CatBoost must be rejected with an actionable Phase 6 message."""
+    """CatBoost must be rejected with a clear, actionable error message."""
     with pytest.raises(ValueError, match="catboost"):
         dispatch_monthly_prediction(
             object(), {"model_family": "catboost"}, _make_future_df(3), _params(), 3

@@ -1,4 +1,4 @@
-"""Tests for monthly multi-family model selection nodes (Phase 5).
+"""Tests for monthly multi-family model selection nodes (Prophet + SARIMAX).
 
 Covers:
 - evaluate_monthly_family_candidates_on_test (Prophet + SARIMAX scoring)
@@ -752,7 +752,7 @@ def test_build_champion_refits_prophet_on_full_history():
     assert metadata["inference_contract"]["model_family"] == "prophet"
 
 
-# ── Test 5: Phase 5 scope — no CatBoost or weekly inputs required ─────────────
+# ── Test 5: scope guard — no CatBoost or weekly inputs required ───────────────
 
 
 def test_monthly_model_selection_does_not_require_catboost_or_weekly_inputs():
@@ -769,10 +769,10 @@ def test_monthly_model_selection_does_not_require_catboost_or_weekly_inputs():
 
     for name in param_names:
         assert "catboost" not in name.lower(), (
-            f"Parameter '{name}' references CatBoost — out of Phase 5 scope"
+            f"Parameter '{name}' references CatBoost — not supported in the monthly Prophet+SARIMAX selection pipeline"
         )
         assert "weekly" not in name.lower(), (
-            f"Parameter '{name}' references weekly data — out of Phase 5 scope"
+            f"Parameter '{name}' references weekly data — not supported in the monthly Prophet+SARIMAX selection pipeline"
         )
 
     # Pipeline nodes must not reference CatBoost or weekly catalog keys
@@ -780,10 +780,10 @@ def test_monthly_model_selection_does_not_require_catboost_or_weekly_inputs():
     all_inputs = {inp for n in p.nodes for inp in n.inputs}
     for key in all_inputs:
         assert "catboost" not in key.lower(), (
-            f"Pipeline input '{key}' references CatBoost — out of Phase 5 scope"
+            f"Pipeline input '{key}' references CatBoost — not supported in the monthly Prophet+SARIMAX selection pipeline"
         )
         assert "weekly" not in key.lower(), (
-            f"Pipeline input '{key}' references weekly data — out of Phase 5 scope"
+            f"Pipeline input '{key}' references weekly data — not supported in the monthly Prophet+SARIMAX selection pipeline"
         )
 
 

@@ -21,7 +21,7 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-# Families this phase can dispatch to. CatBoost is intentionally excluded.
+# Supported monthly families. CatBoost is intentionally excluded.
 SUPPORTED_MONTHLY_FAMILIES: tuple[str, ...] = ("prophet", "sarimax")
 
 # Columns every adapter must return before standardisation decorates the frame.
@@ -84,13 +84,13 @@ def dispatch_monthly_prediction(
         return predict_monthly_sarimax(model, future_df, metadata, params, horizon)
     if model_family == "catboost":
         raise ValueError(
-            "Monthly champion model_family 'catboost' is not supported in Phase 6. "
+            "Monthly champion model_family 'catboost' is not supported. "
             f"Supported families are: {', '.join(SUPPORTED_MONTHLY_FAMILIES)}."
         )
 
     raise ValueError(
         f"Unsupported monthly champion model_family: {model_family}. "
-        f"Supported families in Phase 6 are: {', '.join(SUPPORTED_MONTHLY_FAMILIES)}."
+        f"Supported families are: {', '.join(SUPPORTED_MONTHLY_FAMILIES)}."
     )
 
 

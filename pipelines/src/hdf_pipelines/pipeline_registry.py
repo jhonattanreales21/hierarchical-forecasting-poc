@@ -53,7 +53,7 @@ def register_pipelines() -> dict[str, Pipeline]:
     # Standalone Monthly Prophet model-selection pipeline (Prophet-specific champion)
     prophet_monthly_selection = create_prophet_monthly_selection_pipeline()
 
-    # Monthly multi-family model selection: Prophet vs SARIMAX (Phase 5)
+    # Monthly multi-family model selection: Prophet vs SARIMAX
     monthly_model_selection = create_monthly_model_selection_pipeline()
 
     # Prophet-only training + Prophet-specific selection. Kept as an isolated
@@ -96,7 +96,7 @@ def register_pipelines() -> dict[str, Pipeline]:
         # ── Default reproducible route ────────────────────────────────────────
         "__default__": monthly_forecast_e2e,
         "monthly_forecast_e2e": monthly_forecast_e2e,
-        # ── Multi-family monthly comparison + selection (Phase 5) ─────────────
+        # ── Multi-family monthly comparison + selection ───────────────────────
         "monthly_model_selection": monthly_model_selection,
         "prophet_sarimax_comparison": prophet_sarimax_comparison,
         # ── Prophet-only reference route ──────────────────────────────────────

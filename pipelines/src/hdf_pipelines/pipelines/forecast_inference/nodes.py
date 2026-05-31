@@ -1,12 +1,12 @@
 """Forecast inference nodes: metadata-driven monthly champion forecasting.
 
-Phase 6 makes monthly inference generic. A single node loads the production
+Monthly inference is family-agnostic. A single node loads the production
 champion (Prophet or SARIMAX) through generic champion artifacts, dispatches
 prediction to the correct family adapter based on ``champion_monthly_metadata``,
 and emits a standardized monthly forecast schema shared across families.
 
-Weekly and daily inference remain future scope (see the stubs at the end of this
-module); they are intentionally not implemented in this phase.
+Weekly and daily inference are future scope (see the stubs at the end of this
+module); they are intentionally not implemented yet.
 """
 
 import logging

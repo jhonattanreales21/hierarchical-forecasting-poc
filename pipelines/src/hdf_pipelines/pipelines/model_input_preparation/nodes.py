@@ -1025,7 +1025,7 @@ def adapt_monthly_data_for_sarimax(
     )
 
 
-# ── Prophet future regressors and split metadata (unchanged from Phase 0) ─────
+# ── Prophet future regressors and split metadata ──────────────────────────────
 
 def build_monthly_prophet_future_regressors(
     monthly_prophet_modeling_data: pd.DataFrame,
