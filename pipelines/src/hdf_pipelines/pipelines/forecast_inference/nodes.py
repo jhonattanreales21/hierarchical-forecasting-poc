@@ -1,38 +1,50 @@
-"""Forecast inference nodes: generate forward-looking predictions from champion models."""
+"""Forecast inference nodes: metadata-driven monthly champion forecasting.
+
+Phase 6 makes monthly inference generic. A single node loads the production
+champion (Prophet or SARIMAX) through generic champion artifacts, dispatches
+prediction to the correct family adapter based on ``champion_monthly_metadata``,
+and emits a standardized monthly forecast schema shared across families.
+
+Weekly and daily inference remain future scope (see the stubs at the end of this
+module); they are intentionally not implemented in this phase.
+"""
 
 import logging
 import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+import numpy as np
 import pandas as pd
+
+from .adapters import SUPPORTED_MONTHLY_FAMILIES, dispatch_monthly_prediction
 
 logger = logging.getLogger(__name__)
 
-# Keys required to be present in champion metadata before inference can proceed.
-_REQUIRED_METADATA_KEYS: tuple[str, ...] = (
-    "champion_id",
-    "active_regressors",
-    "model_family",
-)
+# Horizons (in months) produced by monthly inference.
+_SUPPORTED_HORIZONS: tuple[int, ...] = (3, 6, 12)
 
-# Standardised column order for all monthly Prophet forecast outputs.
-_FORECAST_COLUMN_ORDER: list[str] = [
-    "ds",
-    "sku",
-    "horizon_month",
-    "yhat",
-    "yhat_lower",
-    "yhat_upper",
+# Champion metadata fields required before dispatch can proceed.
+_REQUIRED_METADATA_KEYS: tuple[str, ...] = ("model_family", "champion_id")
+
+# Canonical monthly forecast output schema, shared by every supported family.
+_STANDARD_FORECAST_COLUMNS: list[str] = [
+    "date",
+    "forecast",
+    "forecast_lower",
+    "forecast_upper",
     "model_family",
-    "model_granularity",
+    "granularity",
+    "horizon",
+    "horizon_label",
+    "forecast_generated_at",
     "champion_id",
-    "forecast_run_id",
-    "forecast_created_at",
-    "forecast_horizon_months",
     "selection_metric",
     "selection_metric_value",
-    "business_success_flag",
+    "sku",
+    "has_prediction_interval",
+    "interval_method",
+    "run_id",
     "source_dataset",
 ]
 
@@ -40,605 +52,429 @@ _FORECAST_COLUMN_ORDER: list[str] = [
 # ── Public node ───────────────────────────────────────────────────────────────
 
 
-def generate_monthly_prophet_forecasts(  # noqa: PLR0912, PLR0913
-    monthly_prophet_champion_model: Any,
-    monthly_prophet_champion_metadata: dict,
-    monthly_prophet_future_3m: pd.DataFrame,
-    monthly_prophet_future_6m: pd.DataFrame,
-    monthly_prophet_future_12m: pd.DataFrame,
+def generate_monthly_champion_forecasts(  # noqa: PLR0913
+    champion_monthly_model: Any,
+    champion_monthly_metadata: dict,
+    monthly_future_3m: pd.DataFrame,
+    monthly_future_6m: pd.DataFrame,
+    monthly_future_12m: pd.DataFrame,
     params: dict,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, dict]:
-    """Generate official monthly demand forecasts using the selected Prophet champion.
+    """Generate official monthly forecasts from the selected production champion.
 
-    Loads the champion model and metadata, validates future regressor inputs for each
-    configured horizon, runs Prophet inference, annotates outputs with traceability
-    metadata, and returns one forecast table per horizon plus a latest forecast and
-    an inference metadata artifact.
+    Loads the generic champion model and metadata, dispatches inference to the
+    family-specific adapter named by ``champion_monthly_metadata["model_family"]``,
+    standardizes the per-horizon output to the canonical monthly forecast schema,
+    and returns one forecast table per horizon plus a latest forecast and an audit
+    metadata artifact.
+
+    The dispatch is driven by metadata, not by the Python type of the model object,
+    so Prophet and SARIMAX champions flow through the same node.
 
     Args:
-        monthly_prophet_champion_model: Fitted Prophet model from Stage 5 model selection.
-        monthly_prophet_champion_metadata: Champion metadata dict from Stage 5, must
-            include champion_id, active_regressors, model_family, selection_metric,
-            selection_metric_value, and business_success_flag.
-        monthly_prophet_future_3m: Future feature DataFrame for the 3-month horizon.
-        monthly_prophet_future_6m: Future feature DataFrame for the 6-month horizon.
-        monthly_prophet_future_12m: Future feature DataFrame for the 12-month horizon.
-        params: Contents of forecast_inference.monthly_prophet from the parameter file.
+        champion_monthly_model: Production champion artifact. Prophet champions are
+            the fitted model; SARIMAX champions are the candidate entry dict that
+            carries the fitted results under ``"model"``.
+        champion_monthly_metadata: Generic champion metadata from model selection.
+            Must contain ``model_family`` and ``champion_id``.
+        monthly_future_3m: Future feature frame for the 3-month horizon.
+        monthly_future_6m: Future feature frame for the 6-month horizon.
+        monthly_future_12m: Future feature frame for the 12-month horizon.
+        params: Contents of ``forecast_inference.monthly`` from the parameter file.
 
     Returns:
-        Five-element tuple:
-
-        1. ``forecast_3m`` — Annotated forecast DataFrame for the 3-month horizon.
-        2. ``forecast_6m`` — Annotated forecast DataFrame for the 6-month horizon.
-        3. ``forecast_12m`` — Annotated forecast DataFrame for the 12-month horizon.
-        4. ``forecast_latest`` — Copy of the forecast for the configured
-           ``latest_output_horizon_months`` (defaults to 12). Used by downstream consumers
-           (Streamlit, FastAPI, reporting) as the single authoritative forecast table.
-        5. ``inference_metadata`` — JSON-serialisable dict summarising the inference run.
+        Five-element tuple ``(forecast_3m, forecast_6m, forecast_12m,
+        forecast_latest, inference_metadata)``. Each forecast frame uses the
+        canonical schema in ``_STANDARD_FORECAST_COLUMNS``; ``forecast_latest`` is a
+        copy of the forecast for the configured ``default_horizon``;
+        ``inference_metadata`` is a JSON-serialisable audit dict.
 
     Raises:
-        ValueError: If champion metadata is missing required keys, or if any future
-            dataset fails validation.
+        ValueError: If champion metadata is invalid, the model family is
+            unsupported, or any future frame fails validation.
     """
-    _validate_champion_metadata(monthly_prophet_champion_metadata)
+    _validate_monthly_champion_metadata(champion_monthly_metadata, params)
 
-    champion_id: str = monthly_prophet_champion_metadata["champion_id"]
-    active_regressors: list[str] = list(
-        monthly_prophet_champion_metadata["active_regressors"]
-    )
-    date_col: str = params.get("date_column", "ds")
-    sku_col: str = params.get("sku_column", "sku")
-    output_cfg: dict = params.get("output", {})
-    val_cfg: dict = params.get("validation", {})
-    latest_horizon: int = int(output_cfg.get("latest_output_horizon_months", 6))
-
-    logger.info(
-        "Starting Monthly Prophet forecast inference — champion: %s", champion_id
-    )
-    logger.info("Active regressors (%d): %s", len(active_regressors), active_regressors)
-
-    forecast_run_id = (
-        f"monthly_prophet_{datetime.now(tz=UTC).strftime('%Y%m%d_%H%M%S')}"
+    model_family = str(champion_monthly_metadata["model_family"]).strip().lower()
+    champion_id = str(champion_monthly_metadata["champion_id"])
+    created_at = datetime.now(tz=UTC).isoformat()
+    run_id = (
+        f"monthly_{model_family}_{datetime.now(tz=UTC).strftime('%Y%m%d_%H%M%S')}"
         f"_{uuid.uuid4().hex[:6]}"
     )
-    created_at = datetime.now(tz=UTC).isoformat()
 
+    logger.info(
+        "Monthly champion inference — family=%s  champion=%s  run_id=%s",
+        model_family,
+        champion_id,
+        run_id,
+    )
+
+    # The canonical generic future frames are not built yet, so monthly inference
+    # temporarily consumes the Prophet future frames. The family adapters extract
+    # the date index (and any exogenous columns) from these frames.
+    # TODO(model_input): emit granularity-generic monthly_future_{3,6,12}m frames
+    #   and route them here instead of the Prophet-specific frames.
     horizon_futures: dict[int, tuple[pd.DataFrame, str]] = {
-        3: (monthly_prophet_future_3m, "monthly_prophet_future_3m"),
-        6: (monthly_prophet_future_6m, "monthly_prophet_future_6m"),
-        12: (monthly_prophet_future_12m, "monthly_prophet_future_12m"),
+        3: (monthly_future_3m, "monthly_future_3m"),
+        6: (monthly_future_6m, "monthly_future_6m"),
+        12: (monthly_future_12m, "monthly_future_12m"),
     }
 
     forecasts: dict[int, pd.DataFrame] = {}
     horizon_summaries: dict[int, dict] = {}
 
-    for horizon_months, (future_df, dataset_name) in horizon_futures.items():
-        logger.info(
-            "Validating future dataset '%s' — shape: %s",
-            dataset_name,
-            future_df.shape,
-        )
-        _validate_future_dataset(
-            future_df=future_df,
-            active_regressors=active_regressors,
-            expected_horizon=horizon_months,
-            dataset_name=dataset_name,
-            date_col=date_col,
-            sku_col=sku_col,
-            params=val_cfg,
-        )
+    for horizon, (future_df, source_dataset) in horizon_futures.items():
+        _validate_future_frame(future_df, horizon, source_dataset)
 
-        forecast_df = _forecast_one_horizon(
-            model=monthly_prophet_champion_model,
+        core = dispatch_monthly_prediction(
+            model=champion_monthly_model,
+            metadata=champion_monthly_metadata,
             future_df=future_df,
-            active_regressors=active_regressors,
-            champion_metadata=monthly_prophet_champion_metadata,
-            forecast_run_id=forecast_run_id,
+            params=params,
+            horizon=horizon,
+        )
+        standardized = _standardize_forecast_schema(
+            core_df=core,
+            metadata=champion_monthly_metadata,
+            table_horizon=horizon,
+            run_id=run_id,
             created_at=created_at,
-            horizon_months=horizon_months,
-            source_dataset=dataset_name,
-            date_col=date_col,
-            sku_col=sku_col,
-            output_cfg=output_cfg,
+            source_dataset=source_dataset,
         )
+        _validate_standard_forecast_output(standardized, horizon)
 
-        forecasts[horizon_months] = forecast_df
-        horizon_summaries[horizon_months] = _summarize_forecast_output(
-            forecast_df, "ds", dataset_name
-        )
-
+        forecasts[horizon] = standardized
+        horizon_summaries[horizon] = _summarize_forecast(standardized, source_dataset)
         logger.info(
-            "Horizon %dm — rows: %d | %s → %s",
-            horizon_months,
-            len(forecast_df),
-            horizon_summaries[horizon_months]["start_date"],
-            horizon_summaries[horizon_months]["end_date"],
+            "Horizon %dm — rows=%d  %s → %s",
+            horizon,
+            len(standardized),
+            horizon_summaries[horizon]["start_date"],
+            horizon_summaries[horizon]["end_date"],
         )
 
-    forecast_3m = forecasts[3]
-    forecast_6m = forecasts[6]
-    forecast_12m = forecasts[12]
-
-    # forecast_latest mirrors the configured latest_output_horizon_months (default 12)
-    # so downstream consumers always have one canonical table to query.
-    if latest_horizon not in forecasts:
-        raise ValueError(
-            f"latest_output_horizon_months={latest_horizon} is not in the generated "
-            f"horizons {list(forecasts.keys())}. Check forecast_inference.monthly_prophet."
-        )
-    forecast_latest = forecasts[latest_horizon].copy()
+    default_horizon = _resolve_default_horizon(params, available=list(forecasts))
+    forecast_latest = forecasts[default_horizon].copy()
 
     inference_metadata = _build_inference_metadata(
-        champion_metadata=monthly_prophet_champion_metadata,
-        forecast_run_id=forecast_run_id,
+        metadata=champion_monthly_metadata,
+        params=params,
+        run_id=run_id,
         created_at=created_at,
-        active_regressors=active_regressors,
+        default_horizon=default_horizon,
         horizon_summaries=horizon_summaries,
-        latest_horizon=latest_horizon,
+        latest_forecast=forecast_latest,
+        horizon_futures=horizon_futures,
     )
 
     logger.info(
-        "Inference complete — forecast_run_id: %s | 3m rows: %d | 6m rows: %d | 12m rows: %d",
-        forecast_run_id,
-        len(forecast_3m),
-        len(forecast_6m),
-        len(forecast_12m),
+        "Monthly inference complete — run_id=%s  latest_horizon=%dm  family=%s",
+        run_id,
+        default_horizon,
+        model_family,
     )
-    logger.info(
-        "Latest forecast: %dm horizon → dataset: monthly_prophet_forecast_latest",
-        latest_horizon,
+    return (
+        forecasts[3],
+        forecasts[6],
+        forecasts[12],
+        forecast_latest,
+        inference_metadata,
     )
 
-    return forecast_3m, forecast_6m, forecast_12m, forecast_latest, inference_metadata
+
+# ── Validation helpers ────────────────────────────────────────────────────────
 
 
-# ── Private helpers ───────────────────────────────────────────────────────────
-
-
-def _validate_champion_metadata(champion_metadata: dict) -> None:
-    """Raise ValueError if required champion metadata keys are missing or invalid.
+def _validate_monthly_champion_metadata(metadata: dict, params: dict) -> None:
+    """Validate champion metadata before dispatch.
 
     Args:
-        champion_metadata: Champion metadata dict produced by Stage 5 model selection.
+        metadata: ``champion_monthly_metadata`` produced by model selection.
+        params: Contents of ``forecast_inference.monthly`` (for supported families).
+
+    Raises:
+        ValueError: If a required field is missing or the family is unsupported.
     """
-    missing = [k for k in _REQUIRED_METADATA_KEYS if k not in champion_metadata]
+    missing = [k for k in _REQUIRED_METADATA_KEYS if not metadata.get(k)]
     if missing:
         raise ValueError(
-            f"Champion metadata is missing required keys: {missing}. "
-            f"Found keys: {list(champion_metadata.keys())}"
+            "champion_monthly_metadata is missing required field(s) "
+            f"{missing}. Monthly inference cannot dispatch to a prediction adapter "
+            f"without them. Present fields: {sorted(metadata.keys())}."
         )
-    if not isinstance(champion_metadata.get("active_regressors"), list):
+
+    supported = [
+        str(f).lower()
+        for f in params.get("supported_families", SUPPORTED_MONTHLY_FAMILIES)
+    ]
+    model_family = str(metadata["model_family"]).strip().lower()
+    if model_family not in supported:
         raise ValueError(
-            "champion_metadata['active_regressors'] must be a list of column names."
-        )
-    if not champion_metadata["active_regressors"]:
-        raise ValueError(
-            "champion_metadata['active_regressors'] is empty. "
-            "At least one regressor is required for Monthly Prophet inference."
+            f"Monthly champion model_family '{model_family}' is not supported. "
+            f"Supported families: {supported}."
         )
 
 
-def _validate_future_dataset(  # noqa: PLR0912, PLR0913
-    future_df: pd.DataFrame,
-    active_regressors: list[str],
-    expected_horizon: int,
-    dataset_name: str,
-    date_col: str,
-    sku_col: str,
-    params: dict,
-) -> None:
-    """Validate a future input DataFrame before Prophet inference.
+def _validate_future_frame(future_df: pd.DataFrame, horizon: int, name: str) -> None:
+    """Validate a future feature frame before family dispatch.
 
-    Performs structural, type, uniqueness, null, and horizon length checks.
-    Raises a descriptive ValueError on the first failing check.
+    Performs only granularity-agnostic checks; family-specific checks (regressors,
+    exogenous columns) live in the adapters.
 
     Args:
-        future_df: Future feature DataFrame to validate.
-        active_regressors: Regressor columns that must be present and non-null.
-        expected_horizon: Expected number of future months for this dataset.
-        dataset_name: Dataset name used in error messages.
-        date_col: Name of the date column.
-        sku_col: Name of the SKU column.
-        params: Validation flags (fail_on_missing_regressors, fail_on_null_regressors,
-            fail_if_future_contains_y).
+        future_df: Future feature frame for a single horizon.
+        horizon: Forecast horizon in months.
+        name: Logical dataset name used in error messages.
+
+    Raises:
+        ValueError: If the frame is empty, lacks a date column, or leaks a target.
     """
-    fail_on_missing = bool(params.get("fail_on_missing_regressors", True))
-    fail_on_nulls = bool(params.get("fail_on_null_regressors", True))
-    fail_if_y = bool(params.get("fail_if_future_contains_y", True))
+    if future_df is None or future_df.empty:
+        raise ValueError(f"Future frame '{name}' for the {horizon}-month horizon is empty.")
 
-    if future_df.empty:
-        raise ValueError(f"Future dataset '{dataset_name}' is empty.")
-
-    for required_col in [date_col, sku_col]:
-        if required_col not in future_df.columns:
-            raise ValueError(
-                f"Future dataset '{dataset_name}' is missing required column "
-                f"'{required_col}'."
-            )
-
-    # y must not be present in future inference inputs — it indicates a data pipeline
-    # error and could silently cause the model to overfit during batch inference.
-    if fail_if_y and "y" in future_df.columns:
+    date_candidates = ("ds", "month_start_date", "date")
+    if not any(col in future_df.columns for col in date_candidates):
         raise ValueError(
-            f"Future dataset '{dataset_name}' contains column 'y' (target). "
-            "Future inference inputs must not include the target column."
+            f"Future frame '{name}' has no recognisable date column "
+            f"(looked for {date_candidates}); found {list(future_df.columns)}."
         )
 
-    # Datetime check
-    try:
-        pd.to_datetime(future_df[date_col])
-    except Exception as exc:
+    leaked_targets = [c for c in ("y", "monthly_demand") if c in future_df.columns]
+    if leaked_targets:
         raise ValueError(
-            f"Column '{date_col}' in '{dataset_name}' could not be parsed as datetime."
+            f"Future frame '{name}' must not contain target column(s) {leaked_targets}; "
+            "future inference inputs are feature-only."
+        )
+
+
+def _validate_standard_forecast_output(forecast_df: pd.DataFrame, horizon: int) -> None:
+    """Validate a standardized forecast frame against the canonical contract.
+
+    Args:
+        forecast_df: Standardized forecast frame for one horizon.
+        horizon: Forecast horizon in months (for error messages).
+
+    Raises:
+        ValueError: If required columns are absent, dates are unparseable, the point
+            forecast is non-numeric, or interval columns are missing.
+    """
+    missing = [c for c in _STANDARD_FORECAST_COLUMNS if c not in forecast_df.columns]
+    if missing:
+        raise ValueError(
+            f"Standardized {horizon}-month forecast is missing required columns: {missing}."
+        )
+    if forecast_df.empty:
+        raise ValueError(f"Standardized {horizon}-month forecast is empty.")
+
+    try:
+        pd.to_datetime(forecast_df["date"])
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(
+            f"Standardized {horizon}-month forecast has unparseable 'date' values."
         ) from exc
 
-    # Active regressors
-    missing_regressors = [r for r in active_regressors if r not in future_df.columns]
-    if missing_regressors and fail_on_missing:
+    if not pd.api.types.is_numeric_dtype(forecast_df["forecast"]):
         raise ValueError(
-            f"Future dataset '{dataset_name}' is missing active regressor columns: "
-            f"{missing_regressors}. All active regressors must be present for inference."
+            f"Standardized {horizon}-month forecast 'forecast' column must be numeric."
         )
 
-    present_regressors = [r for r in active_regressors if r in future_df.columns]
 
-    # Null check on active regressors
-    if fail_on_nulls and present_regressors:
-        null_cols = [r for r in present_regressors if future_df[r].isnull().any()]
-        if null_cols:
-            raise ValueError(
-                f"Future dataset '{dataset_name}' has null values in active regressors: "
-                f"{null_cols}. Future regressors must be complete for inference."
-            )
-
-    # Unique ds per sku
-    sku_values = future_df[sku_col].unique()
-    for sku_val in sku_values:
-        sku_mask = future_df[sku_col] == sku_val
-        n_dates = int(sku_mask.sum())
-        n_unique = int(future_df.loc[sku_mask, date_col].nunique())
-        if n_dates != n_unique:
-            raise ValueError(
-                f"Future dataset '{dataset_name}' has duplicate '{date_col}' values "
-                f"for SKU '{sku_val}'."
-            )
-
-    # Horizon length check (per SKU)
-    for sku_val in sku_values:
-        sku_n = int((future_df[sku_col] == sku_val).sum())
-        if sku_n != expected_horizon:
-            raise ValueError(
-                f"Future dataset '{dataset_name}' has {sku_n} rows for SKU "
-                f"'{sku_val}' but expected {expected_horizon} months. "
-                "Check model_input_preparation outputs."
-            )
-
-    # Consecutive month-start dates check
-    future_dates = pd.DatetimeIndex(
-        sorted(pd.to_datetime(future_df[date_col]).unique())
-    )
-    for i in range(1, len(future_dates)):
-        expected_next = future_dates[i - 1] + pd.offsets.MonthBegin(1)
-        if future_dates[i] != expected_next:
-            raise ValueError(
-                f"Future dataset '{dataset_name}' has non-consecutive month-start dates. "
-                f"Expected {expected_next.date()} after {future_dates[i - 1].date()}, "
-                f"found {future_dates[i].date()}."
-            )
-
-    logger.info(
-        "Validation passed for '%s' — %d rows | %s → %s",
-        dataset_name,
-        len(future_df),
-        str(future_dates[0].date()),
-        str(future_dates[-1].date()),
-    )
+# ── Schema and metadata helpers ───────────────────────────────────────────────
 
 
-def _build_prophet_prediction_input(
-    future_df: pd.DataFrame,
-    active_regressors: list[str],
-    date_col: str,
-) -> pd.DataFrame:
-    """Build the Prophet prediction input containing only ds and active regressors.
-
-    y must not be in the prediction input — Prophet does not use the target during
-    inference, and its presence would indicate a data pipeline error upstream.
-
-    Args:
-        future_df: Future feature DataFrame with date_col, sku, and active regressors.
-        active_regressors: Regressor columns registered with the champion model.
-        date_col: Name of the date column in future_df.
-
-    Returns:
-        DataFrame with only ds (renamed from date_col) and active regressors.
-    """
-    predict_df = future_df[[date_col] + active_regressors].copy()
-    predict_df = predict_df.rename(columns={date_col: "ds"})
-    predict_df["ds"] = pd.to_datetime(predict_df["ds"])
-    return predict_df
-
-
-def _add_horizon_month(
-    forecast_df: pd.DataFrame,
-    date_col: str,
-) -> pd.DataFrame:
-    """Add a 1-based horizon_month integer column to the forecast DataFrame.
-
-    horizon_month=1 is the first forecasted month after the latest historical period.
-    Ordering is determined by sorting date_col ascending — it does not depend on the
-    calendar month number.
-
-    Args:
-        forecast_df: Forecast DataFrame with a date column.
-        date_col: Name of the date column.
-
-    Returns:
-        DataFrame with an additional horizon_month integer column.
-    """
-    sorted_dates = sorted(pd.to_datetime(forecast_df[date_col]).unique())
-    date_to_horizon = {d: i + 1 for i, d in enumerate(sorted_dates)}
-    result = forecast_df.copy()
-    result["horizon_month"] = pd.to_datetime(result[date_col]).map(date_to_horizon)
-    return result
-
-
-def _add_forecast_metadata(  # noqa: PLR0913
-    forecast_df: pd.DataFrame,
-    future_df: pd.DataFrame,
-    champion_metadata: dict,
-    forecast_run_id: str,
+def _standardize_forecast_schema(  # noqa: PLR0913
+    core_df: pd.DataFrame,
+    metadata: dict,
+    table_horizon: int,
+    run_id: str,
     created_at: str,
-    horizon_months: int,
     source_dataset: str,
-    date_col: str,
-    sku_col: str,
-    output_cfg: dict,
 ) -> pd.DataFrame:
-    """Annotate a forecast DataFrame with champion and inference traceability columns.
+    """Decorate an adapter's core output with the canonical monthly forecast schema.
 
-    Prophet predict() does not preserve non-ds input columns, so sku is reattached
-    here by left-joining on the ds key from the original future input.
+    Adds run/selection/traceability columns, guarantees nullable interval columns
+    exist, computes the per-row 1-based ``horizon`` step, and enforces column order.
 
     Args:
-        forecast_df: Raw forecast DataFrame from Prophet (has ds, yhat, etc.).
-        future_df: Source future DataFrame used to reattach sku.
-        champion_metadata: Champion metadata dict from Stage 5.
-        forecast_run_id: Unique run identifier for this inference execution.
-        created_at: ISO-formatted forecast creation timestamp.
-        horizon_months: Number of months in this forecast horizon.
-        source_dataset: Catalog name of the source future dataset.
-        date_col: Name of the date column in future_df.
-        sku_col: Name of the SKU column.
-        output_cfg: Output configuration dict (model_family, model_granularity).
+        core_df: Core forecast frame returned by a family adapter.
+        metadata: Champion metadata used for traceability columns.
+        table_horizon: This table's horizon in months (3, 6, or 12).
+        run_id: Unique inference run identifier.
+        created_at: ISO-formatted generation timestamp.
+        source_dataset: Logical name of the source future frame.
 
     Returns:
-        Annotated forecast DataFrame with all required traceability columns.
+        Forecast frame with exactly ``_STANDARD_FORECAST_COLUMNS``.
     """
-    result = forecast_df.copy()
+    df = core_df.copy()
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.sort_values("date").reset_index(drop=True)
+    df["forecast"] = pd.to_numeric(df["forecast"], errors="coerce").astype(float)
 
-    # Prophet predict() drops all non-ds columns; reattach sku by joining on the date
-    # key. forecast_df has ds (renamed by _build_prophet_prediction_input); future_df
-    # has date_col which may differ from "ds".
-    if sku_col not in result.columns:
-        sku_map = (
-            future_df[[date_col, sku_col]]
-            .copy()
-            .assign(ds=lambda df: pd.to_datetime(df[date_col]))
-            .drop(columns=[date_col] if date_col != "ds" else [])
-            .drop_duplicates(subset=["ds"])
+    for interval_col in ("forecast_lower", "forecast_upper"):
+        if interval_col not in df.columns:
+            df[interval_col] = np.nan
+
+    if "has_prediction_interval" not in df.columns:
+        df["has_prediction_interval"] = (
+            df[["forecast_lower", "forecast_upper"]].notna().all(axis=1)
         )
-        result = result.merge(sku_map, on="ds", how="left")
+    if "interval_method" not in df.columns:
+        df["interval_method"] = None
+    if "sku" not in df.columns:
+        df["sku"] = None
 
-    result["model_family"] = str(output_cfg.get("model_family", "prophet"))
-    result["model_granularity"] = str(output_cfg.get("model_granularity", "monthly"))
-    result["champion_id"] = str(champion_metadata.get("champion_id", ""))
-    result["forecast_run_id"] = forecast_run_id
-    result["forecast_created_at"] = created_at
-    result["forecast_horizon_months"] = horizon_months
-    result["selection_metric"] = str(champion_metadata.get("selection_metric", ""))
-    result["selection_metric_value"] = champion_metadata.get("selection_metric_value")
-    result["business_success_flag"] = bool(
-        champion_metadata.get("business_success_flag", False)
-    )
-    result["source_dataset"] = source_dataset
+    selection_metric, selection_value = _extract_selection_metric(metadata)
 
-    return result
+    df["model_family"] = str(metadata.get("model_family", "")).strip().lower()
+    df["granularity"] = "monthly"
+    df["horizon"] = _row_horizon(df["date"])
+    df["horizon_label"] = f"{table_horizon}m"
+    df["forecast_generated_at"] = created_at
+    df["champion_id"] = str(metadata.get("champion_id", ""))
+    df["selection_metric"] = selection_metric
+    df["selection_metric_value"] = selection_value
+    df["run_id"] = run_id
+    df["source_dataset"] = source_dataset
+
+    return df[_STANDARD_FORECAST_COLUMNS]
 
 
-def _forecast_one_horizon(  # noqa: PLR0913
-    model: Any,
-    future_df: pd.DataFrame,
-    active_regressors: list[str],
-    champion_metadata: dict,
-    forecast_run_id: str,
-    created_at: str,
-    horizon_months: int,
-    source_dataset: str,
-    date_col: str,
-    sku_col: str,
-    output_cfg: dict,
-) -> pd.DataFrame:
-    """Run Prophet inference for a single horizon and return an annotated forecast.
+def _row_horizon(dates: pd.Series) -> list[int]:
+    """Return 1-based month-ahead horizon indices ordered by date.
 
-    Args:
-        model: Fitted Prophet champion model.
-        future_df: Future feature DataFrame for this horizon.
-        active_regressors: Active regressor column names registered with the model.
-        champion_metadata: Champion metadata dict from Stage 5.
-        forecast_run_id: Unique run identifier for this inference execution.
-        created_at: ISO-formatted creation timestamp.
-        horizon_months: Number of months in this forecast horizon.
-        source_dataset: Catalog name of the source future dataset.
-        date_col: Name of the date column in future_df.
-        sku_col: Name of the SKU column.
-        output_cfg: Output configuration dict.
-
-    Returns:
-        Annotated forecast DataFrame with standardised column order.
+    horizon=1 is the earliest forecast period. Ties on date share an index.
     """
-    predict_input = _build_prophet_prediction_input(
-        future_df, active_regressors, date_col
+    sorted_unique = sorted(pd.to_datetime(dates).unique())
+    rank = {d: i + 1 for i, d in enumerate(sorted_unique)}
+    return [rank[d] for d in pd.to_datetime(dates)]
+
+
+def _extract_selection_metric(metadata: dict) -> tuple[str, float | None]:
+    """Resolve the production selection metric name and value from champion metadata."""
+    selection = metadata.get("selection", {})
+    metric = str(
+        selection.get("primary_metric") or metadata.get("selection_metric") or ""
     )
-    raw_forecast = model.predict(predict_input)
-
-    # Keep only the Prophet point forecast and prediction interval columns; all other
-    # Prophet components (trend, seasonality decomposition, regressor contributions)
-    # are dropped to maintain a clean, minimal output schema.
-    include_intervals = bool(output_cfg.get("include_prediction_intervals", True))
-    keep_cols = ["ds", "yhat"]
-    if include_intervals:
-        for interval_col in ("yhat_lower", "yhat_upper"):
-            if interval_col in raw_forecast.columns:
-                keep_cols.append(interval_col)
-
-    forecast_df = raw_forecast[keep_cols].copy()
-
-    # Ensure prediction interval columns exist even when not computed, so the output
-    # schema stays consistent across different Prophet configurations.
-    for interval_col in ("yhat_lower", "yhat_upper"):
-        if interval_col not in forecast_df.columns:
-            forecast_df[interval_col] = None
-
-    forecast_df = _add_horizon_month(forecast_df, "ds")
-
-    forecast_df = _add_forecast_metadata(
-        forecast_df=forecast_df,
-        future_df=future_df,
-        champion_metadata=champion_metadata,
-        forecast_run_id=forecast_run_id,
-        created_at=created_at,
-        horizon_months=horizon_months,
-        source_dataset=source_dataset,
-        date_col=date_col,
-        sku_col=sku_col,
-        output_cfg=output_cfg,
-    )
-
-    present_cols = [c for c in _FORECAST_COLUMN_ORDER if c in forecast_df.columns]
-    return forecast_df[present_cols]
+    value: Any = None
+    metrics = metadata.get("metrics", {})
+    if metric and isinstance(metrics, dict) and metric in metrics:
+        value = metrics.get(metric)
+    if value is None:
+        value = metadata.get("selection_metric_value")
+    return metric, _safe_float(value)
 
 
-def _summarize_forecast_output(
-    forecast_df: pd.DataFrame,
-    date_col: str,
-    output_dataset: str,
-) -> dict:
-    """Build a compact summary dict for one forecast horizon.
+def _resolve_default_horizon(params: dict, available: list[int]) -> int:
+    """Resolve the latest-forecast horizon, falling back to the largest available."""
+    default_horizon = int(params.get("default_horizon", max(available)))
+    if default_horizon not in available:
+        fallback = max(available)
+        logger.warning(
+            "default_horizon=%d is not among produced horizons %s; using %d.",
+            default_horizon,
+            available,
+            fallback,
+        )
+        return fallback
+    return default_horizon
 
-    Args:
-        forecast_df: Annotated forecast DataFrame.
-        date_col: Name of the date column.
-        output_dataset: Catalog name of the output dataset.
 
-    Returns:
-        Dict with output_dataset, start_date, end_date, and rows.
-    """
-    dates = pd.to_datetime(forecast_df[date_col])
+def _summarize_forecast(forecast_df: pd.DataFrame, source_dataset: str) -> dict:
+    """Build a compact per-horizon summary for the inference metadata artifact."""
+    dates = pd.to_datetime(forecast_df["date"])
     return {
-        "output_dataset": output_dataset,
+        "source_dataset": source_dataset,
         "start_date": str(dates.min().date()),
         "end_date": str(dates.max().date()),
-        "rows": len(forecast_df),
+        "rows": int(len(forecast_df)),
     }
 
 
 def _build_inference_metadata(  # noqa: PLR0913
-    champion_metadata: dict,
-    forecast_run_id: str,
+    metadata: dict,
+    params: dict,
+    run_id: str,
     created_at: str,
-    active_regressors: list[str],
+    default_horizon: int,
     horizon_summaries: dict[int, dict],
-    latest_horizon: int,
+    latest_forecast: pd.DataFrame,
+    horizon_futures: dict[int, tuple[pd.DataFrame, str]],
 ) -> dict:
-    """Build the JSON-serialisable inference metadata artifact.
+    """Build the JSON-serialisable monthly inference audit artifact.
 
     Args:
-        champion_metadata: Champion metadata dict from Stage 5.
-        forecast_run_id: Unique run identifier for this inference execution.
-        created_at: ISO-formatted creation timestamp.
-        active_regressors: Active regressor column names used during inference.
-        horizon_summaries: Dict mapping horizon_months → summary dict.
-        latest_horizon: Horizon used for the latest forecast output.
+        metadata: Champion metadata.
+        params: Contents of ``forecast_inference.monthly``.
+        run_id: Unique inference run identifier.
+        created_at: ISO-formatted generation timestamp.
+        default_horizon: Horizon used for the latest forecast.
+        horizon_summaries: Per-horizon summary dicts.
+        latest_forecast: Standardized latest forecast frame (for interval flags).
+        horizon_futures: Mapping of horizon → (future frame, source dataset name).
 
     Returns:
-        JSON-serialisable inference metadata dict consumed by app and reporting layers.
+        JSON-serialisable inference metadata dict.
     """
+    model_family = str(metadata.get("model_family", "")).strip().lower()
+    selection_metric, selection_value = _extract_selection_metric(metadata)
+
+    has_interval = bool(latest_forecast["has_prediction_interval"].any())
+    interval_methods = [
+        m for m in latest_forecast["interval_method"].dropna().unique().tolist()
+    ]
+    interval_method = interval_methods[0] if interval_methods else None
+
+    notes: list[str] = [
+        "Monthly inference temporarily consumes Prophet future frames as the "
+        "compatibility source; generic monthly_future_*m frames are the intended "
+        "canonical input.",
+    ]
+    if model_family == "sarimax":
+        notes.append(
+            "SARIMAX forecasts are generated from the champion fitted results object; "
+            "a full-history refit is recommended before production deployment."
+        )
+
     return {
-        "model_family": str(champion_metadata.get("model_family", "prophet")),
-        "model_granularity": str(champion_metadata.get("granularity", "monthly")),
-        "champion_id": str(champion_metadata.get("champion_id", "")),
-        "forecast_run_id": forecast_run_id,
-        "forecast_created_at": created_at,
-        "active_regressors": active_regressors,
+        "granularity": "monthly",
+        "model_family": model_family,
+        "champion_id": str(metadata.get("champion_id", "")),
+        "run_id": run_id,
+        "forecast_generated_at": created_at,
+        "supported_horizons": list(_SUPPORTED_HORIZONS),
+        "default_horizon": default_horizon,
+        "output_schema_version": str(
+            params.get("output_schema_version", "monthly_forecast_v1")
+        ),
+        "selection_metric": selection_metric,
+        "selection_metric_value": selection_value,
+        "has_prediction_interval": has_interval,
+        "interval_method": interval_method,
         "horizons": {str(h): summary for h, summary in horizon_summaries.items()},
-        "latest_output": {
-            "dataset": "monthly_prophet_forecast_latest",
-            "horizon_months": latest_horizon,
+        "source_future_frames": {
+            str(h): name for h, (_, name) in horizon_futures.items()
         },
-        "selection": {
-            "selection_metric": str(champion_metadata.get("selection_metric", "")),
-            "selection_metric_value": champion_metadata.get("selection_metric_value"),
-            "business_success_flag": bool(
-                champion_metadata.get("business_success_flag", False)
-            ),
-        },
+        "source_champion_metadata_fields": sorted(metadata.keys()),
+        "notes": notes,
     }
 
 
+def _safe_float(value: Any) -> float | None:
+    """Convert to a finite Python float, returning None for missing/non-finite values."""
+    if value is None:
+        return None
+    try:
+        result = float(value)
+        return result if np.isfinite(result) else None
+    except (TypeError, ValueError):
+        return None
+
+
 # ── Future inference stage stubs ──────────────────────────────────────────────
-# The following functions are placeholder stubs for weekly inference and daily
-# allocation that will be implemented in later stages of the project.
-
-
-def load_inference_inputs(
-    feature_monthly: pd.DataFrame,
-    feature_weekly: pd.DataFrame,
-    parameters: dict,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Prepare the input DataFrames for inference (no target leakage).
-
-    Args:
-        feature_monthly: Full monthly feature DataFrame including the most recent rows.
-        feature_weekly: Full weekly feature DataFrame including the most recent rows.
-        parameters: Config from forecast_inference key. Expected keys: mode,
-            include_intervals, confidence_level.
-
-    Returns:
-        Tuple of (monthly_inference_df, weekly_inference_df) containing only the
-        feature columns required for prediction, with future date rows appended
-        for the forecast horizon.
-    """
-    raise NotImplementedError(
-        "Identify the most recent date in each granularity, extend the date range "
-        "by the configured horizon, build future feature rows (lag features from "
-        "the most recent actuals), and return the inference-ready DataFrames."
-    )
-
-
-def generate_monthly_forecast(
-    champion_monthly_model: Any,
-    monthly_inference_df: pd.DataFrame,
-    parameters: dict,
-) -> pd.DataFrame:
-    """Generate monthly demand forecasts using the elected champion model.
-
-    Args:
-        champion_monthly_model: Serialised champion model from data/06_models/champions/.
-        monthly_inference_df: Inference-ready monthly DataFrame from load_inference_inputs.
-        parameters: Config from forecast_inference key with include_intervals and
-            confidence_level.
-
-    Returns:
-        DataFrame with columns [ds, y_forecast, y_lower, y_upper, model_name,
-        granularity, horizon_step] for each forecast month.
-    """
-    raise NotImplementedError(
-        "Dispatch to the appropriate prediction method based on model type (Prophet: "
-        "model.predict(); CatBoost: model.predict(); SARIMAX: results.forecast()). "
-        "If include_intervals=True, compute prediction intervals at confidence_level. "
-        "Return a standardised forecast DataFrame."
-    )
+# Weekly inference and daily allocation are out of scope for Phase 6. These stubs
+# document the intended contracts and will be implemented in their own phases.
 
 
 def generate_weekly_forecast(
@@ -646,21 +482,19 @@ def generate_weekly_forecast(
     weekly_inference_df: pd.DataFrame,
     parameters: dict,
 ) -> pd.DataFrame:
-    """Generate weekly demand forecasts using the elected champion model.
+    """Generate weekly demand forecasts using the elected weekly champion model.
 
     Args:
-        champion_weekly_model: Serialised champion model from data/06_models/champions/.
-        weekly_inference_df: Inference-ready weekly DataFrame from load_inference_inputs.
-        parameters: Config from forecast_inference key with include_intervals and
-            confidence_level.
+        champion_weekly_model: Serialised weekly champion model artifact.
+        weekly_inference_df: Inference-ready weekly feature DataFrame.
+        parameters: Weekly inference configuration.
 
     Returns:
-        DataFrame with columns [ds, y_forecast, y_lower, y_upper, model_name,
-        granularity, horizon_step] for each forecast week.
+        Standardized weekly forecast DataFrame.
     """
     raise NotImplementedError(
-        "Apply the same dispatch logic as generate_monthly_forecast but for the weekly "
-        "champion model. Return a standardised forecast DataFrame with granularity='weekly'."
+        "Weekly inference is future scope. Mirror the metadata-driven monthly "
+        "dispatch for the weekly champion and emit granularity='weekly' outputs."
     )
 
 
@@ -673,17 +507,13 @@ def allocate_daily_forecast(
 
     Args:
         forecast_weekly_reconciled: Reconciled weekly forecast DataFrame.
-        feature_weekly: Weekly feature DataFrame used to compute historical daily shares.
-        parameters: Config from forecast_inference key. Expected key: daily_allocation
-            with 'enabled' (bool) and 'method' ('historical_shares').
+        feature_weekly: Weekly feature DataFrame for historical day-of-week shares.
+        parameters: Daily allocation configuration.
 
     Returns:
-        DataFrame with daily forecast rows, or an empty DataFrame if
-        daily_allocation.enabled is False.
+        Daily forecast DataFrame, or an empty DataFrame when allocation is disabled.
     """
     raise NotImplementedError(
-        "If parameters['daily_allocation']['enabled'] is False, return an empty "
-        "DataFrame. Otherwise, compute historical day-of-week share fractions from "
-        "feature_weekly and distribute each week's forecast proportionally across "
-        "7 daily rows."
+        "Daily allocation is future scope. Distribute each reconciled week across "
+        "7 days using historical day-of-week share fractions."
     )

@@ -40,11 +40,11 @@ TABULAR_DATASETS = [
     ("monthly_operational_test_forecasts", "reporting"),
     ("monthly_operational_lead_time_metrics", "reporting"),
     ("monthly_model_selection_audit", "reporting"),
-    # 07_model_output
-    ("monthly_prophet_forecast_3m", "inference"),
-    ("monthly_prophet_forecast_6m", "inference"),
-    ("monthly_prophet_forecast_12m", "inference"),
-    ("monthly_prophet_forecast_latest", "inference"),
+    # 07_model_output — generic, family-agnostic champion forecasts (Phase 6)
+    ("monthly_forecast_3m", "inference"),
+    ("monthly_forecast_6m", "inference"),
+    ("monthly_forecast_12m", "inference"),
+    ("monthly_forecast_latest", "inference"),
 ]
 
 JSON_DATASETS = [
@@ -52,7 +52,7 @@ JSON_DATASETS = [
     ("monthly_prophet_prechampion_configs", "training"),
     ("monthly_prophet_training_metadata", "training"),
     ("monthly_prophet_champion_metadata", "selection"),
-    ("monthly_prophet_inference_metadata", "inference"),
+    ("monthly_inference_metadata", "inference"),
 ]
 
 PICKLE_DATASETS = [

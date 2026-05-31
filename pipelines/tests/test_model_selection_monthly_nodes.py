@@ -506,8 +506,8 @@ def test_build_monthly_champion_metadata_has_required_schema():
     # Top-level keys
     required_top_keys = {
         "granularity", "model_family", "champion_id", "champion_level",
-        "family_champions", "selection", "test_period", "metrics",
-        "model_artifact", "compatibility",
+        "active_regressors", "family_champions", "selection", "test_period",
+        "metrics", "inference_contract", "model_artifact", "compatibility",
     }
     assert required_top_keys.issubset(set(metadata.keys()))
 
@@ -515,6 +515,7 @@ def test_build_monthly_champion_metadata_has_required_schema():
     assert metadata["model_family"] == "prophet"
     assert metadata["champion_id"] == "prophet_candidate_001"
     assert metadata["champion_level"] == "production"
+    assert isinstance(metadata["active_regressors"], list)
 
     # family_champions block
     assert "prophet" in metadata["family_champions"]
@@ -526,10 +527,17 @@ def test_build_monthly_champion_metadata_has_required_schema():
     assert sel["direction"] == "minimize"
     assert isinstance(sel["tie_breakers"], list)
 
+    # inference_contract block (consumed by metadata-driven inference)
+    contract = metadata["inference_contract"]
+    assert contract["model_family"] == "prophet"
+    assert contract["date_column"] == "ds"
+    assert contract["has_prediction_intervals"] is True
+    assert isinstance(contract["active_regressors"], list)
+
     # compatibility block
     compat = metadata["compatibility"]
-    assert compat["legacy_prophet_artifacts_preserved"] is True
-    assert compat["requires_phase_6_metadata_driven_inference"] is True
+    assert compat["inference_ready"] is True
+    assert compat["metadata_driven_inference"] is True
 
     # metrics block
     assert "wape" in metadata["metrics"]

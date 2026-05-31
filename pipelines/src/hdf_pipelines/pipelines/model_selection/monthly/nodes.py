@@ -386,11 +386,15 @@ def build_monthly_champion_artifacts(
 
     test_start, test_end, n_rows = _extract_test_period(monthly_candidate_test_metrics)
 
+    inference_contract = _build_inference_contract(production_family, champion_model)
+
     metadata: dict = {
         "granularity": "monthly",
         "model_family": production_family,
         "champion_id": production_candidate_id,
         "champion_level": "production",
+        # Surfaced at top level so metadata-driven inference can read it directly.
+        "active_regressors": list(inference_contract["active_regressors"]),
         "family_champions": family_champions,
         "selection": {
             "primary_metric": str(summary_row.get("primary_metric", "wape")),
@@ -409,15 +413,16 @@ def build_monthly_champion_artifacts(
             "n_rows": n_rows,
         },
         "metrics": champ_metrics,
+        "inference_contract": inference_contract,
         "model_artifact": {
             "catalog_key": "champion_monthly_model",
             "source_candidate_key": f"monthly_{production_family}_candidate_models",
             "source_candidate_id": production_candidate_id,
         },
         "compatibility": {
-            "legacy_prophet_artifacts_preserved": True,
-            "inference_ready": False,
-            "requires_phase_6_metadata_driven_inference": True,
+            "legacy_prophet_champion_preserved": True,
+            "inference_ready": True,
+            "metadata_driven_inference": True,
         },
     }
 
@@ -746,6 +751,67 @@ def _resolve_champion_model(
     raise ValueError(
         f"Unknown production champion family '{production_family}'. "
         "Expected 'prophet' or 'sarimax'."
+    )
+
+
+def _build_inference_contract(production_family: str, champion_model: Any) -> dict:
+    """Describe how the champion must be consumed at inference time.
+
+    The contract is self-describing so that metadata-driven inference does not need
+    to introspect the model object. Prophet regressors are read from the fitted
+    model (the exact set the model was trained with); SARIMAX carries its order
+    configuration. Column names follow each family's training convention.
+
+    Args:
+        production_family: Elected production champion family.
+        champion_model: Resolved champion artifact (Prophet model or SARIMAX dict).
+
+    Returns:
+        Dict describing column conventions, active regressors, interval support, and
+        (for SARIMAX) the model order configuration.
+    """
+    if production_family == "prophet":
+        extra = getattr(champion_model, "extra_regressors", None)
+        active_regressors = list(extra.keys()) if isinstance(extra, dict) else []
+        return {
+            "model_family": "prophet",
+            "date_column": "ds",
+            "target_column": "y",
+            "sku_column": "sku",
+            "active_regressors": active_regressors,
+            "forecast_horizons": [3, 6, 12],
+            "has_prediction_intervals": True,
+            "interval_method": "prophet_native",
+            "sarimax_config": None,
+        }
+
+    if production_family == "sarimax":
+        config = (
+            dict(champion_model.get("config", {}))
+            if isinstance(champion_model, dict)
+            else {}
+        )
+        return {
+            "model_family": "sarimax",
+            "date_column": "month_start_date",
+            "target_column": "monthly_demand",
+            "sku_column": "sku",
+            # SARIMAX exogenous column names are sourced from training metadata;
+            # the current configuration trains without exogenous regressors.
+            "active_regressors": [],
+            "forecast_horizons": [3, 6, 12],
+            "has_prediction_intervals": True,
+            "interval_method": "sarimax_get_forecast_conf_int",
+            "sarimax_config": {
+                "order": config.get("order"),
+                "seasonal_order": config.get("seasonal_order"),
+                "trend": config.get("trend"),
+                "use_exog": bool(config.get("use_exog", False)),
+            },
+        }
+
+    raise ValueError(
+        f"Cannot build an inference contract for unknown family '{production_family}'."
     )
 
 

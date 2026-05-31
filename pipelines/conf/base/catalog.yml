@@ -328,26 +328,26 @@ forecast_daily_output:
   type: pandas.ParquetDataset
   filepath: data/07_model_output/daily_forecast.parquet
 
-# 07_model_output — Monthly Prophet forecast outputs
-monthly_prophet_forecast_3m:
+# 07_model_output — Monthly champion forecast outputs (family-agnostic)
+monthly_forecast_3m:
   type: pandas.ParquetDataset
-  filepath: data/07_model_output/monthly_prophet_forecast_3m.parquet
+  filepath: data/07_model_output/monthly_forecast_3m.parquet
 
-monthly_prophet_forecast_6m:
+monthly_forecast_6m:
   type: pandas.ParquetDataset
-  filepath: data/07_model_output/monthly_prophet_forecast_6m.parquet
+  filepath: data/07_model_output/monthly_forecast_6m.parquet
 
-monthly_prophet_forecast_12m:
+monthly_forecast_12m:
   type: pandas.ParquetDataset
-  filepath: data/07_model_output/monthly_prophet_forecast_12m.parquet
+  filepath: data/07_model_output/monthly_forecast_12m.parquet
 
-monthly_prophet_forecast_latest:
+monthly_forecast_latest:
   type: pandas.ParquetDataset
-  filepath: data/07_model_output/monthly_prophet_forecast_latest.parquet
+  filepath: data/07_model_output/monthly_forecast_latest.parquet
 
-monthly_prophet_inference_metadata:
+monthly_inference_metadata:
   type: json.JSONDataset
-  filepath: data/07_model_output/monthly_prophet_inference_metadata.json
+  filepath: data/07_model_output/monthly_inference_metadata.json
 
 # 08_reporting
 model_selection_report:

@@ -56,18 +56,19 @@ def register_pipelines() -> dict[str, Pipeline]:
     # Monthly multi-family model selection: Prophet vs SARIMAX (Phase 5)
     monthly_model_selection = create_monthly_model_selection_pipeline()
 
-    # End-to-end Monthly Prophet MVP: ingestion → features → splits → train → select → infer
+    # Prophet-only training + Prophet-specific selection. Kept as an isolated
+    # single-family reference route; it produces the Prophet-specific champion
+    # artifacts and does not feed the generic metadata-driven inference.
     prophet_monthly_e2e = (
         ingestion
         + fe_monthly
         + model_input
         + prophet_monthly_training
         + prophet_monthly_selection
-        + inference
     )
 
-    # End-to-end Prophet + SARIMAX comparison:
-    # ingestion → features → splits → train both → compare → generic champion
+    # Train both families and elect the generic monthly production champion:
+    # ingestion → features → splits → train Prophet + SARIMAX → compare → champion
     prophet_sarimax_comparison = (
         ingestion
         + fe_monthly
@@ -77,7 +78,11 @@ def register_pipelines() -> dict[str, Pipeline]:
         + monthly_model_selection
     )
 
-    # Validated monthly MVP — the current stable default execution route
+    # Canonical reproducible monthly route: multi-family comparison followed by
+    # metadata-driven champion inference. This is the project default.
+    monthly_forecast_e2e = prophet_sarimax_comparison + inference
+
+    # Prophet-only validated reference route (training + Prophet selection).
     monthly_mvp = prophet_monthly_e2e
 
     # Scaffolded composed shortcuts — include NotImplementedError stubs; not part of default
@@ -88,13 +93,15 @@ def register_pipelines() -> dict[str, Pipeline]:
     experimental_inference = inference + recon
 
     return {
-        # ── Validated routes ──────────────────────────────────────────────────
-        "__default__": monthly_mvp,
-        "monthly_mvp": monthly_mvp,
-        "prophet_monthly_e2e": prophet_monthly_e2e,
-        # ── Phase 5: multi-family monthly model selection ─────────────────────
+        # ── Default reproducible route ────────────────────────────────────────
+        "__default__": monthly_forecast_e2e,
+        "monthly_forecast_e2e": monthly_forecast_e2e,
+        # ── Multi-family monthly comparison + selection (Phase 5) ─────────────
         "monthly_model_selection": monthly_model_selection,
         "prophet_sarimax_comparison": prophet_sarimax_comparison,
+        # ── Prophet-only reference route ──────────────────────────────────────
+        "monthly_mvp": monthly_mvp,
+        "prophet_monthly_e2e": prophet_monthly_e2e,
         # ── Individual stage pipelines ────────────────────────────────────────
         "data_ingestion": ingestion,
         "feature_engineering_monthly": fe_monthly,
