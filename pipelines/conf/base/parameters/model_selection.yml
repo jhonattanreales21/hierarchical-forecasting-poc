@@ -6,6 +6,27 @@ model_selection:
   selection_strategy: "best_by_horizon"
   tie_breaker: "RMSE"
 
+  # --- Monthly multi-family selection ---
+  monthly:
+    enabled: true
+    active_families:
+      - prophet
+      - sarimax
+    primary_metric: wape
+    direction: minimize
+    tie_breakers:
+      - mase
+      - rmse
+      - abs_bias
+    # Fail loudly when any active family has no prechampion artifacts.
+    require_all_active_families: true
+    allow_missing_optional_metrics: true
+    mase_seasonal_period: 12
+    output:
+      produce_generic_champion: true
+      preserve_legacy_prophet_champion: true
+
+  # --- Prophet-specific selection ---
   monthly_prophet:
     date_column: "ds"
     target_column: "y"
@@ -40,3 +61,10 @@ model_selection:
     refit_champion:
       enabled: true
       use_full_train: true
+
+  # --- SARIMAX adapter settings for multi-family selection ---
+  monthly_sarimax:
+    enabled: true
+    date_column: "month_start_date"
+    target_column: "monthly_demand"
+    model_family: sarimax

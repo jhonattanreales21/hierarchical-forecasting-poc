@@ -261,6 +261,23 @@ champion_registry:
   type: json.JSONDataset
   filepath: data/06_models/champions/champion_registry.json
 
+# 06_models — Monthly multi-family selection artifacts
+monthly_candidate_test_metrics:
+  type: pandas.ParquetDataset
+  filepath: data/06_models/selection/monthly_candidate_test_metrics.parquet
+
+monthly_family_champion_summary:
+  type: pandas.ParquetDataset
+  filepath: data/06_models/selection/monthly_family_champion_summary.parquet
+
+monthly_model_selection_summary:
+  type: pandas.ParquetDataset
+  filepath: data/06_models/selection/monthly_model_selection_summary.parquet
+
+champion_monthly_metadata:
+  type: json.JSONDataset
+  filepath: data/06_models/champions/champion_monthly_metadata.json
+
 # Tuning and validation results
 tuning_results_monthly:
   type: pandas.ParquetDataset

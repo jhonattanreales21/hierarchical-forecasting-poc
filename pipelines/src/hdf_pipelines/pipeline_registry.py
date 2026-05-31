@@ -13,11 +13,17 @@ from hdf_pipelines.pipelines import (
     train_monthly,
     train_weekly,
 )
+from hdf_pipelines.pipelines.model_selection.monthly.pipeline import (
+    create_pipeline as create_monthly_model_selection_pipeline,
+)
 from hdf_pipelines.pipelines.model_selection.prophet.pipeline import (
     create_pipeline as create_prophet_monthly_selection_pipeline,
 )
 from hdf_pipelines.pipelines.train_monthly.prophet.pipeline import (
     create_pipeline as create_prophet_monthly_pipeline,
+)
+from hdf_pipelines.pipelines.train_monthly.sarimax.pipeline import (
+    create_pipeline as create_sarimax_monthly_pipeline,
 )
 
 
@@ -41,8 +47,14 @@ def register_pipelines() -> dict[str, Pipeline]:
     # Standalone Prophet-only training pipeline
     prophet_monthly_training = create_prophet_monthly_pipeline()
 
-    # Standalone Monthly Prophet model-selection pipeline
+    # Standalone SARIMAX-only training pipeline
+    sarimax_monthly_training = create_sarimax_monthly_pipeline()
+
+    # Standalone Monthly Prophet model-selection pipeline (Prophet-specific champion)
     prophet_monthly_selection = create_prophet_monthly_selection_pipeline()
+
+    # Monthly multi-family model selection: Prophet vs SARIMAX (Phase 5)
+    monthly_model_selection = create_monthly_model_selection_pipeline()
 
     # End-to-end Monthly Prophet MVP: ingestion → features → splits → train → select → infer
     prophet_monthly_e2e = (
@@ -52,6 +64,17 @@ def register_pipelines() -> dict[str, Pipeline]:
         + prophet_monthly_training
         + prophet_monthly_selection
         + inference
+    )
+
+    # End-to-end Prophet + SARIMAX comparison:
+    # ingestion → features → splits → train both → compare → generic champion
+    prophet_sarimax_comparison = (
+        ingestion
+        + fe_monthly
+        + model_input
+        + prophet_monthly_training
+        + sarimax_monthly_training
+        + monthly_model_selection
     )
 
     # Validated monthly MVP — the current stable default execution route
@@ -69,6 +92,9 @@ def register_pipelines() -> dict[str, Pipeline]:
         "__default__": monthly_mvp,
         "monthly_mvp": monthly_mvp,
         "prophet_monthly_e2e": prophet_monthly_e2e,
+        # ── Phase 5: multi-family monthly model selection ─────────────────────
+        "monthly_model_selection": monthly_model_selection,
+        "prophet_sarimax_comparison": prophet_sarimax_comparison,
         # ── Individual stage pipelines ────────────────────────────────────────
         "data_ingestion": ingestion,
         "feature_engineering_monthly": fe_monthly,
