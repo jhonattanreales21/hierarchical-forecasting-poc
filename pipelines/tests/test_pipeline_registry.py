@@ -66,3 +66,62 @@ def test_experimental_composed_shortcuts_are_subsets():
     weekly_nodes = {n.name for n in pipelines["train_weekly"].nodes}
     assert monthly_nodes.issubset(training_nodes)
     assert weekly_nodes.issubset(training_nodes)
+
+
+def test_train_monthly_prophet_is_namespaced():
+    """Prophet sub-pipeline must carry the train_monthly.prophet namespace prefix."""
+    pipelines = register_pipelines()
+    train_monthly_node_names = {n.name for n in pipelines["train_monthly"].nodes}
+    assert any(
+        n.startswith("train_monthly.prophet.") for n in train_monthly_node_names
+    ), "No node with 'train_monthly.prophet.' prefix found in train_monthly pipeline"
+
+
+def test_monthly_mvp_excludes_sarimax_and_catboost_stub_nodes():
+    """monthly_mvp must not include any scaffolded CatBoost or SARIMAX stub nodes."""
+    pipelines = register_pipelines()
+    mvp_node_names = {n.name for n in pipelines["monthly_mvp"].nodes}
+    assert not any("catboost" in n for n in mvp_node_names), (
+        "monthly_mvp contains CatBoost stub nodes"
+    )
+    assert not any("sarimax" in n for n in mvp_node_names), (
+        "monthly_mvp contains SARIMAX stub nodes"
+    )
+
+
+def test_monthly_mvp_aliases_preserved_after_namespace_alignment():
+    """__default__, monthly_mvp, and prophet_monthly_e2e must resolve to the same node set."""
+    pipelines = register_pipelines()
+    default_nodes = {n.name for n in pipelines["__default__"].nodes}
+    mvp_nodes = {n.name for n in pipelines["monthly_mvp"].nodes}
+    e2e_nodes = {n.name for n in pipelines["prophet_monthly_e2e"].nodes}
+    assert default_nodes == mvp_nodes, "__default__ and monthly_mvp diverged"
+    assert mvp_nodes == e2e_nodes, "monthly_mvp and prophet_monthly_e2e diverged"
+
+
+def test_prophet_public_dataset_names_are_preserved():
+    """The train_monthly pipeline must still wire to the original public Prophet catalog names."""
+    pipelines = register_pipelines()
+    prophet_node = next(
+        n for n in pipelines["train_monthly"].nodes if "prophet" in n.name
+    )
+    expected_inputs = {
+        "monthly_prophet_train",
+        "monthly_prophet_validation",
+        "monthly_prophet_split_metadata",
+        "params:train_monthly.prophet",
+    }
+    expected_outputs = {
+        "monthly_prophet_tuning_results",
+        "monthly_prophet_validation_metrics",
+        "monthly_prophet_prechampion_configs",
+        "monthly_prophet_candidate_models",
+        "monthly_prophet_training_metadata",
+        "candidate_monthly_prophet",
+    }
+    assert expected_inputs == set(prophet_node.inputs), (
+        f"Prophet inputs changed: {set(prophet_node.inputs)}"
+    )
+    assert expected_outputs == set(prophet_node.outputs), (
+        f"Prophet outputs changed: {set(prophet_node.outputs)}"
+    )
