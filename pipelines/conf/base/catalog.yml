@@ -83,6 +83,31 @@ monthly_prophet_split_metadata:
   type: json.JSONDataset
   filepath: data/05_model_input/monthly_prophet_split_metadata.json
 
+# 05_model_input — Generic monthly model-ready datasets (model-family agnostic)
+monthly_modeling_data:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/monthly_modeling_data.parquet
+
+monthly_train:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/monthly_train.parquet
+
+monthly_validation:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/monthly_validation.parquet
+
+monthly_test:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/monthly_test.parquet
+
+monthly_full_train:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/monthly_full_train.parquet
+
+monthly_split_metadata:
+  type: json.JSONDataset
+  filepath: data/05_model_input/monthly_split_metadata.json
+
 # Legacy / future-stage placeholders
 model_input_monthly_catboost_train:
   type: pandas.ParquetDataset

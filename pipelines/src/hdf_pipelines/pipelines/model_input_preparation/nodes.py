@@ -1,4 +1,13 @@
-"""Monthly Prophet model-input preparation nodes."""
+"""Monthly model-input preparation nodes.
+
+Generic monthly layer (build_monthly_modeling_data → split_monthly_modeling_data →
+build_monthly_split_metadata) produces model-family-agnostic datasets with canonical
+column names (month_start_date, monthly_demand).
+
+Prophet compatibility adapter (adapt_monthly_data_for_prophet) renames those columns
+to ds / y and feeds the existing build_monthly_prophet_future_regressors and
+build_monthly_prophet_split_metadata functions unchanged.
+"""
 
 import logging
 from collections.abc import Mapping, Sequence
@@ -36,12 +45,23 @@ _SUPPORTED_FUTURE_HORIZONS = (3, 6, 12)
 _MIN_WORKING_WEEKDAY_COUNT_FOR_FLAG = 5
 
 
+# ── Parameter extraction helpers ──────────────────────────────────────────────
+
+def _get_monthly_params(parameters: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the generic monthly configuration block."""
+    if "monthly" in parameters:
+        return dict(parameters["monthly"])
+    return dict(parameters)
+
+
 def _get_monthly_prophet_params(parameters: Mapping[str, Any]) -> dict[str, Any]:
     """Return the Monthly Prophet configuration block."""
     if "monthly_prophet" in parameters:
         return dict(parameters["monthly_prophet"])
     return dict(parameters)
 
+
+# ── Shared validation and utility helpers ─────────────────────────────────────
 
 def _validate_required_columns(
     df: pd.DataFrame,
@@ -98,7 +118,7 @@ def _validate_datetime_and_numeric(
     date_column: str,
     target_column: str,
 ) -> None:
-    """Validate Prophet's required schema types."""
+    """Validate that the date column is datetime and the target column is numeric."""
     if not is_datetime64_any_dtype(df[date_column]):
         raise ValueError(f"{date_column!r} must be a datetime column.")
     if not is_numeric_dtype(df[target_column]):
@@ -149,8 +169,9 @@ def _drop_null_modeling_rows(
     target_column: str,
     active_regressors: Sequence[str],
     missing_value_params: Mapping[str, Any],
+    dataset_name: str = "monthly_modeling_data",
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
-    """Apply conservative null handling required by Prophet."""
+    """Apply configured null handling: drop rows with null target or null active regressors."""
     cleaned_df = df.copy()
     dropped_rows = {
         "null_target": 0,
@@ -179,8 +200,7 @@ def _drop_null_modeling_rows(
             dropped_rows["null_active_regressor_columns"] = {
                 column: int(count) for column, count in regressor_null_counts.items()
             }
-            # Early lagged features can be null by design; Prophet requires complete
-            # regressor rows, so those leading months are removed instead of imputed.
+            # Early lagged features can be null by design; drop leading months instead of imputing.
             cleaned_df = cleaned_df.loc[~null_regressor_mask].copy()
         elif not regressor_null_counts.empty:
             raise ValueError(
@@ -193,7 +213,7 @@ def _drop_null_modeling_rows(
     _validate_no_nulls(
         cleaned_df,
         [date_column, target_column, *active_regressors],
-        "monthly_prophet_modeling_data",
+        dataset_name,
     )
     return cleaned_df, dropped_rows
 
@@ -279,11 +299,7 @@ def _validate_split_frames(
     date_column: str,
 ) -> None:
     """Validate split emptiness, overlap, and chronological ordering."""
-    split_frames = {
-        "train": train,
-        "validation": validation,
-        "test": test,
-    }
+    split_frames = {"train": train, "validation": validation, "test": test}
     for split_name, split_df in split_frames.items():
         if split_df.empty:
             raise ValueError(f"{split_name.title()} split is empty.")
@@ -342,7 +358,6 @@ def _count_monthly_calendar_features(
     month_end = month_start + pd.offsets.MonthEnd(1)
     month_days = pd.date_range(start=month_start, end=month_end, freq="D")
 
-    # Boolean masks per day; combine them with & / ~ to count each feature.
     is_holiday = month_days.isin(holiday_dates)
     is_business_weekday = month_days.dayofweek.isin(sorted(business_weekdays))
     is_tuesday = month_days.dayofweek == _WEEKDAY_TO_NUMBER["Tue"]
@@ -408,7 +423,6 @@ def _build_future_calendar_features(
         ["month_start_date", *_CALENDAR_FEATURE_COLUMNS],
     ].copy()
 
-    # Set difference: future months not already covered by the catalog dataset.
     missing_calendar_dates = sorted(
         set(future_dates) - set(existing_future_calendar["month_start_date"])
     )
@@ -490,45 +504,40 @@ def _build_future_exogenous_features(
     return future_exogenous.sort_values("month_start_date").reset_index(drop=True)
 
 
-def prepare_monthly_prophet_modeling_data(
+# ── Generic monthly layer ─────────────────────────────────────────────────────
+
+def build_monthly_modeling_data(
     monthly_prophet_features: pd.DataFrame,
     parameters: dict,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
-    """Rename, filter, and clean the monthly feature table for use as Prophet historical input.
+    """Build the generic monthly modeling table with canonical (non-Prophet) column names.
 
-    Selects the configured date, target, SKU, and active regressor columns; renames them
-    to Prophet's expected schema (``ds``, ``y``); and drops rows with null targets or null
-    active regressors according to the ``missing_values`` parameter block.
+    Selects the configured date, target, SKU, and active regressor columns; validates
+    schema and uniqueness; and drops rows with null targets or null active regressors
+    according to the ``missing_values`` parameter block.  The output retains the
+    original generic column names (``month_start_date``, ``monthly_demand``) — Prophet-
+    specific renaming is handled downstream by ``adapt_monthly_data_for_prophet``.
 
     Args:
-        monthly_prophet_features: Feature-engineered monthly DataFrame produced by the
-            feature engineering pipeline. Must contain the columns declared in
-            ``parameters["monthly_prophet"]``.
-        parameters: Pipeline parameters. Reads the ``monthly_prophet`` block or falls back
-            to the top-level dict. Expected keys: ``date_column``, ``target_column``,
-            ``sku_column``, ``prophet_date_column``, ``prophet_target_column``,
-            ``active_regressors``, ``missing_values``.
+        monthly_prophet_features: Feature-engineered monthly DataFrame from the feature
+            engineering pipeline.
+        parameters: Pipeline parameters. Reads the ``monthly`` block.
 
     Returns:
         Tuple of:
-            - modeling_df: Cleaned DataFrame with columns ``[ds, y, sku, *active_regressors]``
-              sorted by SKU and date.
-            - preparation_metadata: Dict summarising model family, granularity, active
-              regressors, dropped-row counts, and the date range of the output.
-
-    Raises:
-        ValueError: If required columns are missing, dates cannot be parsed, the dataset
-            is not unique by (SKU, date), or nulls remain after the configured drop policy.
+            - modeling_df: Cleaned DataFrame with columns
+              ``[month_start_date, monthly_demand, sku, *active_regressors]`` sorted by
+              SKU and date.
+            - preparation_metadata: Dict with granularity, column names, active
+              regressors, dropped-row counts, and date range summary.
     """
-    prophet_params = _get_monthly_prophet_params(parameters)
-    date_column = prophet_params["date_column"]
-    target_column = prophet_params["target_column"]
-    sku_column = prophet_params["sku_column"]
-    prophet_date_column = prophet_params["prophet_date_column"]
-    prophet_target_column = prophet_params["prophet_target_column"]
+    monthly_params = _get_monthly_params(parameters)
+    date_column = monthly_params["date_column"]
+    target_column = monthly_params["target_column"]
+    sku_column = monthly_params["sku_column"]
     active_regressors = _get_active_regressors(
         monthly_prophet_features,
-        prophet_params["active_regressors"],
+        monthly_params["active_regressors"],
         "monthly_prophet_features",
     )
 
@@ -548,167 +557,260 @@ def prepare_monthly_prophet_modeling_data(
     )
 
     logger.info(
-        "Preparing monthly Prophet modeling data from shape=%s.",
-        feature_df.shape,
+        "Building generic monthly modeling data from shape=%s.", feature_df.shape
     )
     logger.info("Selected active regressors: %s", active_regressors)
-    logger.info(
-        "Input null counts for target and active regressors:\n%s",
-        feature_df[[target_column, *active_regressors]].isnull().sum().to_string(),
-    )
 
     modeling_df = (
         feature_df[[date_column, target_column, sku_column, *active_regressors]]
-        .rename(
-            columns={
-                date_column: prophet_date_column,
-                target_column: prophet_target_column,
-            }
-        )
-        .sort_values([sku_column, prophet_date_column])
+        .sort_values([sku_column, date_column])
         .reset_index(drop=True)
     )
-    _validate_datetime_and_numeric(
-        modeling_df,
-        prophet_date_column,
-        prophet_target_column,
-    )
+    _validate_datetime_and_numeric(modeling_df, date_column, target_column)
 
     modeling_df, dropped_rows = _drop_null_modeling_rows(
         modeling_df,
-        date_column=prophet_date_column,
-        target_column=prophet_target_column,
+        date_column=date_column,
+        target_column=target_column,
         active_regressors=active_regressors,
-        missing_value_params=prophet_params["missing_values"],
+        missing_value_params=monthly_params["missing_values"],
+        dataset_name="monthly_modeling_data",
     )
 
     logger.info(
-        "Dropped %d rows with null target values.",
-        dropped_rows["null_target"],
-    )
-    logger.info(
-        "Dropped %d rows with null active regressors. Columns with nulls=%s",
-        dropped_rows["null_active_regressors"],
-        dropped_rows["null_active_regressor_columns"],
-    )
-    logger.info(
-        "Final monthly_prophet_modeling_data shape=%s, range=[%s, %s], columns=%s.",
+        "Final monthly_modeling_data shape=%s, range=[%s, %s].",
         modeling_df.shape,
-        modeling_df[prophet_date_column].min().date(),
-        modeling_df[prophet_date_column].max().date(),
-        list(modeling_df.columns),
+        modeling_df[date_column].min().date(),
+        modeling_df[date_column].max().date(),
     )
 
     preparation_metadata: dict[str, Any] = {
-        "model_family": "prophet",
         "granularity": "monthly",
+        "date_column": date_column,
+        "target_column": target_column,
+        "sku_column": sku_column,
         "active_regressors": active_regressors,
         "dropped_rows": {
             "null_target": dropped_rows["null_target"],
             "null_active_regressors": dropped_rows["null_active_regressors"],
         },
-        "modeling_data": _summarize_date_range(modeling_df, prophet_date_column),
+        "modeling_data": _summarize_date_range(modeling_df, date_column),
     }
     return modeling_df, preparation_metadata
 
 
-def split_monthly_prophet_data(
-    monthly_prophet_modeling_data: pd.DataFrame,
+def split_monthly_modeling_data(
+    monthly_modeling_data: pd.DataFrame,
     preparation_metadata: dict[str, Any],
     parameters: dict,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, Any]]:
-    """Partition the Prophet modeling table into train, validation, test, and full-train splits.
+    """Partition the generic monthly modeling table into temporal splits.
 
-    Supports two split modes controlled by ``parameters["monthly_prophet"]["split"]["mode"]``:
+    Supports two split modes controlled by ``parameters["monthly"]["split"]["mode"]``:
 
-    - ``"date"`` — explicit cutoff dates (``train_end_date``, ``validation_end_date``,
-      ``test_end_date``).
-    - ``"months"`` — trailing month counts (``validation_months``, ``test_months``).
+    - ``"date"`` — explicit cutoff dates.
+    - ``"months"`` — trailing month counts.
 
-    ``full_train`` always concatenates all three partitions and is intended for the final
+    ``full_train`` concatenates all three partitions and is intended for the final
     retrain before production inference.
 
     Args:
-        monthly_prophet_modeling_data: Cleaned modeling DataFrame from
-            ``prepare_monthly_prophet_modeling_data``.
-        preparation_metadata: Metadata dict produced by the preparation node; extended
-            with split summaries before being returned.
-        parameters: Pipeline parameters with a ``monthly_prophet.split`` block.
+        monthly_modeling_data: Generic modeling DataFrame from ``build_monthly_modeling_data``.
+        preparation_metadata: Metadata dict produced by the preparation node.
+        parameters: Pipeline parameters with a ``monthly.split`` block.
 
     Returns:
         Tuple of five items:
-            - train: Historical rows reserved for model fitting.
-            - validation: Held-out rows for hyperparameter selection.
-            - test: Held-out rows for final evaluation.
-            - full_train: All rows combined (train + validation + test), sorted by SKU and date.
-            - updated_metadata: Metadata dict extended with date-range summaries per partition.
-
-    Raises:
-        ValueError: If ``split_mode`` is not ``"date"`` or ``"months"``, if date boundaries
-            are in the wrong order, if there are insufficient months for a non-empty train
-            set, or if any split partition is empty or overlaps with another.
+            - monthly_train: Historical rows reserved for model fitting.
+            - monthly_validation: Held-out rows for hyperparameter selection.
+            - monthly_test: Held-out rows for final evaluation.
+            - monthly_full_train: All rows combined, sorted by SKU and date.
+            - updated_metadata: Metadata dict extended with split-mode and date-range summaries.
     """
-    prophet_params = _get_monthly_prophet_params(parameters)
-    prophet_date_column = prophet_params["prophet_date_column"]
-    split_params = prophet_params["split"]
+    monthly_params = _get_monthly_params(parameters)
+    date_column = monthly_params["date_column"]
+    sku_column = monthly_params["sku_column"]
+    split_params = monthly_params["split"]
     split_mode = split_params["mode"]
 
     logger.info(
-        "Splitting monthly Prophet modeling data shape=%s using split mode=%s.",
-        monthly_prophet_modeling_data.shape,
+        "Splitting monthly modeling data shape=%s using split mode=%s.",
+        monthly_modeling_data.shape,
         split_mode,
     )
 
     if split_mode == "date":
         train, validation, test = _split_by_dates(
-            monthly_prophet_modeling_data,
-            prophet_date_column,
-            split_params,
+            monthly_modeling_data, date_column, split_params
         )
     elif split_mode == "months":
         train, validation, test = _split_by_month_counts(
-            monthly_prophet_modeling_data,
-            prophet_date_column,
-            split_params,
+            monthly_modeling_data, date_column, split_params
         )
     else:
         raise ValueError(
             f"Unsupported split mode {split_mode!r}. Expected 'date' or 'months'."
         )
 
-    _validate_split_frames(train, validation, test, prophet_date_column)
+    _validate_split_frames(train, validation, test, date_column)
     full_train = (
         pd.concat([train, validation, test], ignore_index=True)
-        .sort_values(["sku", prophet_date_column])
+        .sort_values([sku_column, date_column])
         .reset_index(drop=True)
     )
 
-    logger.info(
-        "Train split summary: %s", _summarize_date_range(train, prophet_date_column)
-    )
-    logger.info(
-        "Validation split summary: %s",
-        _summarize_date_range(validation, prophet_date_column),
-    )
-    logger.info(
-        "Test split summary: %s", _summarize_date_range(test, prophet_date_column)
-    )
+    logger.info("Train split: %s", _summarize_date_range(train, date_column))
+    logger.info("Validation split: %s", _summarize_date_range(validation, date_column))
+    logger.info("Test split: %s", _summarize_date_range(test, date_column))
 
     updated_metadata = dict(preparation_metadata)
     updated_metadata["split_mode"] = split_mode
-    updated_metadata["train"] = _summarize_date_range(train, prophet_date_column)
-    updated_metadata["validation"] = _summarize_date_range(
-        validation,
-        prophet_date_column,
-    )
-    updated_metadata["test"] = _summarize_date_range(test, prophet_date_column)
-    updated_metadata["full_train"] = _summarize_date_range(
-        full_train,
-        prophet_date_column,
-    )
+    updated_metadata["train"] = _summarize_date_range(train, date_column)
+    updated_metadata["validation"] = _summarize_date_range(validation, date_column)
+    updated_metadata["test"] = _summarize_date_range(test, date_column)
+    updated_metadata["full_train"] = _summarize_date_range(full_train, date_column)
 
     return train, validation, test, full_train, updated_metadata
 
+
+def build_monthly_split_metadata(
+    monthly_train: pd.DataFrame,
+    monthly_validation: pd.DataFrame,
+    monthly_test: pd.DataFrame,
+    monthly_full_train: pd.DataFrame,
+    preparation_metadata: dict[str, Any],
+    parameters: dict,
+) -> dict[str, Any]:
+    """Compile a generic monthly split metadata artifact for catalog persistence.
+
+    Args:
+        monthly_train: Train split DataFrame.
+        monthly_validation: Validation split DataFrame.
+        monthly_test: Test split DataFrame.
+        monthly_full_train: Full-train split DataFrame.
+        preparation_metadata: Extended metadata dict from ``split_monthly_modeling_data``.
+        parameters: Pipeline parameters with a ``monthly`` block.
+
+    Returns:
+        Dict with granularity, column names, split boundaries, row counts, active
+        features, and dropped-row counts.
+    """
+    monthly_params = _get_monthly_params(parameters)
+    date_column = monthly_params["date_column"]
+
+    metadata: dict[str, Any] = {
+        "granularity": preparation_metadata["granularity"],
+        "date_column": preparation_metadata["date_column"],
+        "target_column": preparation_metadata["target_column"],
+        "sku_column": preparation_metadata["sku_column"],
+        "split_mode": preparation_metadata["split_mode"],
+        "active_features": preparation_metadata["active_regressors"],
+        "train": _summarize_date_range(monthly_train, date_column),
+        "validation": _summarize_date_range(monthly_validation, date_column),
+        "test": _summarize_date_range(monthly_test, date_column),
+        "full_train": _summarize_date_range(monthly_full_train, date_column),
+        "row_counts": {
+            "train": len(monthly_train),
+            "validation": len(monthly_validation),
+            "test": len(monthly_test),
+            "full_train": len(monthly_full_train),
+        },
+        "dropped_rows": preparation_metadata["dropped_rows"],
+        "created_by": "model_input_preparation",
+    }
+    logger.info("Built monthly_split_metadata: %s", metadata)
+    return metadata
+
+
+# ── Prophet compatibility adapter ─────────────────────────────────────────────
+
+def adapt_monthly_data_for_prophet(
+    monthly_modeling_data: pd.DataFrame,
+    monthly_train: pd.DataFrame,
+    monthly_validation: pd.DataFrame,
+    monthly_test: pd.DataFrame,
+    monthly_full_train: pd.DataFrame,
+    monthly_split_metadata: dict[str, Any],
+    parameters: dict,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, Any]]:
+    """Rename generic monthly columns to Prophet's ds / y convention.
+
+    Consumes the generic monthly datasets and produces Prophet-compatible equivalents
+    by renaming ``month_start_date`` → ``ds`` and ``monthly_demand`` → ``y``.  All
+    other columns (SKU, active regressors) are preserved without modification.
+
+    Args:
+        monthly_modeling_data: Generic modeling DataFrame.
+        monthly_train: Generic train split.
+        monthly_validation: Generic validation split.
+        monthly_test: Generic test split.
+        monthly_full_train: Generic full-train split.
+        monthly_split_metadata: Generic split metadata dict.
+        parameters: Pipeline parameters. Reads ``monthly`` (source column names) and
+            ``monthly_prophet`` (Prophet column names and active_regressors).
+
+    Returns:
+        Tuple of six items:
+            - monthly_prophet_modeling_data: Prophet-format modeling DataFrame.
+            - monthly_prophet_train: Prophet-format train split.
+            - monthly_prophet_validation: Prophet-format validation split.
+            - monthly_prophet_test: Prophet-format test split.
+            - monthly_prophet_full_train: Prophet-format full-train split.
+            - prophet_adapter_metadata: Internal metadata dict for
+              ``build_monthly_prophet_split_metadata``.
+    """
+    monthly_params = _get_monthly_params(parameters)
+    prophet_params = _get_monthly_prophet_params(parameters)
+
+    date_column = monthly_params["date_column"]
+    target_column = monthly_params["target_column"]
+    prophet_date_column = prophet_params["prophet_date_column"]
+    prophet_target_column = prophet_params["prophet_target_column"]
+
+    rename_map = {date_column: prophet_date_column, target_column: prophet_target_column}
+
+    def _rename(df: pd.DataFrame) -> pd.DataFrame:
+        return df.rename(columns=rename_map).copy()
+
+    prophet_modeling_data = _rename(monthly_modeling_data)
+    prophet_train = _rename(monthly_train)
+    prophet_validation = _rename(monthly_validation)
+    prophet_test = _rename(monthly_test)
+    prophet_full_train = _rename(monthly_full_train)
+
+    _validate_datetime_and_numeric(
+        prophet_modeling_data, prophet_date_column, prophet_target_column
+    )
+
+    logger.info(
+        "Adapted generic monthly data to Prophet format: %s → %s, %s → %s.",
+        date_column, prophet_date_column,
+        target_column, prophet_target_column,
+    )
+
+    # Internal metadata consumed by build_monthly_prophet_split_metadata.
+    prophet_adapter_metadata: dict[str, Any] = {
+        "model_family": "prophet",
+        "granularity": monthly_split_metadata["granularity"],
+        "split_mode": monthly_split_metadata["split_mode"],
+        "active_regressors": list(prophet_params["active_regressors"]),
+        "dropped_rows": monthly_split_metadata["dropped_rows"],
+        "modeling_data": _summarize_date_range(
+            prophet_modeling_data, prophet_date_column
+        ),
+    }
+
+    return (
+        prophet_modeling_data,
+        prophet_train,
+        prophet_validation,
+        prophet_test,
+        prophet_full_train,
+        prophet_adapter_metadata,
+    )
+
+
+# ── Prophet future regressors and split metadata (unchanged from Phase 0) ─────
 
 def build_monthly_prophet_future_regressors(
     monthly_prophet_modeling_data: pd.DataFrame,
@@ -716,44 +818,27 @@ def build_monthly_prophet_future_regressors(
     monthly_exogenous_features: pd.DataFrame,
     parameters: dict,
     calendar_parameters: dict,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Construct future regressor DataFrames for each configured forecast horizon.
 
-    For each horizon in ``future.horizons_months`` (must include both 3 and 6), generates a
-    monthly date index starting the month after the last historical observation. Calendar
-    features are reused from ``monthly_calendar_features`` where available, and computed
-    deterministically for any missing future months. Exogenous regressors are looked up
-    from ``monthly_exogenous_features`` and must be fully populated for all future months.
-
-    The output DataFrames contain only ``[ds, sku, *active_regressors]`` — no target
-    column ``y`` — as required by Prophet's ``predict`` API.
+    For each horizon in ``future.horizons_months`` (must include 3, 6, and 12), generates
+    a monthly date index starting the month after the last historical observation.
+    Calendar features are reused from ``monthly_calendar_features`` where available, and
+    computed deterministically for any missing future months.  Exogenous regressors are
+    looked up from ``monthly_exogenous_features`` and must be fully populated for all
+    future months.
 
     Args:
-        monthly_prophet_modeling_data: Cleaned historical modeling DataFrame. Used to
-            determine the last historical date and the distinct set of SKUs.
-        monthly_calendar_features: Monthly calendar feature table; rows covering the future
-            horizon are reused directly; any missing months are computed on the fly.
-        monthly_exogenous_features: Monthly exogenous feature table. Must cover all future
-            months for every active exogenous regressor.
-        parameters: Pipeline parameters with a ``monthly_prophet`` block. Reads
-            ``prophet_date_column``, ``sku_column``, ``active_regressors``, and
-            ``future.horizons_months``.
-        calendar_parameters: Calendar feature parameters used when future months must be
-            generated. Reads ``calendar_features.country_holidays``,
-            ``observed_holidays``, and ``weekmask``.
+        monthly_prophet_modeling_data: Prophet-format historical modeling DataFrame
+            (produced by ``adapt_monthly_data_for_prophet``).
+        monthly_calendar_features: Monthly calendar feature table.
+        monthly_exogenous_features: Monthly exogenous feature table.
+        parameters: Pipeline parameters with a ``monthly_prophet`` block.
+        calendar_parameters: Calendar feature parameters.
 
     Returns:
-        Tuple of three DataFrames:
-            - future_3m: Future regressor table for the 3-month horizon.
-            - future_6m: Future regressor table for the 6-month horizon.
-            - future_12m: Future regressor table for the 12-month horizon.
-        All share the schema ``[ds, sku, *active_regressors]``, cross-joined over all SKUs.
-
-    Raises:
-        ValueError: If ``horizons_months`` does not include 3, 6, and 12, if an active
-            regressor cannot be sourced from either the calendar or exogenous datasets,
-            if required future exogenous values are missing, or if the output accidentally
-            contains the target column ``y``.
+        Tuple of three DataFrames (future_3m, future_6m, future_12m) with schema
+        ``[ds, sku, *active_regressors]``.
     """
     prophet_params = _get_monthly_prophet_params(parameters)
     prophet_date_column = prophet_params["prophet_date_column"]
@@ -789,18 +874,14 @@ def build_monthly_prophet_future_regressors(
     )
     if len(sku_values) > 1:
         logger.info(
-            "Detected %d SKUs in historical modeling data. Future regressors will be "
-            "generated for each SKU.",
-            len(sku_values),
+            "Detected %d SKUs in historical modeling data.", len(sku_values)
         )
 
-    # Split active regressors by source: those in the exogenous dataset vs. calendar-derived.
     exogenous_regressors = [
         column
         for column in active_regressors
         if column in monthly_exogenous_features.columns
     ]
-    # Any regressor not found in either source cannot be materialized for future horizons.
     missing_regressor_sources = sorted(
         set(active_regressors)
         - set(_CALENDAR_FEATURE_COLUMNS)
@@ -816,37 +897,26 @@ def build_monthly_prophet_future_regressors(
     for horizon in _SUPPORTED_FUTURE_HORIZONS:
         future_months = _generate_future_months(last_historical_ds, horizon)
         future_calendar = _build_future_calendar_features(
-            future_months,
-            monthly_calendar_features,
-            calendar_parameters,
+            future_months, monthly_calendar_features, calendar_parameters
         )
         future_exogenous = _build_future_exogenous_features(
-            future_months,
-            monthly_exogenous_features,
-            exogenous_regressors,
+            future_months, monthly_exogenous_features, exogenous_regressors
         )
 
         future_regressors = future_calendar.merge(
-            future_exogenous,
-            on="month_start_date",
-            how="left",
-            validate="one_to_one",
+            future_exogenous, on="month_start_date", how="left", validate="one_to_one"
         )
         future_regressors = future_regressors[
             ["month_start_date", *active_regressors]
         ].copy()
 
-        # Cross-join: replicate future months for every SKU via a constant join key.
         sku_frame = pd.DataFrame({sku_column: sku_values.tolist()})
         future_dataset = sku_frame.assign(_join_key=1).merge(
-            future_regressors.assign(_join_key=1),
-            on="_join_key",
-            how="inner",
+            future_regressors.assign(_join_key=1), on="_join_key", how="inner"
         )
         future_dataset = future_dataset.drop(columns="_join_key").rename(
             columns={"month_start_date": prophet_date_column}
         )
-        # Future inference only needs dates, SKU metadata, and known regressors.
         future_dataset = (
             future_dataset[[prophet_date_column, sku_column, *active_regressors]]
             .sort_values([sku_column, prophet_date_column])
@@ -862,15 +932,11 @@ def build_monthly_prophet_future_regressors(
         )
         future_datasets[horizon] = future_dataset
         logger.info(
-            "Future horizon %sm summary: %s",
+            "Future horizon %sm: %s",
             horizon,
             _summarize_date_range(future_dataset, prophet_date_column),
         )
 
-    logger.info(
-        "Built future Prophet datasets with columns=%s.",
-        list(future_datasets[3].columns),
-    )
     return future_datasets[3], future_datasets[6], future_datasets[12]
 
 
@@ -887,28 +953,22 @@ def build_monthly_prophet_split_metadata(  # noqa: PLR0912, PLR0913
 ) -> dict[str, Any]:
     """Compile a single metadata dict covering all Prophet split partitions and future horizons.
 
-    Aggregates date-range summaries for each partition (train, validation, test, full_train)
-    and each future horizon (3 m, 6 m) into one artifact for downstream traceability and
-    experiment logging in MLflow.
-
     Args:
-        monthly_prophet_train: Train split DataFrame.
-        monthly_prophet_validation: Validation split DataFrame.
-        monthly_prophet_test: Test split DataFrame.
-        monthly_prophet_full_train: Full-train split DataFrame (all partitions combined).
+        monthly_prophet_train: Prophet train split.
+        monthly_prophet_validation: Prophet validation split.
+        monthly_prophet_test: Prophet test split.
+        monthly_prophet_full_train: Prophet full-train split.
         monthly_prophet_future_3m: Future regressor DataFrame for the 3-month horizon.
         monthly_prophet_future_6m: Future regressor DataFrame for the 6-month horizon.
         monthly_prophet_future_12m: Future regressor DataFrame for the 12-month horizon.
-        preparation_metadata: Metadata produced by the preparation and split nodes.
+        preparation_metadata: Internal metadata dict produced by ``adapt_monthly_data_for_prophet``.
             Must contain ``model_family``, ``granularity``, ``split_mode``,
             ``active_regressors``, and ``dropped_rows``.
-        parameters: Pipeline parameters with a ``monthly_prophet`` block. Reads
-            ``prophet_date_column``.
+        parameters: Pipeline parameters with a ``monthly_prophet`` block.
 
     Returns:
-        Dict with keys: ``model_family``, ``granularity``, ``split_mode``,
-        ``active_regressors``, ``train``, ``validation``, ``test``, ``full_train``,
-        ``future_horizons`` (keyed by horizon integer 3 and 6), and ``dropped_rows``.
+        Dict with model_family, granularity, split_mode, active_regressors, train,
+        validation, test, full_train, future_horizons, and dropped_rows.
     """
     prophet_params = _get_monthly_prophet_params(parameters)
     prophet_date_column = prophet_params["prophet_date_column"]
@@ -920,13 +980,11 @@ def build_monthly_prophet_split_metadata(  # noqa: PLR0912, PLR0913
         "active_regressors": preparation_metadata["active_regressors"],
         "train": _summarize_date_range(monthly_prophet_train, prophet_date_column),
         "validation": _summarize_date_range(
-            monthly_prophet_validation,
-            prophet_date_column,
+            monthly_prophet_validation, prophet_date_column
         ),
         "test": _summarize_date_range(monthly_prophet_test, prophet_date_column),
         "full_train": _summarize_date_range(
-            monthly_prophet_full_train,
-            prophet_date_column,
+            monthly_prophet_full_train, prophet_date_column
         ),
         "future_horizons": {
             3: _summarize_date_range(monthly_prophet_future_3m, prophet_date_column),
