@@ -15,9 +15,9 @@ def create_pipeline(**kwargs) -> Pipeline:
     Inputs (from catalog):
         champion_monthly_model
         champion_monthly_metadata
-        monthly_prophet_future_3m
-        monthly_prophet_future_6m
-        monthly_prophet_future_12m
+        monthly_future_3m
+        monthly_future_6m
+        monthly_future_12m
         params:forecast_inference.monthly
 
     Outputs (to catalog):
@@ -34,10 +34,9 @@ def create_pipeline(**kwargs) -> Pipeline:
                 inputs=[
                     "champion_monthly_model",
                     "champion_monthly_metadata",
-                    # Temporary compatibility source until generic future frames exist.
-                    "monthly_prophet_future_3m",
-                    "monthly_prophet_future_6m",
-                    "monthly_prophet_future_12m",
+                    "monthly_future_3m",
+                    "monthly_future_6m",
+                    "monthly_future_12m",
                     "params:forecast_inference.monthly",
                 ],
                 outputs=[

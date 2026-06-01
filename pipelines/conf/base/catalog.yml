@@ -108,6 +108,19 @@ monthly_split_metadata:
   type: json.JSONDataset
   filepath: data/05_model_input/monthly_split_metadata.json
 
+# 05_model_input — Generic monthly future feature frames (family-agnostic canonical inference inputs)
+monthly_future_3m:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/monthly_future_3m.parquet
+
+monthly_future_6m:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/monthly_future_6m.parquet
+
+monthly_future_12m:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/monthly_future_12m.parquet
+
 # 05_model_input — SARIMAX monthly model-ready datasets
 monthly_sarimax_train:
   type: pandas.ParquetDataset

@@ -110,11 +110,6 @@ def generate_monthly_champion_forecasts(  # noqa: PLR0913
         run_id,
     )
 
-    # The canonical generic future frames are not built yet, so monthly inference
-    # temporarily consumes the Prophet future frames. The family adapters extract
-    # the date index (and any exogenous columns) from these frames.
-    # TODO(model_input): emit granularity-generic monthly_future_{3,6,12}m frames
-    #   and route them here instead of the Prophet-specific frames.
     horizon_futures: dict[int, tuple[pd.DataFrame, str]] = {
         3: (monthly_future_3m, "monthly_future_3m"),
         6: (monthly_future_6m, "monthly_future_6m"),
@@ -428,11 +423,7 @@ def _build_inference_metadata(  # noqa: PLR0913
     ]
     interval_method = interval_methods[0] if interval_methods else None
 
-    notes: list[str] = [
-        "Monthly inference temporarily consumes Prophet future frames as the "
-        "compatibility source; generic monthly_future_*m frames are the intended "
-        "canonical input.",
-    ]
+    notes: list[str] = []
     if model_family == "sarimax":
         notes.append(
             "SARIMAX forecasts are generated from the champion fitted results object; "

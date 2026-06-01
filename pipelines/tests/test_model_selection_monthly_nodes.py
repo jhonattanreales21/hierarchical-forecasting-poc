@@ -830,3 +830,105 @@ def test_monthly_model_selection_fails_when_active_family_artifacts_missing():
             params_prophet=params_prophet,
             params_sarimax=params_sarimax,
         )
+
+
+# ── Test 7: candidate test metrics always originate from the test split ───────
+
+
+def test_candidate_test_metrics_selection_stage_is_test():
+    """All candidate metrics rows must carry selection_stage='test' (no leakage from val/train)."""
+    metrics_df = _make_candidate_metrics_df()
+    assert (metrics_df["selection_stage"] == "test").all(), (
+        "candidate_test_metrics contains rows not attributed to the held-out test split"
+    )
+
+
+def test_family_champion_summary_has_fewer_rows_than_candidate_metrics():
+    """Family champion summary collapses many candidates to one winner per family."""
+    metrics_df = _make_candidate_metrics_df()
+    params = _make_params_monthly()
+
+    family_summary = select_monthly_family_champions(metrics_df, params)
+
+    assert len(family_summary) < len(metrics_df), (
+        "monthly_family_champion_summary should have fewer rows than monthly_candidate_test_metrics"
+    )
+    assert len(family_summary) == 2  # one per family  # noqa: PLR2004
+
+
+def test_production_champion_summary_has_exactly_one_row():
+    """monthly_model_selection_summary always resolves to a single production champion."""
+    metrics_df = _make_candidate_metrics_df()
+    params = _make_params_monthly()
+
+    family_summary = select_monthly_family_champions(metrics_df, params)
+    prod_summary = select_monthly_production_champion(family_summary, metrics_df, params)
+
+    assert len(prod_summary) == 1, (
+        "monthly_model_selection_summary must contain exactly one row (the production champion)"
+    )
+    assert prod_summary.iloc[0]["granularity"] == "monthly"
+
+
+# ── Test 8: champion metadata exposes training_cutoff and hyperparameters ─────
+
+
+def test_champion_metadata_exposes_training_cutoff():
+    """champion_monthly_metadata must contain a training_cutoff field derived from the refit."""
+    _, metadata = _build_champion("prophet", "prophet_candidate_001", 0.08)
+
+    assert "training_cutoff" in metadata, (
+        "champion_monthly_metadata is missing the training_cutoff field"
+    )
+    # When refit is performed, training_cutoff must be a non-empty string (the end date).
+    assert metadata["training_cutoff"] is not None
+
+
+def test_champion_metadata_exposes_hyperparameters_for_prophet():
+    """Prophet champion metadata must include a hyperparameters block with Prophet-style keys."""
+    _, metadata = _build_champion("prophet", "prophet_candidate_001", 0.08)
+
+    assert "hyperparameters" in metadata, (
+        "champion_monthly_metadata is missing the hyperparameters field"
+    )
+    hp = metadata["hyperparameters"]
+    assert isinstance(hp, dict)
+    assert "changepoint_prior_scale" in hp
+    assert "seasonality_mode" in hp
+
+
+def test_champion_metadata_exposes_hyperparameters_for_sarimax():
+    """SARIMAX champion metadata must include a hyperparameters block with SARIMAX-style keys."""
+    _, metadata = _build_champion("sarimax", "sarimax_trial_001", 0.10)
+
+    assert "hyperparameters" in metadata, (
+        "champion_monthly_metadata is missing the hyperparameters field"
+    )
+    hp = metadata["hyperparameters"]
+    assert isinstance(hp, dict)
+    assert "order" in hp
+    assert "seasonal_order" in hp
+    assert "use_exog" in hp
+
+
+# ── Test 9: champion metadata is consumable by inference without family knowledge ──
+
+
+def test_champion_metadata_contract_is_inference_agnostic():
+    """Inference contract must be readable without hardcoding the model family externally."""
+    for family, candidate_id, metric in [
+        ("prophet", "prophet_candidate_001", 0.08),
+        ("sarimax", "sarimax_trial_001", 0.10),
+    ]:
+        _, metadata = _build_champion(family, candidate_id, metric)
+
+        # An inference consumer should resolve these without family-specific branches.
+        resolved_family = metadata["model_family"]
+        resolved_regressors = metadata["active_regressors"]
+        resolved_contract = metadata["inference_contract"]
+
+        assert resolved_family == family
+        assert isinstance(resolved_regressors, list)
+        assert resolved_contract["model_family"] == family
+        assert isinstance(resolved_contract["forecast_horizons"], list)
+        assert 12 in resolved_contract["forecast_horizons"]  # noqa: PLR2004

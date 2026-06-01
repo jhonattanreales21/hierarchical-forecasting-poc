@@ -416,8 +416,11 @@ def build_monthly_champion_artifacts(  # noqa: PLR0913
         "model_family": production_family,
         "champion_id": production_candidate_id,
         "champion_level": "production",
-        # Surfaced at top level so metadata-driven inference can read it directly.
         "active_regressors": list(inference_contract["active_regressors"]),
+        "training_cutoff": refit_info.get("end_date"),
+        "hyperparameters": _extract_champion_hyperparameters(
+            production_family, champion_model, inference_contract
+        ),
         "family_champions": family_champions,
         "selection": {
             "primary_metric": str(summary_row.get("primary_metric", "wape")),
@@ -996,6 +999,34 @@ def _refit_info(performed: bool, full_train_df: pd.DataFrame, date_col: str) -> 
             "Reported test metrics come from the pre-refit selection stage."
         ),
     }
+
+
+def _extract_champion_hyperparameters(
+    production_family: str,
+    champion_model: Any,
+    inference_contract: dict,
+) -> dict:
+    """Extract the champion's key hyperparameters for audit and downstream inspection.
+
+    Args:
+        production_family: Elected production champion family.
+        champion_model: The fitted champion model (Prophet) or candidate dict (SARIMAX).
+        inference_contract: Inference contract dict containing SARIMAX config when applicable.
+
+    Returns:
+        Dict of hyperparameter names to values; schema is family-specific.
+    """
+    if production_family == "prophet":
+        return _extract_prophet_params(champion_model)
+    if production_family == "sarimax":
+        config = dict(inference_contract.get("sarimax_config") or {})
+        return {
+            "order": config.get("order"),
+            "seasonal_order": config.get("seasonal_order"),
+            "trend": config.get("trend"),
+            "use_exog": bool(config.get("use_exog", False)),
+        }
+    return {}
 
 
 def _build_inference_contract(

@@ -1155,6 +1155,119 @@ def build_monthly_prophet_future_regressors(
     return future_datasets[3], future_datasets[6], future_datasets[12]
 
 
+def build_monthly_generic_future_frames(
+    monthly_modeling_data: pd.DataFrame,
+    monthly_calendar_features: pd.DataFrame,
+    monthly_exogenous_features: pd.DataFrame,
+    parameters: dict,
+    calendar_parameters: dict,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Build family-agnostic future feature frames for each supported forecast horizon.
+
+    Produces three DataFrames (3m, 6m, 12m) with schema
+    ``[month_start_date, sku, *active_regressors]``.  These are the canonical inputs
+    for metadata-driven champion inference regardless of the elected model family.
+    Calendar features are reused from ``monthly_calendar_features`` where available
+    and computed deterministically for missing future months. Exogenous regressors are
+    looked up from ``monthly_exogenous_features`` and must be fully available for all
+    future months.
+
+    Args:
+        monthly_modeling_data: Generic modeling DataFrame with columns
+            ``[month_start_date, monthly_demand, sku, *active_regressors]``.
+        monthly_calendar_features: Monthly calendar feature table.
+        monthly_exogenous_features: Monthly exogenous feature table.
+        parameters: Pipeline parameters. Reads the ``monthly`` block.
+        calendar_parameters: Calendar feature parameters used to generate calendar
+            features for future months not present in ``monthly_calendar_features``.
+
+    Returns:
+        Tuple ``(monthly_future_3m, monthly_future_6m, monthly_future_12m)`` with
+        schema ``[month_start_date, sku, *active_regressors]``.
+    """
+    monthly_params = _get_monthly_params(parameters)
+    date_column: str = monthly_params["date_column"]
+    target_column: str = monthly_params["target_column"]
+    sku_column: str = monthly_params["sku_column"]
+    active_regressors: list[str] = list(monthly_params["active_regressors"])
+
+    last_historical_date = pd.Timestamp(monthly_modeling_data[date_column].max())
+    sku_values = (
+        monthly_modeling_data[sku_column]
+        .dropna()
+        .drop_duplicates()
+        .sort_values()
+    )
+
+    exogenous_regressors = [
+        col for col in active_regressors
+        if col in monthly_exogenous_features.columns
+    ]
+    missing_regressor_sources = sorted(
+        set(active_regressors)
+        - set(_CALENDAR_FEATURE_COLUMNS)
+        - set(monthly_exogenous_features.columns)
+    )
+    if missing_regressor_sources:
+        raise ValueError(
+            "Active regressors are not available in calendar or exogenous sources: "
+            f"{missing_regressor_sources}"
+        )
+
+    logger.info(
+        "Building generic monthly future frames — horizons=%s, last_history=%s.",
+        list(_SUPPORTED_FUTURE_HORIZONS),
+        last_historical_date.date(),
+    )
+
+    future_datasets: dict[int, pd.DataFrame] = {}
+    for horizon in _SUPPORTED_FUTURE_HORIZONS:
+        future_months = _generate_future_months(last_historical_date, horizon)
+        future_calendar = _build_future_calendar_features(
+            future_months, monthly_calendar_features, calendar_parameters
+        )
+        future_exogenous = _build_future_exogenous_features(
+            future_months, monthly_exogenous_features, exogenous_regressors
+        )
+
+        future_regressors = future_calendar.merge(
+            future_exogenous, on="month_start_date", how="left", validate="one_to_one"
+        )
+        future_regressors = future_regressors[
+            ["month_start_date", *active_regressors]
+        ].copy()
+
+        sku_frame = pd.DataFrame({sku_column: sku_values.tolist()})
+        future_dataset = sku_frame.assign(_join_key=1).merge(
+            future_regressors.assign(_join_key=1), on="_join_key", how="inner"
+        )
+        future_dataset = (
+            future_dataset.drop(columns="_join_key")
+            [[date_column, sku_column, *active_regressors]]
+            .sort_values([sku_column, date_column])
+            .reset_index(drop=True)
+        )
+
+        if target_column in future_dataset.columns:
+            raise ValueError(
+                f"Generic monthly future frames must not include the target column "
+                f"'{target_column}'."
+            )
+        _validate_no_nulls(
+            future_dataset,
+            [date_column, *active_regressors],
+            f"monthly_future_{horizon}m",
+        )
+        future_datasets[horizon] = future_dataset
+        logger.info(
+            "Generic future horizon %sm: %s",
+            horizon,
+            _summarize_date_range(future_dataset, date_column),
+        )
+
+    return future_datasets[3], future_datasets[6], future_datasets[12]
+
+
 def build_monthly_prophet_split_metadata(  # noqa: PLR0912, PLR0913
     monthly_prophet_train: pd.DataFrame,
     monthly_prophet_validation: pd.DataFrame,
