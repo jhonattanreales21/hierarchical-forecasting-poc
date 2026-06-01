@@ -46,8 +46,8 @@ train_monthly:
       objective:
         metric: "wape"
         direction: "minimize"
-      max_trials: 30
-      top_n_prechampions: 3
+      max_trials: 15
+      top_n_prechampions: 5
       sampler:
         name: "tpe"
         seed: ${random_seed}
@@ -101,16 +101,16 @@ train_monthly:
     objective:
       metric: "wape"
       direction: "minimize"
-    top_n_prechampions: 3
-    max_failed_trials: null
+    top_n_prechampions: 10
+    max_failed_trials: 60
     validation:
-      forecast_steps: null
+      forecast_steps: 3
     metrics:
       mase_seasonal_period: 12
       epsilon: 1.0
     tuning:
       optimizer: "optuna"
-      max_trials: 50
+      max_trials: 20
       use_exog: true
       sampler:
         name: "tpe"

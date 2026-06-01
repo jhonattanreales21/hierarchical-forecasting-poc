@@ -44,6 +44,11 @@ model_input_preparation:
       mode: "months"
       validation_months: 3
       test_months: 3
+      # Date-based split mode is also supported. Switch mode to "date" and use:
+      # mode: "date"
+      # train_end_date: "2024-12-01"
+      # validation_end_date: "2025-06-01"
+      # test_end_date: "2026-03-01"
 
     supported_future_horizons: [3, 6, 12]
     min_working_weekday_count_for_flag: 5
@@ -81,6 +86,8 @@ model_input_preparation:
       - "pfizer_limited_lag_3"
       - "surgifoam_limited_lag_3"
       - "rebate_target_lag_3"
+      - "expected_market_share_lag_2"
+      - "expected_market_share_lag_3"
       - "market_share_stress"
       - "market_share_stress_lag_1"
       - "market_share_uplift"
@@ -94,11 +101,6 @@ model_input_preparation:
       mode: "months"
       validation_months: 3
       test_months: 3
-      # Date-based split mode is also supported. Switch mode to "date" and use:
-      # mode: "date"
-      # train_end_date: "2024-12-01"
-      # validation_end_date: "2025-06-01"
-      # test_end_date: "2026-03-01"
 
     future:
       horizons_months: [3, 6, 12]
