@@ -46,7 +46,7 @@ train_monthly:
       objective:
         metric: "wape"
         direction: "minimize"
-      max_trials: 50
+      max_trials: 60
       top_n_prechampions: 10
       sampler:
         name: "tpe"
@@ -70,6 +70,30 @@ train_monthly:
         seasonality_mode:
           type: "categorical"
           choices: ["additive", "multiplicative"]
+        prior_scale_pfizer_limited_lag_1:
+          type: "categorical"
+          choices: [1, 5, 10, 20, 25]
+        prior_scale_pfizer_limited_lag_2:
+          type: "categorical"
+          choices: [ 1, 5, 10, 20, 25]
+        prior_scale_surgifoam_limited_lag_1:
+          type: "categorical"
+          choices: [0.01, 0.1, 0.5, 1, 5, 10]
+        prior_scale_surgifoam_limited_lag_2:
+          type: "categorical"
+          choices: [0.01, 0.1, 0.5, 1, 5, 10]
+        prior_scale_rebate_target:
+          type: "categorical"
+          choices: [0.01, 0.1, 0.5, 1, 5]
+        prior_scale_rebate_target_lag_1:
+          type: "categorical"
+          choices: [0.01, 0.1, 0.5, 1, 5]
+        prior_scale_market_share_stress:
+          type: "categorical"
+          choices: [1, 5, 10, 20]
+        prior_scale_market_share_uplift:
+          type: "categorical"
+          choices: [ 1, 5, 10, 20]
       fixed_params:
         yearly_seasonality: false
         weekly_seasonality: false
