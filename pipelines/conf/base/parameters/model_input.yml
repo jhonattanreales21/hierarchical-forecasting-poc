@@ -45,6 +45,9 @@ model_input_preparation:
       validation_months: 3
       test_months: 3
 
+    supported_future_horizons: [3, 6, 12]
+    min_working_weekday_count_for_flag: 5
+
   monthly_prophet:
     date_column: "month_start_date"
     target_column: "monthly_demand"

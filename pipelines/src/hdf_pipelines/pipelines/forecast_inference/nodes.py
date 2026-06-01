@@ -21,9 +21,6 @@ from .adapters import SUPPORTED_MONTHLY_FAMILIES, dispatch_monthly_prediction
 
 logger = logging.getLogger(__name__)
 
-# Horizons (in months) produced by monthly inference.
-_SUPPORTED_HORIZONS: tuple[int, ...] = (3, 6, 12)
-
 # Champion metadata fields required before dispatch can proceed.
 _REQUIRED_METADATA_KEYS: tuple[str, ...] = ("model_family", "champion_id")
 
@@ -436,7 +433,7 @@ def _build_inference_metadata(  # noqa: PLR0913
         "champion_id": str(metadata.get("champion_id", "")),
         "run_id": run_id,
         "forecast_generated_at": created_at,
-        "supported_horizons": list(_SUPPORTED_HORIZONS),
+        "supported_horizons": list(params.get("supported_horizons", [3, 6, 12])),
         "default_horizon": default_horizon,
         "output_schema_version": str(
             params.get("output_schema_version", "monthly_forecast_v1")

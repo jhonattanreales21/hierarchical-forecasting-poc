@@ -1,0 +1,30 @@
+data_ingestion:
+  demand_masking:
+    scale_factor: 1.0
+    sku_prefix: "sku"
+
+  raw_data:
+    demand_expected_columns:
+      - "SKU"
+      - "Year"
+      - "Month"
+      - "Month Name"
+      - "Date"
+      - "Monthly Demand"
+      - "Daily Demand"
+
+    demand_rename_map:
+      "SKU": "sku"
+      "Year": "year"
+      "Month": "month"
+      "Month Name": "month_name"
+      "Date": "date"
+      "Monthly Demand": "monthly_demand"
+      "Daily Demand": "daily_demand"
+
+    exogenous_expected_columns:
+      - "Date"
+      - "pfizer_limited"
+      - "surgifoam_limited"
+      - "rebate_target"
+      - "expected_market_share"

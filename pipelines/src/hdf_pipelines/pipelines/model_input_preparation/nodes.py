@@ -41,8 +41,6 @@ _CALENDAR_FEATURE_COLUMNS = [
     "thursday_holidays",
     "total_holidays",
 ]
-_SUPPORTED_FUTURE_HORIZONS = (3, 6, 12)
-_MIN_WORKING_WEEKDAY_COUNT_FOR_FLAG = 5
 
 
 # ── Parameter extraction helpers ──────────────────────────────────────────────
@@ -359,6 +357,7 @@ def _count_monthly_calendar_features(
     month_start_date: pd.Timestamp,
     holiday_dates: pd.DatetimeIndex,
     business_weekdays: set[int],
+    min_working_weekday_count: int,
 ) -> dict[str, int | pd.Timestamp]:
     """Count deterministic calendar features for a single month."""
     month_start = pd.Timestamp(month_start_date).normalize()
@@ -380,12 +379,8 @@ def _count_monthly_calendar_features(
         "total_thursdays": int(is_thursday.sum()),
         "working_tuesdays": working_tuesdays,
         "working_thursdays": working_thursdays,
-        "has_5_working_tuesdays": int(
-            working_tuesdays >= _MIN_WORKING_WEEKDAY_COUNT_FOR_FLAG
-        ),
-        "has_5_working_thursdays": int(
-            working_thursdays >= _MIN_WORKING_WEEKDAY_COUNT_FOR_FLAG
-        ),
+        "has_5_working_tuesdays": int(working_tuesdays >= min_working_weekday_count),
+        "has_5_working_thursdays": int(working_thursdays >= min_working_weekday_count),
         "tuesday_holidays": int((is_tuesday & is_holiday).sum()),
         "thursday_holidays": int((is_thursday & is_holiday).sum()),
         "total_holidays": int(is_holiday.sum()),
@@ -447,10 +442,15 @@ def _build_future_calendar_features(
         business_weekdays = _parse_weekmask(
             calendar_parameters["calendar_features"]["weekmask"]
         )
+        min_working_count: int = int(
+            calendar_parameters["calendar_features"].get(
+                "min_working_weekday_count_for_flag", 5
+            )
+        )
         generated_calendar = pd.DataFrame(
             [
                 _count_monthly_calendar_features(
-                    month_start, holiday_dates, business_weekdays
+                    month_start, holiday_dates, business_weekdays, min_working_count
                 )
                 for month_start in missing_calendar_dates
             ]
@@ -1055,19 +1055,23 @@ def build_monthly_prophet_future_regressors(
         Tuple of three DataFrames (future_3m, future_6m, future_12m) with schema
         ``[ds, sku, *active_regressors]``.
     """
+    monthly_params = _get_monthly_params(parameters)
+    supported_horizons: list[int] = list(
+        monthly_params.get("supported_future_horizons", [3, 6, 12])
+    )
     prophet_params = _get_monthly_prophet_params(parameters)
     prophet_date_column = prophet_params["prophet_date_column"]
     sku_column = prophet_params["sku_column"]
     active_regressors = list(prophet_params["active_regressors"])
     required_horizons = [
         horizon
-        for horizon in _SUPPORTED_FUTURE_HORIZONS
+        for horizon in supported_horizons
         if horizon in prophet_params["future"]["horizons_months"]
     ]
-    if required_horizons != list(_SUPPORTED_FUTURE_HORIZONS):
+    if required_horizons != supported_horizons:
         raise ValueError(
             "model_input_preparation.monthly_prophet.future.horizons_months must "
-            f"include {_SUPPORTED_FUTURE_HORIZONS}."
+            f"include {supported_horizons}."
         )
 
     logger.info(
@@ -1109,7 +1113,7 @@ def build_monthly_prophet_future_regressors(
         )
 
     future_datasets: dict[int, pd.DataFrame] = {}
-    for horizon in _SUPPORTED_FUTURE_HORIZONS:
+    for horizon in supported_horizons:
         future_months = _generate_future_months(last_historical_ds, horizon)
         future_calendar = _build_future_calendar_features(
             future_months, monthly_calendar_features, calendar_parameters
@@ -1190,6 +1194,9 @@ def build_monthly_generic_future_frames(
     target_column: str = monthly_params["target_column"]
     sku_column: str = monthly_params["sku_column"]
     active_regressors: list[str] = list(monthly_params["active_regressors"])
+    supported_horizons: list[int] = list(
+        monthly_params.get("supported_future_horizons", [3, 6, 12])
+    )
 
     last_historical_date = pd.Timestamp(monthly_modeling_data[date_column].max())
     sku_values = (
@@ -1216,12 +1223,12 @@ def build_monthly_generic_future_frames(
 
     logger.info(
         "Building generic monthly future frames — horizons=%s, last_history=%s.",
-        list(_SUPPORTED_FUTURE_HORIZONS),
+        supported_horizons,
         last_historical_date.date(),
     )
 
     future_datasets: dict[int, pd.DataFrame] = {}
-    for horizon in _SUPPORTED_FUTURE_HORIZONS:
+    for horizon in supported_horizons:
         future_months = _generate_future_months(last_historical_date, horizon)
         future_calendar = _build_future_calendar_features(
             future_months, monthly_calendar_features, calendar_parameters
