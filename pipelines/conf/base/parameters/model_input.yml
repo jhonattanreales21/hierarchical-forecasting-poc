@@ -26,9 +26,11 @@ model_input_preparation:
       - "pfizer_limited_lag_2"
       - "surgifoam_limited_lag_2"
       - "rebate_target_lag_2"
+      - "expected_market_share_lag_2"
       - "pfizer_limited_lag_3"
       - "surgifoam_limited_lag_3"
       - "rebate_target_lag_3"
+      - "expected_market_share_lag_3"
       - "market_share_stress"
       - "market_share_stress_lag_1"
       - "market_share_uplift"
@@ -104,7 +106,27 @@ model_input_preparation:
     target_column: "monthly_demand"
     sku_column: "sku"
     frequency: "MS"
-    exogenous_columns: []
+    exogenous_columns:
+      - pfizer_limited
+      - pfizer_limited_lag_1
+      - pfizer_limited_lag_2
+      - pfizer_limited_lag_3
+      - surgifoam_limited
+      - surgifoam_limited_lag_1
+      - surgifoam_limited_lag_2
+      - surgifoam_limited_lag_3
+      - rebate_target
+      - rebate_target_lag_1
+      - rebate_target_lag_2
+      - rebate_target_lag_3
+      - expected_market_share
+      - expected_market_share_lag_1
+      - expected_market_share_lag_2
+      - expected_market_share_lag_3
+      - market_share_stress
+      - market_share_stress_lag_1
+      - market_share_uplift
+      - market_share_uplift_lag_1
     allow_empty_exog: true
     require_regular_frequency: true
     sort_by_date: true

@@ -15,6 +15,8 @@ model_selection:
     primary_metric: wape
     direction: minimize
     tie_breakers:
+      - test_m3_wape
+      - test_m2_wape
       - mase
       - rmse
       - abs_bias
@@ -72,3 +74,14 @@ model_selection:
     date_column: "month_start_date"
     target_column: "monthly_demand"
     model_family: sarimax
+
+    ljung_box:
+      enabled: true
+      lags: 10
+      pvalue_threshold: 0.05
+
+    operational_lead_time:
+      enabled: true
+      lead_times:
+        - 2
+        - 3

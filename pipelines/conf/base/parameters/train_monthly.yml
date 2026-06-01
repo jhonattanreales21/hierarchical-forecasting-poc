@@ -109,19 +109,41 @@ train_monthly:
       mase_seasonal_period: 12
       epsilon: 1.0
     tuning:
-      order_grid:
-        - [0, 1, 1]
-        - [1, 1, 0]
-        - [1, 1, 1]
-        - [2, 1, 1]
-      seasonal_order_grid:
-        - [0, 1, 1, 12]
-        - [1, 1, 0, 12]
-        - [1, 1, 1, 12]
-      trend_options:
-        - null
-      enforce_stationarity_options:
-        - false
-      enforce_invertibility_options:
-        - false
+      optimizer: "optuna"
+      max_trials: 50
       use_exog: true
+      sampler:
+        name: "tpe"
+        seed: ${random_seed}
+      search_space:
+        p:
+          type: "int"
+          low: 0
+          high: 3
+        d:
+          type: "int"
+          low: 0
+          high: 2
+        q:
+          type: "int"
+          low: 0
+          high: 3
+        P:
+          type: "int"
+          low: 0
+          high: 2
+        D:
+          type: "int"
+          low: 0
+          high: 1
+        Q:
+          type: "int"
+          low: 0
+          high: 2
+        trend:
+          type: "categorical"
+          choices: ["none", "n", "c", "t"]
+      fixed_params:
+        s: 12
+        enforce_stationarity: false
+        enforce_invertibility: false

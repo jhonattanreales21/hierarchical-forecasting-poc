@@ -20,6 +20,7 @@ import pytest
 
 from hdf_pipelines.pipelines.model_selection.monthly.nodes import (
     _score_prophet_candidates,
+    _score_sarimax_candidates,
     build_monthly_champion_artifacts,
     evaluate_monthly_family_candidates_on_test,
     select_monthly_family_champions,
@@ -225,6 +226,10 @@ def _make_params_sarimax() -> dict:
         "date_column": "month_start_date",
         "target_column": "monthly_demand",
         "model_family": "sarimax",
+        # Disable optional diagnostics by default so existing tests are not polluted
+        # by extra SARIMAX calls from Ljung-Box or rolling-origin refits.
+        "ljung_box": {"enabled": False},
+        "operational_lead_time": {"enabled": False},
     }
 
 
@@ -932,3 +937,276 @@ def test_champion_metadata_contract_is_inference_agnostic():
         assert resolved_contract["model_family"] == family
         assert isinstance(resolved_contract["forecast_horizons"], list)
         assert 12 in resolved_contract["forecast_horizons"]  # noqa: PLR2004
+
+
+# ── Test 10: Ljung-Box residual autocorrelation filter ────────────────────────
+
+
+def _make_params_sarimax_with_ljungbox(
+    lb_enabled: bool = True,
+    lb_threshold: float = 0.05,
+    ro_enabled: bool = False,
+) -> dict:
+    """SARIMAX params with explicit Ljung-Box and rolling-origin config."""
+    return {
+        "date_column": "month_start_date",
+        "target_column": "monthly_demand",
+        "model_family": "sarimax",
+        "ljung_box": {
+            "enabled": lb_enabled,
+            "lags": 10,
+            "pvalue_threshold": lb_threshold,
+        },
+        "operational_lead_time": {
+            "enabled": ro_enabled,
+            "lead_times": [2, 3],
+        },
+    }
+
+
+def _make_fake_sarimax_result_with_resid(
+    n_forecast: int, value: float = 10.0, resid: Any | None = None
+) -> MagicMock:
+    """SARIMAX result mock with controllable residuals for Ljung-Box testing."""
+    forecast_mock = MagicMock()
+    forecast_mock.predicted_mean = np.ones(n_forecast) * value
+    result_mock = MagicMock()
+    result_mock.get_forecast.return_value = forecast_mock
+    result_mock.resid = resid if resid is not None else np.random.default_rng(0).normal(0, 1, 24)
+    return result_mock
+
+
+class TestScoreSarimaxLjungBox:
+    """Ljung-Box residual autocorrelation checks in _score_sarimax_candidates."""
+
+    def _run_scorer(
+        self,
+        lb_pvalue: float,
+        lb_enabled: bool = True,
+        lb_threshold: float = 0.05,
+    ) -> list[dict]:
+        """Run scorer with Ljung-Box mocked to return a specific p-value."""
+        lb_df = pd.DataFrame({"lb_stat": [5.0], "lb_pvalue": [lb_pvalue]})
+        fake_result = _make_fake_sarimax_result_with_resid(n_forecast=6)
+        sarimax_models = _make_sarimax_candidate_models(n_test=6)
+        sarimax_configs = _make_sarimax_prechampion_configs()
+        sarimax_metadata = _make_sarimax_training_metadata()
+        params = _make_params_sarimax_with_ljungbox(
+            lb_enabled=lb_enabled, lb_threshold=lb_threshold, ro_enabled=False
+        )
+
+        with patch(
+            "hdf_pipelines.pipelines.model_selection.monthly.nodes.SARIMAX"
+        ) as mock_cls, patch(
+            "hdf_pipelines.pipelines.model_selection.monthly.nodes.acorr_ljungbox",
+            return_value=lb_df,
+        ):
+            mock_cls.return_value.fit.return_value = fake_result
+            rows = _score_sarimax_candidates(
+                candidate_models=sarimax_models,
+                prechampion_configs=sarimax_configs,
+                training_metadata=sarimax_metadata,
+                train_df=_make_sarimax_train_df(),
+                validation_df=_make_sarimax_validation_df(),
+                test_df=_make_sarimax_test_df(),
+                params=params,
+                mase_period=12,
+                require_all=True,
+            )
+        return rows
+
+    def test_ljung_box_pvalue_stored_in_metrics_row(self):
+        rows = self._run_scorer(lb_pvalue=0.20)
+        assert all("ljung_box_pvalue" in r for r in rows)
+        assert all(r["ljung_box_pvalue"] == pytest.approx(0.20) for r in rows)
+
+    def test_autocorrelation_excluded_true_when_pvalue_below_threshold(self):
+        rows = self._run_scorer(lb_pvalue=0.01, lb_threshold=0.05)
+        assert all(r["autocorrelation_excluded"] is True for r in rows)
+
+    def test_autocorrelation_excluded_false_when_pvalue_above_threshold(self):
+        rows = self._run_scorer(lb_pvalue=0.30, lb_threshold=0.05)
+        assert all(r["autocorrelation_excluded"] is False for r in rows)
+
+    def test_ljung_box_pvalue_is_none_when_disabled(self):
+        rows = self._run_scorer(lb_pvalue=0.01, lb_enabled=False)
+        assert all(r["ljung_box_pvalue"] is None for r in rows)
+        assert all(r["autocorrelation_excluded"] is False for r in rows)
+
+
+class TestSelectChampionsLjungBoxFiltering:
+    """Ljung-Box exclusion pre-filtering in select_monthly_family_champions."""
+
+    def _make_metrics_with_exclusion(self, excluded: list[bool]) -> pd.DataFrame:
+        """Build a SARIMAX-only metrics DataFrame with autocorrelation_excluded flags."""
+        rows = []
+        for i, excl in enumerate(excluded):
+            rows.append({
+                "family": "sarimax",
+                "candidate_id": f"sarimax_trial_00{i + 1}",
+                "candidate_rank": i + 1,
+                "granularity": "monthly",
+                "selection_stage": "test",
+                "test_start_date": "2023-01-01",
+                "test_end_date": "2023-06-01",
+                "n_test_rows": 6,
+                "wape": 0.10 + i * 0.05,
+                "mase": 0.80 + i * 0.05,
+                "rmse": 4.0 + i,
+                "bias": 0.0,
+                "ljung_box_pvalue": 0.01 if excl else 0.30,
+                "autocorrelation_excluded": excl,
+                "primary_metric": "wape",
+                "primary_metric_value": 0.10 + i * 0.05,
+                "is_family_champion": False,
+                "is_production_champion": False,
+            })
+        return pd.DataFrame(rows)
+
+    def test_excluded_candidates_are_not_selected_as_champion(self):
+        """Candidate marked autocorrelation_excluded=True must not win when others are valid."""
+        # Candidate 001 has best wape (0.10) but is excluded; 002 has wape=0.15 and is eligible.
+        metrics_df = self._make_metrics_with_exclusion([True, False])
+        params = _make_params_monthly(active_families=["sarimax"])
+
+        summary = select_monthly_family_champions(metrics_df, params)
+
+        assert len(summary) == 1
+        assert summary.iloc[0]["family_champion_id"] == "sarimax_trial_002"
+
+    def test_graceful_degradation_when_all_candidates_excluded(self):
+        """When every SARIMAX candidate is excluded, the filter falls back to the full set."""
+        metrics_df = self._make_metrics_with_exclusion([True, True])
+        params = _make_params_monthly(active_families=["sarimax"])
+
+        # Should not raise; best overall wape wins from the full fallback set.
+        summary = select_monthly_family_champions(metrics_df, params)
+
+        assert len(summary) == 1
+        assert summary.iloc[0]["family_champion_id"] == "sarimax_trial_001"
+
+
+# ── Test 11: Rolling-origin M-2/M-3 metrics ──────────────────────────────────
+
+
+class TestScoreSarimaxRollingOriginMetrics:
+    """Rolling-origin M-2/M-3 WAPE columns present and reasonable in metrics rows."""
+
+    def _run_scorer_with_ro(self) -> list[dict]:
+        """Score with rolling-origin enabled; SARIMAX is mocked for all refits."""
+        fake_result = _make_fake_sarimax_result_with_resid(n_forecast=6, value=10.0)
+        sarimax_models = _make_sarimax_candidate_models(n_test=3)
+        sarimax_configs = _make_sarimax_prechampion_configs()
+        sarimax_metadata = _make_sarimax_training_metadata()
+        params = {
+            "date_column": "month_start_date",
+            "target_column": "monthly_demand",
+            "model_family": "sarimax",
+            "ljung_box": {"enabled": False},
+            "operational_lead_time": {"enabled": True, "lead_times": [2, 3]},
+        }
+
+        with patch(
+            "hdf_pipelines.pipelines.model_selection.monthly.nodes.SARIMAX"
+        ) as mock_cls, patch(
+            "hdf_pipelines.pipelines.model_selection.monthly.nodes.acorr_ljungbox",
+            return_value=pd.DataFrame({"lb_stat": [5.0], "lb_pvalue": [0.5]}),
+        ):
+            mock_cls.return_value.fit.return_value = fake_result
+            rows = _score_sarimax_candidates(
+                candidate_models=sarimax_models,
+                prechampion_configs=sarimax_configs,
+                training_metadata=sarimax_metadata,
+                train_df=_make_sarimax_train_df(),
+                validation_df=_make_sarimax_validation_df(),
+                test_df=_make_sarimax_test_df(n=3),
+                params=params,
+                mase_period=12,
+                require_all=True,
+            )
+        return rows
+
+    def test_rolling_origin_columns_present_in_rows(self):
+        rows = self._run_scorer_with_ro()
+        for row in rows:
+            assert "test_m2_wape" in row, "test_m2_wape missing from SARIMAX metrics row"
+            assert "test_m3_wape" in row, "test_m3_wape missing from SARIMAX metrics row"
+            assert "n_m2_pairs" in row
+            assert "n_m3_pairs" in row
+
+    def test_rolling_origin_wape_is_non_negative_or_none(self):
+        rows = self._run_scorer_with_ro()
+        for row in rows:
+            m2 = row.get("test_m2_wape")
+            m3 = row.get("test_m3_wape")
+            if m2 is not None:
+                assert m2 >= 0.0, f"test_m2_wape={m2} should be non-negative"
+            if m3 is not None:
+                assert m3 >= 0.0, f"test_m3_wape={m3} should be non-negative"
+
+    def test_rolling_origin_pair_counts_match_test_window(self):
+        """For a 3-month test: M-2 has 2 pairs and M-3 has 1 pair."""
+        rows = self._run_scorer_with_ro()
+        for row in rows:
+            assert row["n_m2_pairs"] <= 2  # noqa: PLR2004
+            assert row["n_m3_pairs"] <= 1
+
+
+class TestSelectChampionsRollingOriginTieBreakers:
+    """test_m3_wape and test_m2_wape used as tie-breakers in family champion selection."""
+
+    def test_tie_broken_by_m3_wape(self):
+        """When two candidates have equal wape, lower test_m3_wape wins."""
+        metrics_df = pd.DataFrame([
+            {
+                "family": "sarimax",
+                "candidate_id": "sarimax_trial_001",
+                "candidate_rank": 1,
+                "granularity": "monthly",
+                "selection_stage": "test",
+                "test_start_date": "2023-01-01",
+                "test_end_date": "2023-03-01",
+                "n_test_rows": 3,
+                "wape": 0.10,
+                "mase": 0.85,
+                "rmse": 4.5,
+                "bias": 0.0,
+                "test_m3_wape": 0.05,
+                "test_m2_wape": 0.08,
+                "autocorrelation_excluded": False,
+                "primary_metric": "wape",
+                "primary_metric_value": 0.10,
+                "is_family_champion": False,
+                "is_production_champion": False,
+            },
+            {
+                "family": "sarimax",
+                "candidate_id": "sarimax_trial_002",
+                "candidate_rank": 2,
+                "granularity": "monthly",
+                "selection_stage": "test",
+                "test_start_date": "2023-01-01",
+                "test_end_date": "2023-03-01",
+                "n_test_rows": 3,
+                "wape": 0.10,  # same wape
+                "mase": 0.90,
+                "rmse": 5.0,
+                "bias": 0.0,
+                "test_m3_wape": 0.12,  # worse M-3
+                "test_m2_wape": 0.07,
+                "autocorrelation_excluded": False,
+                "primary_metric": "wape",
+                "primary_metric_value": 0.10,
+                "is_family_champion": False,
+                "is_production_champion": False,
+            },
+        ])
+        params = _make_params_monthly(active_families=["sarimax"])
+        # Inject test_m3_wape / test_m2_wape into tie_breakers to match YAML update.
+        params["tie_breakers"] = ["test_m3_wape", "test_m2_wape", "mase", "rmse", "abs_bias"]
+
+        summary = select_monthly_family_champions(metrics_df, params)
+
+        assert len(summary) == 1
+        # trial_001 has lower test_m3_wape (0.05 < 0.12) → wins the tie.
+        assert summary.iloc[0]["family_champion_id"] == "sarimax_trial_001"

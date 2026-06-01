@@ -1,4 +1,4 @@
-"""Tests for monthly SARIMAX training nodes."""
+"""Tests for monthly SARIMAX training nodes (Optuna-based tuning)."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import pandas as pd
 import pytest
 
 from hdf_pipelines.pipelines.train_monthly.sarimax.nodes import (
-    _build_param_grid,
+    _build_sarimax_config_from_trial,
     _compute_validation_metrics,
     _rank_candidates,
     train_and_evaluate_monthly_sarimax_candidates,
@@ -47,11 +47,12 @@ def _build_split_metadata(exog_cols: list[str] | None = None) -> dict:
 
 
 def _build_params(
-    order_grid: list | None = None,
-    seasonal_order_grid: list | None = None,
     use_exog: bool = False,
     top_n: int = 2,
+    max_trials: int = 2,
+    seed: int = 42,
 ) -> dict[str, Any]:
+    """Build Optuna-based SARIMAX params for testing with a small search budget."""
     return {
         "date_column": "month_start_date",
         "target_column": "monthly_demand",
@@ -59,12 +60,24 @@ def _build_params(
         "top_n_prechampions": top_n,
         "metrics": {"mase_seasonal_period": 12, "epsilon": 1.0},
         "tuning": {
-            "order_grid": order_grid or [[1, 1, 1]],
-            "seasonal_order_grid": seasonal_order_grid or [[0, 1, 1, 12]],
-            "trend_options": [None],
-            "enforce_stationarity_options": [False],
-            "enforce_invertibility_options": [False],
+            "optimizer": "optuna",
+            "max_trials": max_trials,
             "use_exog": use_exog,
+            "sampler": {"name": "tpe", "seed": seed},
+            "search_space": {
+                "p": {"type": "int", "low": 0, "high": 1},
+                "d": {"type": "int", "low": 0, "high": 1},
+                "q": {"type": "int", "low": 0, "high": 1},
+                "P": {"type": "int", "low": 0, "high": 1},
+                "D": {"type": "int", "low": 0, "high": 1},
+                "Q": {"type": "int", "low": 0, "high": 1},
+                "trend": {"type": "categorical", "choices": ["none", "n"]},
+            },
+            "fixed_params": {
+                "s": 12,
+                "enforce_stationarity": False,
+                "enforce_invertibility": False,
+            },
         },
     }
 
@@ -93,30 +106,41 @@ def _make_fake_sarimax_class(predictions: list[float] | None = None, fail: bool 
 # ── unit tests ────────────────────────────────────────────────────────────────
 
 
-class TestBuildParamGrid:
-    def test_cartesian_product_of_order_and_seasonal(self):
-        cfg = {
-            "order_grid": [[1, 1, 1], [0, 1, 1]],
-            "seasonal_order_grid": [[0, 1, 1, 12], [1, 1, 0, 12]],
-            "trend_options": [None],
-            "enforce_stationarity_options": [False],
-            "enforce_invertibility_options": [False],
+class TestBuildSarimaxConfigFromTrial:
+    def test_assembles_order_and_seasonal_order(self):
+        params = {
+            "p": 1, "d": 1, "q": 1,
+            "P": 0, "D": 1, "Q": 1,
+            "trend": "none",
+            "enforce_stationarity": False,
+            "enforce_invertibility": False,
+            "s": 12,
         }
-        grid = _build_param_grid(cfg)
-        assert len(grid) == 4  # 2 × 2 × 1 × 1 × 1
+        config = _build_sarimax_config_from_trial(params, s=12)
+        assert config["order"] == [1, 1, 1]
+        assert config["seasonal_order"] == [0, 1, 1, 12]
 
-    def test_single_config_produces_one_entry(self):
-        cfg = {
-            "order_grid": [[1, 1, 1]],
-            "seasonal_order_grid": [[0, 1, 1, 12]],
-            "trend_options": [None],
-            "enforce_stationarity_options": [False],
-            "enforce_invertibility_options": [False],
-        }
-        grid = _build_param_grid(cfg)
-        assert len(grid) == 1
-        assert grid[0]["order"] == [1, 1, 1]
-        assert grid[0]["seasonal_order"] == [0, 1, 1, 12]
+    def test_trend_none_string_maps_to_python_none(self):
+        params = {"p": 0, "d": 1, "q": 1, "P": 0, "D": 1, "Q": 1, "trend": "none"}
+        config = _build_sarimax_config_from_trial(params, s=12)
+        assert config["trend"] is None
+
+    def test_trend_string_values_preserved(self):
+        for trend_str in ["n", "c", "t", "ct"]:
+            params = {"p": 0, "d": 1, "q": 1, "P": 0, "D": 1, "Q": 1, "trend": trend_str}
+            config = _build_sarimax_config_from_trial(params, s=12)
+            assert config["trend"] == trend_str
+
+    def test_s_sets_seasonal_period(self):
+        params = {"p": 1, "d": 1, "q": 1, "P": 0, "D": 1, "Q": 1, "trend": "none"}
+        config = _build_sarimax_config_from_trial(params, s=6)
+        assert config["seasonal_order"][3] == 6
+
+    def test_enforce_flags_default_to_false(self):
+        params = {"p": 0, "d": 1, "q": 1, "P": 0, "D": 1, "Q": 1, "trend": "none"}
+        config = _build_sarimax_config_from_trial(params, s=12)
+        assert config["enforce_stationarity"] is False
+        assert config["enforce_invertibility"] is False
 
 
 class TestComputeValidationMetrics:
@@ -129,18 +153,17 @@ class TestComputeValidationMetrics:
 
     def test_mase_uses_configured_seasonal_period(self):
         y_true = np.array([10.0, 20.0, 30.0])
-        y_pred = np.array([10.0, 20.0, 30.0])  # perfect forecast → mase=0
+        y_pred = np.array([10.0, 20.0, 30.0])
         y_train = np.linspace(1.0, 10.0, 24)
         metrics_12 = _compute_validation_metrics(y_true, y_pred, y_train, 12, 1.0)
         metrics_3 = _compute_validation_metrics(y_true, y_pred, y_train, 3, 1.0)
-        # Both should compute mase (not None) for 24 training points
         assert metrics_12["mase"] is not None
         assert metrics_3["mase"] is not None
 
     def test_mase_is_none_when_train_too_short(self):
         y_true = np.array([10.0, 20.0])
         y_pred = np.array([10.0, 20.0])
-        y_train = np.array([5.0, 6.0, 7.0])  # shorter than seasonal period
+        y_train = np.array([5.0, 6.0, 7.0])
         metrics = _compute_validation_metrics(y_true, y_pred, y_train, 12, 1.0)
         assert metrics["mase"] is None
 
@@ -164,7 +187,7 @@ class TestRankCandidates:
         df = self._make_df()
         ranked = _rank_candidates(df, "wape", "minimize")
         successful = ranked[ranked["status"] == "success"].sort_values("rank")
-        assert successful.iloc[0]["trial_id"] == "t2"  # wape=0.1 is best
+        assert successful.iloc[0]["trial_id"] == "t2"
         assert successful.iloc[1]["trial_id"] == "t4"
         assert successful.iloc[2]["trial_id"] == "t1"
 
@@ -178,7 +201,7 @@ class TestRankCandidates:
         df = self._make_df()
         ranked = _rank_candidates(df, "wape", "maximize")
         successful = ranked[ranked["status"] == "success"].sort_values("rank")
-        assert successful.iloc[0]["trial_id"] == "t1"  # 0.3 is highest
+        assert successful.iloc[0]["trial_id"] == "t1"
 
 
 class TestTrainAndEvaluateMonthlySarimaxCandidates:
@@ -222,6 +245,26 @@ class TestTrainAndEvaluateMonthlySarimaxCandidates:
         required = {"trial_id", "status", "model_family", "granularity", "wape", "rmse", "bias"}
         assert required.issubset(set(tuning_df.columns))
 
+    def test_training_metadata_contains_optuna_fields(self):
+        train, val = _build_train_val_inputs()
+        metadata = _build_split_metadata()
+        params = _build_params()
+        FakeSARIMAX = _make_fake_sarimax_class()
+
+        with patch(
+            "hdf_pipelines.pipelines.train_monthly.sarimax.nodes.SARIMAX",
+            new=FakeSARIMAX,
+        ):
+            _, _, _, _, training_metadata, _ = train_and_evaluate_monthly_sarimax_candidates(
+                train, val, metadata, params
+            )
+
+        assert training_metadata["optimizer"] == "optuna"
+        assert "n_trials_completed" in training_metadata
+        assert "n_trials_pruned" in training_metadata
+        assert "study_direction" in training_metadata
+        assert training_metadata["study_direction"] == "minimize"
+
     def test_validation_metrics_include_required_metrics(self):
         train, val = _build_train_val_inputs()
         metadata = _build_split_metadata()
@@ -241,10 +284,7 @@ class TestTrainAndEvaluateMonthlySarimaxCandidates:
     def test_candidate_monthly_sarimax_is_rank_one(self):
         train, val = _build_train_val_inputs()
         metadata = _build_split_metadata()
-        params = _build_params(
-            order_grid=[[1, 1, 1], [0, 1, 1]],
-            seasonal_order_grid=[[0, 1, 1, 12]],
-        )
+        params = _build_params(max_trials=3, top_n=2)
         FakeSARIMAX = _make_fake_sarimax_class()
 
         with patch(
@@ -265,11 +305,7 @@ class TestTrainAndEvaluateMonthlySarimaxCandidates:
         """One failing config should not abort the entire training run."""
         train, val = _build_train_val_inputs()
         metadata = _build_split_metadata()
-        # Two configs: one will fail, one will succeed via alternating mock
-        params = _build_params(
-            order_grid=[[1, 1, 1], [2, 1, 1]],
-            seasonal_order_grid=[[0, 1, 1, 12]],
-        )
+        params = _build_params(max_trials=3)
 
         call_count = {"n": 0}
 
@@ -319,7 +355,7 @@ class TestTrainAndEvaluateMonthlySarimaxCandidates:
         train, val = _build_train_val_inputs()
         metadata = _build_split_metadata()
         params = _build_params()
-        params["metrics"]["mase_seasonal_period"] = 6  # override to 6
+        params["metrics"]["mase_seasonal_period"] = 6
         FakeSARIMAX = _make_fake_sarimax_class()
 
         with patch(
@@ -330,23 +366,18 @@ class TestTrainAndEvaluateMonthlySarimaxCandidates:
                 train_and_evaluate_monthly_sarimax_candidates(train, val, metadata, params)
             )
 
-        # Metadata must reflect the configured seasonal period
         assert training_metadata["seasonal_period"] == 6
-        # val_metrics_df must record it too
         assert (val_metrics_df["seasonal_period"] == 6).all()
 
     def test_ranks_successful_candidates_deterministically(self):
+        """With a fixed TPE seed, two identical runs must produce the same trial order."""
         train, val = _build_train_val_inputs()
         metadata = _build_split_metadata()
-        params = _build_params(
-            order_grid=[[1, 1, 1], [0, 1, 1]],
-            seasonal_order_grid=[[0, 1, 1, 12]],
-            top_n=2,
-        )
+        params = _build_params(max_trials=3, seed=42)
         FakeSARIMAX = _make_fake_sarimax_class()
 
-        results_a = []
-        results_b = []
+        results_a: list[str] = []
+        results_b: list[str] = []
         for result_list in (results_a, results_b):
             with patch(
                 "hdf_pipelines.pipelines.train_monthly.sarimax.nodes.SARIMAX",
@@ -416,3 +447,119 @@ class TestTrainAndEvaluateMonthlySarimaxCandidates:
                 train_and_evaluate_monthly_sarimax_candidates(
                     bad_train, val, metadata, params
                 )
+
+    def test_candidate_models_contain_exogenous_columns_when_exog_used(self):
+        train, val = _build_train_val_inputs()
+        train["some_exog"] = np.linspace(0.1, 1.0, len(train))
+        val["some_exog"] = np.linspace(0.1, 1.0, len(val))
+        metadata = _build_split_metadata(exog_cols=["some_exog"])
+        params = _build_params(use_exog=True)
+        FakeSARIMAX = _make_fake_sarimax_class()
+
+        with patch(
+            "hdf_pipelines.pipelines.train_monthly.sarimax.nodes.SARIMAX",
+            new=FakeSARIMAX,
+        ):
+            _, _, _, candidate_models, _, _ = train_and_evaluate_monthly_sarimax_candidates(
+                train, val, metadata, params
+            )
+
+        for _cid, entry in candidate_models.items():
+            assert "exogenous_columns" in entry
+            assert entry["exogenous_columns"] == ["some_exog"]
+
+    def test_candidate_monthly_sarimax_contains_exogenous_columns(self):
+        train, val = _build_train_val_inputs()
+        train["feat_a"] = np.linspace(0.0, 1.0, len(train))
+        val["feat_a"] = np.linspace(0.0, 1.0, len(val))
+        metadata = _build_split_metadata(exog_cols=["feat_a"])
+        params = _build_params(use_exog=True)
+        FakeSARIMAX = _make_fake_sarimax_class()
+
+        with patch(
+            "hdf_pipelines.pipelines.train_monthly.sarimax.nodes.SARIMAX",
+            new=FakeSARIMAX,
+        ):
+            _, _, _, _, _, candidate = train_and_evaluate_monthly_sarimax_candidates(
+                train, val, metadata, params
+            )
+
+        assert "exogenous_columns" in candidate
+        assert candidate["exogenous_columns"] == ["feat_a"]
+
+    def test_prechampion_configs_candidates_contain_exogenous_columns(self):
+        train, val = _build_train_val_inputs()
+        train["exog_feature"] = np.linspace(0.0, 1.0, len(train))
+        val["exog_feature"] = np.linspace(0.0, 1.0, len(val))
+        metadata = _build_split_metadata(exog_cols=["exog_feature"])
+        params = _build_params(use_exog=True)
+        FakeSARIMAX = _make_fake_sarimax_class()
+
+        with patch(
+            "hdf_pipelines.pipelines.train_monthly.sarimax.nodes.SARIMAX",
+            new=FakeSARIMAX,
+        ):
+            _, _, prechampion_configs, _, _, _ = train_and_evaluate_monthly_sarimax_candidates(
+                train, val, metadata, params
+            )
+
+        for cand in prechampion_configs["candidates"]:
+            assert "exogenous_columns" in cand
+            assert cand["exogenous_columns"] == ["exog_feature"]
+
+    def test_max_failed_trials_stops_optuna_search_early(self):
+        """max_failed_trials callback should stop study before all max_trials run."""
+        train, val = _build_train_val_inputs()
+        metadata = _build_split_metadata()
+        params = _build_params(max_trials=5)
+        params["max_failed_trials"] = 1
+
+        call_count: dict[str, int] = {"n": 0}
+
+        class FirstSucceedsThenFails:
+            def __init__(self, endog, exog=None, **kwargs):
+                call_count["n"] += 1
+                # Trial 1 succeeds; everything after fails.
+                if call_count["n"] > 1:
+                    raise ValueError("synthetic failure for early-stopping test")
+
+            def fit(self, disp=False):
+                result = MagicMock()
+                result.get_forecast.return_value.predicted_mean = pd.Series([15.5, 16.5, 17.5])
+                return result
+
+        with patch(
+            "hdf_pipelines.pipelines.train_monthly.sarimax.nodes.SARIMAX",
+            new=FirstSucceedsThenFails,
+        ):
+            tuning_df, _, _, _, training_metadata, _ = (
+                train_and_evaluate_monthly_sarimax_candidates(train, val, metadata, params)
+            )
+
+        # Study stopped early: fewer rows than max_trials=5.
+        assert len(tuning_df) < 5, f"Expected early stopping; got {len(tuning_df)} trial rows"
+        assert training_metadata["n_trials_failed"] >= 1
+        assert training_metadata["n_trials_successful"] >= 1
+
+    def test_nan_predictions_treated_as_failed_trial(self):
+        train, val = _build_train_val_inputs()
+        metadata = _build_split_metadata()
+        params = _build_params()
+
+        class NanPredictingSARIMAX:
+            def __init__(self, endog, exog=None, **kwargs):
+                pass
+
+            def fit(self, disp=False):
+                result = MagicMock()
+                result.get_forecast.return_value.predicted_mean = pd.Series(
+                    [float("nan"), float("nan"), float("nan")]
+                )
+                return result
+
+        with patch(
+            "hdf_pipelines.pipelines.train_monthly.sarimax.nodes.SARIMAX",
+            new=NanPredictingSARIMAX,
+        ):
+            with pytest.raises(RuntimeError, match="All SARIMAX trials failed"):
+                train_and_evaluate_monthly_sarimax_candidates(train, val, metadata, params)
