@@ -1538,6 +1538,31 @@ def adapt_monthly_data_for_catboost(
         if col not in {date_column, target_column, sku_column} and col not in new_columns
     ]
 
+    # Target-derived columns that cannot be known at future inference time without
+    # re-computing them from arriving actuals (lags, rolling, diffs, pct_changes).
+    _target_derived_prefixes = (
+        "demand_lag_",
+        "rolling_mean_",
+        "rolling_std_",
+        "rolling_min_",
+        "rolling_max_",
+        "rolling_mean_3_vs_12",
+        "demand_diff_",
+        "demand_pct_change_",
+    )
+    future_required_columns = [
+        col for col in all_feature_columns
+        if not any(col.startswith(prefix) for prefix in _target_derived_prefixes)
+        and col != "rolling_mean_3_vs_12"
+    ]
+
+    # Columns expected to be structurally null at the boundary of the lag warmup
+    # window (e.g. demand_diff_12 requires 13 + 1 prior observations).
+    structural_null_columns = [
+        col for col in all_feature_columns
+        if col.startswith("demand_diff_") or col.startswith("demand_pct_change_")
+    ]
+
     catboost_metadata: dict[str, Any] = {
         "granularity": "monthly",
         "model_family": "catboost",
@@ -1545,6 +1570,9 @@ def adapt_monthly_data_for_catboost(
         "target_column": target_column,
         "sku_column": sku_column,
         "all_feature_columns": all_feature_columns,
+        "categorical_feature_columns": [],
+        "null_handling_policy": "catboost_native",
+        "structural_null_columns": structural_null_columns,
         "base_feature_columns": base_feature_columns,
         "new_feature_columns": new_columns,
         "target_lag_columns": target_lag_cols,
@@ -1553,7 +1581,7 @@ def adapt_monthly_data_for_catboost(
             c for c in new_columns
             if c.startswith("demand_diff_") or c.startswith("demand_pct_change_")
         ],
-        "future_required_columns": base_feature_columns,
+        "future_required_columns": future_required_columns,
         "lag_settings": {"target_lags": target_lags},
         "rolling_settings": {
             "windows": rolling_windows,
