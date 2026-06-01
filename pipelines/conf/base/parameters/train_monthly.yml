@@ -46,8 +46,8 @@ train_monthly:
       objective:
         metric: "wape"
         direction: "minimize"
-      max_trials: 15
-      top_n_prechampions: 5
+      max_trials: 50
+      top_n_prechampions: 10
       sampler:
         name: "tpe"
         seed: ${random_seed}
@@ -102,7 +102,7 @@ train_monthly:
       metric: "wape"
       direction: "minimize"
     top_n_prechampions: 10
-    max_failed_trials: 60
+    max_failed_trials: 30
     validation:
       forecast_steps: 3
     metrics:
@@ -110,7 +110,7 @@ train_monthly:
       epsilon: 1.0
     tuning:
       optimizer: "optuna"
-      max_trials: 20
+      max_trials: 60
       use_exog: true
       sampler:
         name: "tpe"
@@ -142,7 +142,7 @@ train_monthly:
           high: 2
         trend:
           type: "categorical"
-          choices: ["none", "n", "c", "t"]
+          choices: ["none", "n"] #"c", "t"
       fixed_params:
         s: 12
         enforce_stationarity: false

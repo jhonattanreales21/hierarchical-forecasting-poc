@@ -4,6 +4,7 @@ import pandas as pd
 import pytest
 
 from hdf_pipelines.pipelines.model_input_preparation.nodes import (
+    adapt_monthly_data_for_catboost,
     adapt_monthly_data_for_prophet,
     adapt_monthly_data_for_sarimax,
     build_monthly_modeling_data,
@@ -615,3 +616,226 @@ def test_sarimax_adapter_metadata_contract():
         info = sarimax_meta["splits"][split_name]
         assert {"rows", "start", "end", "missing_periods"} <= info.keys()
     assert sarimax_meta["created_by"] == "model_input_preparation.sarimax_adapter"
+
+
+# ── CatBoost adapter ──────────────────────────────────────────────────────────
+
+_N_MONTHS = 15
+_CB_TRAIN_END = "2025-01-01"
+_CB_VAL_END = "2025-02-01"
+_CB_TEST_END = "2025-03-01"
+
+
+def _catboost_parameters() -> dict:
+    """Minimal parameter block for CatBoost adapter unit tests."""
+    return {
+        "monthly_catboost": {
+            "date_column": "month_start_date",
+            "target_column": "monthly_demand",
+            "sku_column": "sku",
+            "target_lags": [1, 2, 3],
+            "rolling_windows": [3],
+            "include_rolling_std": False,
+            "include_rolling_min_max": False,
+            "trend_diffs": [1],
+            "trend_pct_changes": [],
+            "drop_rows_with_null_target_features": True,
+            "include_missingness_flags": False,
+            "missingness_flag_columns": [],
+        }
+    }
+
+
+def _catboost_split_metadata(
+    train_end: str = _CB_TRAIN_END,
+    val_end: str = _CB_VAL_END,
+    test_end: str = _CB_TEST_END,
+) -> dict:
+    """Minimal split metadata dict for CatBoost adapter tests."""
+    return {
+        "train": {"start_date": "2024-01-01", "end_date": train_end, "rows": 13},
+        "validation": {"start_date": _CB_VAL_END, "end_date": val_end, "rows": 1},
+        "test": {"start_date": _CB_TEST_END, "end_date": test_end, "rows": 1},
+        "full_train": {"start_date": "2024-01-01", "end_date": test_end, "rows": _N_MONTHS},
+    }
+
+
+def _catboost_full_train_df(n_months: int = _N_MONTHS) -> pd.DataFrame:
+    """Generic monthly full_train DataFrame for CatBoost adapter tests.
+
+    Demand is a linear sequence starting at 100 with step 10, making expected
+    lag and rolling values easy to compute by hand for assertion.
+    """
+    return pd.DataFrame({
+        "month_start_date": pd.date_range("2024-01-01", periods=n_months, freq="MS"),
+        "monthly_demand": [float(100 + i * 10) for i in range(n_months)],
+        "sku": ["SKU-1"] * n_months,
+        "business_days": [20] * n_months,
+        "pfizer_limited": [0.5] * n_months,
+    })
+
+
+def _split_catboost_df(
+    full_train: pd.DataFrame,
+    train_end: str = _CB_TRAIN_END,
+    val_end: str = _CB_VAL_END,
+    test_end: str = _CB_TEST_END,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Create train/validation/test splits from a full_train DataFrame."""
+    d = "month_start_date"
+    t, v, te = pd.Timestamp(train_end), pd.Timestamp(val_end), pd.Timestamp(test_end)
+    return (
+        full_train[full_train[d] <= t].copy(),
+        full_train[(full_train[d] > t) & (full_train[d] <= v)].copy(),
+        full_train[(full_train[d] > v) & (full_train[d] <= te)].copy(),
+    )
+
+
+def test_catboost_adapter_adds_target_lag_rolling_and_month_columns():
+    """Adapter must produce demand_lag_n, rolling_mean_w, demand_diff_p, and month columns."""
+    full_train = _catboost_full_train_df()
+    train, val, test = _split_catboost_df(full_train)
+    metadata = _catboost_split_metadata()
+
+    cb_train, _, _, _, _ = adapt_monthly_data_for_catboost(
+        train, val, test, full_train, metadata, _catboost_parameters()
+    )
+
+    for col in ("demand_lag_1", "demand_lag_2", "demand_lag_3", "rolling_mean_3", "demand_diff_1", "month"):
+        assert col in cb_train.columns, f"Expected column '{col}' not found in catboost_train."
+
+
+def test_catboost_adapter_demand_lag_1_equals_previous_month_demand():
+    """demand_lag_1 at month t must equal monthly_demand at month t-1."""
+    full_train = _catboost_full_train_df()
+    train, val, test = _split_catboost_df(full_train)
+    metadata = _catboost_split_metadata()
+
+    _, _, _, cb_full_train, _ = adapt_monthly_data_for_catboost(
+        train, val, test, full_train, metadata, _catboost_parameters()
+    )
+
+    sorted_ft = cb_full_train.sort_values("month_start_date").reset_index(drop=True)
+    for i in range(len(sorted_ft)):
+        curr_date = sorted_ft.loc[i, "month_start_date"]
+        prev_date = curr_date - pd.offsets.MonthBegin(1)
+        prev_rows = full_train[full_train["month_start_date"] == prev_date]
+        if not prev_rows.empty:
+            expected = float(prev_rows.iloc[0]["monthly_demand"])
+            actual = float(sorted_ft.loc[i, "demand_lag_1"])
+            assert actual == expected, (
+                f"At {curr_date.date()}: demand_lag_1={actual}, expected={expected}"
+            )
+
+
+def test_catboost_adapter_drops_leading_null_rows_from_train():
+    """Leading train rows with null target lags are dropped; count is recorded in metadata."""
+    full_train = _catboost_full_train_df()
+    train, val, test = _split_catboost_df(full_train)
+    metadata = _catboost_split_metadata()
+    # target_lags=[1,2,3] — first 3 rows have null lags.
+
+    cb_train, _, _, _, split_meta = adapt_monthly_data_for_catboost(
+        train, val, test, full_train, metadata, _catboost_parameters()
+    )
+
+    assert cb_train["demand_lag_3"].isna().sum() == 0
+    assert cb_train["demand_lag_1"].isna().sum() == 0
+    assert split_meta["dropped_rows"]["null_target_features_in_train"] == 3
+
+
+def test_catboost_adapter_validation_and_test_have_no_null_target_lags():
+    """Validation and test splits must not have null target lag features."""
+    full_train = _catboost_full_train_df()
+    train, val, test = _split_catboost_df(full_train)
+    metadata = _catboost_split_metadata()
+
+    _, cb_val, cb_test, _, _ = adapt_monthly_data_for_catboost(
+        train, val, test, full_train, metadata, _catboost_parameters()
+    )
+
+    lag_cols = ["demand_lag_1", "demand_lag_2", "demand_lag_3"]
+    assert cb_val[lag_cols].isnull().sum().sum() == 0
+    assert cb_test[lag_cols].isnull().sum().sum() == 0
+
+
+def test_catboost_adapter_month_column_reflects_calendar_month():
+    """The 'month' column must equal month_start_date.dt.month for every row."""
+    full_train = _catboost_full_train_df()
+    train, val, test = _split_catboost_df(full_train)
+    metadata = _catboost_split_metadata()
+
+    _, cb_val, cb_test, _, _ = adapt_monthly_data_for_catboost(
+        train, val, test, full_train, metadata, _catboost_parameters()
+    )
+
+    assert cb_val["month"].tolist() == [2]   # 2025-02
+    assert cb_test["month"].tolist() == [3]  # 2025-03
+
+
+def test_catboost_adapter_rolling_mean_3_is_leakage_free():
+    """rolling_mean_3 at month t must equal mean(demand[t-1], demand[t-2], demand[t-3])."""
+    full_train = _catboost_full_train_df()
+    train, val, test = _split_catboost_df(full_train)
+    metadata = _catboost_split_metadata()
+
+    _, _, _, cb_full_train, _ = adapt_monthly_data_for_catboost(
+        train, val, test, full_train, metadata, _catboost_parameters()
+    )
+
+    # demand = [100, 110, 120, 130, ...]
+    # At 2024-04-01 (index 3): rolling_mean_3 = mean(120, 110, 100) = 110.0
+    row = cb_full_train[cb_full_train["month_start_date"] == pd.Timestamp("2024-04-01")]
+    assert len(row) == 1
+    expected = (100.0 + 110.0 + 120.0) / 3.0
+    assert abs(float(row.iloc[0]["rolling_mean_3"]) - expected) < 1e-9
+
+
+def test_catboost_adapter_split_boundaries_match_metadata():
+    """Train/validation/test max dates must not exceed the boundaries from split metadata."""
+    full_train = _catboost_full_train_df()
+    train, val, test = _split_catboost_df(full_train)
+    metadata = _catboost_split_metadata()
+
+    cb_train, cb_val, cb_test, _, _ = adapt_monthly_data_for_catboost(
+        train, val, test, full_train, metadata, _catboost_parameters()
+    )
+
+    assert cb_train["month_start_date"].max() <= pd.Timestamp(_CB_TRAIN_END)
+    assert cb_val["month_start_date"].max() <= pd.Timestamp(_CB_VAL_END)
+    assert cb_test["month_start_date"].max() <= pd.Timestamp(_CB_TEST_END)
+
+
+def test_catboost_adapter_metadata_contract():
+    """catboost_split_metadata must document model_family, feature columns, and split diagnostics."""
+    full_train = _catboost_full_train_df()
+    train, val, test = _split_catboost_df(full_train)
+    metadata = _catboost_split_metadata()
+
+    _, _, _, _, split_meta = adapt_monthly_data_for_catboost(
+        train, val, test, full_train, metadata, _catboost_parameters()
+    )
+
+    assert split_meta["model_family"] == "catboost"
+    assert split_meta["granularity"] == "monthly"
+    assert split_meta["created_by"] == "model_input_preparation.catboost_adapter"
+    assert "demand_lag_1" in split_meta["target_lag_columns"]
+    assert "rolling_mean_3" in split_meta["rolling_feature_columns"]
+    assert "demand_diff_1" in split_meta["trend_feature_columns"]
+    assert "all_feature_columns" in split_meta
+    assert "future_required_columns" in split_meta
+    for split_name in ("train", "validation", "test", "full_train"):
+        assert split_name in split_meta["splits"]
+
+
+def test_catboost_adapter_full_train_contains_all_splits():
+    """catboost_full_train must be the union of train, validation, and test rows."""
+    full_train = _catboost_full_train_df()
+    train, val, test = _split_catboost_df(full_train)
+    metadata = _catboost_split_metadata()
+
+    cb_train, cb_val, cb_test, cb_full_train, _ = adapt_monthly_data_for_catboost(
+        train, val, test, full_train, metadata, _catboost_parameters()
+    )
+
+    assert len(cb_full_train) == len(cb_train) + len(cb_val) + len(cb_test)

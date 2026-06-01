@@ -121,6 +121,27 @@ monthly_future_12m:
   type: pandas.ParquetDataset
   filepath: data/05_model_input/monthly_future_12m.parquet
 
+# 05_model_input — CatBoost monthly model-ready datasets
+monthly_catboost_train:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/monthly_catboost_train.parquet
+
+monthly_catboost_validation:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/monthly_catboost_validation.parquet
+
+monthly_catboost_test:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/monthly_catboost_test.parquet
+
+monthly_catboost_full_train:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/monthly_catboost_full_train.parquet
+
+monthly_catboost_split_metadata:
+  type: json.JSONDataset
+  filepath: data/05_model_input/monthly_catboost_split_metadata.json
+
 # 05_model_input — SARIMAX monthly model-ready datasets
 monthly_sarimax_train:
   type: pandas.ParquetDataset

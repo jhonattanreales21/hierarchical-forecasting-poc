@@ -14,6 +14,7 @@ Flow:
 from kedro.pipeline import Pipeline, node, pipeline
 
 from .nodes import (
+    adapt_monthly_data_for_catboost,
     adapt_monthly_data_for_prophet,
     adapt_monthly_data_for_sarimax,
     build_monthly_generic_future_frames,
@@ -165,6 +166,26 @@ def create_pipeline(**kwargs) -> Pipeline:
                     "monthly_future_12m",
                 ],
                 name="build_monthly_generic_future_frames",
+            ),
+            # ── Step 9: CatBoost adapter ──────────────────────────────────────
+            node(
+                func=adapt_monthly_data_for_catboost,
+                inputs=[
+                    "monthly_train",
+                    "monthly_validation",
+                    "monthly_test",
+                    "monthly_full_train",
+                    "monthly_split_metadata",
+                    "params:model_input_preparation",
+                ],
+                outputs=[
+                    "monthly_catboost_train",
+                    "monthly_catboost_validation",
+                    "monthly_catboost_test",
+                    "monthly_catboost_full_train",
+                    "monthly_catboost_split_metadata",
+                ],
+                name="adapt_monthly_data_for_catboost",
             ),
         ]
     )
