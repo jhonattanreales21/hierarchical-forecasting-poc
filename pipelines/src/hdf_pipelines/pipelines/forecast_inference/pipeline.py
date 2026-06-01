@@ -1,48 +1,53 @@
-"""Forecast inference pipeline: Monthly Prophet champion → official forecast outputs."""
+"""Forecast inference pipeline: metadata-driven monthly champion → forecast outputs."""
 
 from kedro.pipeline import Pipeline, node, pipeline
 
-from .nodes import generate_monthly_prophet_forecasts
+from .nodes import generate_monthly_champion_forecasts
 
 
 def create_pipeline(**kwargs) -> Pipeline:
-    """Create the Monthly Prophet forecast inference pipeline.
+    """Create the metadata-driven monthly forecast inference pipeline.
+
+    Loads the generic production champion (Prophet or SARIMAX) and dispatches
+    inference by ``champion_monthly_metadata["model_family"]``, producing a single
+    standardized monthly forecast schema for every supported family.
 
     Inputs (from catalog):
-        monthly_prophet_champion_model
-        monthly_prophet_champion_metadata
+        champion_monthly_model
+        champion_monthly_metadata
         monthly_prophet_future_3m
         monthly_prophet_future_6m
         monthly_prophet_future_12m
-        params:forecast_inference.monthly_prophet
+        params:forecast_inference.monthly
 
     Outputs (to catalog):
-        monthly_prophet_forecast_3m
-        monthly_prophet_forecast_6m
-        monthly_prophet_forecast_12m
-        monthly_prophet_forecast_latest
-        monthly_prophet_inference_metadata
+        monthly_forecast_3m
+        monthly_forecast_6m
+        monthly_forecast_12m
+        monthly_forecast_latest
+        monthly_inference_metadata
     """
     return pipeline(
         [
             node(
-                func=generate_monthly_prophet_forecasts,
+                func=generate_monthly_champion_forecasts,
                 inputs=[
-                    "monthly_prophet_champion_model",
-                    "monthly_prophet_champion_metadata",
+                    "champion_monthly_model",
+                    "champion_monthly_metadata",
+                    # Temporary compatibility source until generic future frames exist.
                     "monthly_prophet_future_3m",
                     "monthly_prophet_future_6m",
                     "monthly_prophet_future_12m",
-                    "params:forecast_inference.monthly_prophet",
+                    "params:forecast_inference.monthly",
                 ],
                 outputs=[
-                    "monthly_prophet_forecast_3m",
-                    "monthly_prophet_forecast_6m",
-                    "monthly_prophet_forecast_12m",
-                    "monthly_prophet_forecast_latest",
-                    "monthly_prophet_inference_metadata",
+                    "monthly_forecast_3m",
+                    "monthly_forecast_6m",
+                    "monthly_forecast_12m",
+                    "monthly_forecast_latest",
+                    "monthly_inference_metadata",
                 ],
-                name="generate_monthly_prophet_forecasts",
+                name="generate_monthly_champion_forecasts",
             ),
         ]
     )
