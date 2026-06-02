@@ -1169,12 +1169,14 @@ def build_monthly_generic_future_frames(
     """Build family-agnostic future feature frames for each supported forecast horizon.
 
     Produces three DataFrames (3m, 6m, 12m) with schema
-    ``[month_start_date, sku, *active_regressors]``.  These are the canonical inputs
-    for metadata-driven champion inference regardless of the elected model family.
-    Calendar features are reused from ``monthly_calendar_features`` where available
-    and computed deterministically for missing future months. Exogenous regressors are
-    looked up from ``monthly_exogenous_features`` and must be fully available for all
-    future months.
+    ``[month_start_date, sku, *active_regressors, month]``.  These are the canonical
+    inputs for metadata-driven champion inference regardless of the elected model
+    family. Calendar features are reused from ``monthly_calendar_features`` where
+    available and computed deterministically for missing future months. Exogenous
+    regressors are looked up from ``monthly_exogenous_features`` and must be fully
+    available for all future months. The deterministic ``month`` calendar feature is
+    appended so tabular champions (e.g. CatBoost) have every future-known feature they
+    require; families that ignore it are unaffected.
 
     Args:
         monthly_modeling_data: Generic modeling DataFrame with columns
@@ -1253,6 +1255,13 @@ def build_monthly_generic_future_frames(
             [[date_column, sku_column, *active_regressors]]
             .sort_values([sku_column, date_column])
             .reset_index(drop=True)
+        )
+
+        # Deterministic calendar feature required by tabular champions (e.g. CatBoost)
+        # but not part of the Prophet/SARIMAX active regressor set. It is always known
+        # at inference time and is harmless to families that ignore it.
+        future_dataset["month"] = (
+            pd.to_datetime(future_dataset[date_column]).dt.month.astype("int64")
         )
 
         if target_column in future_dataset.columns:

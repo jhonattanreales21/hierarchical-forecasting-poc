@@ -72,10 +72,10 @@ train_monthly:
           choices: ["additive", "multiplicative"]
         prior_scale_pfizer_limited_lag_1:
           type: "categorical"
-          choices: [1, 5, 10, 20, 25]
+          choices: [5, 10, 20, 25]
         prior_scale_pfizer_limited_lag_2:
           type: "categorical"
-          choices: [ 1, 5, 10, 20, 25]
+          choices: [5, 10, 20, 25]
         prior_scale_surgifoam_limited_lag_1:
           type: "categorical"
           choices: [0.01, 0.1, 0.5, 1, 5, 10]
@@ -90,10 +90,10 @@ train_monthly:
           choices: [0.01, 0.1, 0.5, 1, 5]
         prior_scale_market_share_stress:
           type: "categorical"
-          choices: [1, 5, 10, 20]
+          choices: [5, 10, 20]
         prior_scale_market_share_uplift:
           type: "categorical"
-          choices: [ 1, 5, 10, 20]
+          choices: [5, 10, 20]
       fixed_params:
         yearly_seasonality: false
         weekly_seasonality: false
@@ -116,12 +116,12 @@ train_monthly:
     primary_metric: "wape"
     selection_direction: "minimize"
     random_seed: ${random_seed}
-    early_stopping_rounds: 50
-    prechampion_count: 3
+    early_stopping_rounds: 100
+    prechampion_count: 10
     mase_seasonal_period: 12
     epsilon: 1.0
-    max_trials: 50
-    max_failed_trials: 20
+    max_trials: 100
+    max_failed_trials: 25
     sampler:
       name: "tpe"
       seed: ${random_seed}
@@ -169,13 +169,13 @@ train_monthly:
     top_n_prechampions: 10
     max_failed_trials: 30
     validation:
-      forecast_steps: 3
+      forecast_steps: 5
     metrics:
       mase_seasonal_period: 12
       epsilon: 1.0
     tuning:
       optimizer: "optuna"
-      max_trials: 60
+      max_trials: 50
       use_exog: true
       sampler:
         name: "tpe"

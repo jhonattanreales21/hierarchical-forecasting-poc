@@ -1,11 +1,12 @@
-"""Tests for monthly multi-family model selection nodes (Prophet + SARIMAX).
+"""Tests for monthly multi-family model selection nodes (Prophet + SARIMAX + CatBoost).
 
 Covers:
-- evaluate_monthly_family_candidates_on_test (Prophet + SARIMAX scoring)
+- evaluate_monthly_family_candidates_on_test (Prophet + SARIMAX + CatBoost scoring)
+- _score_catboost_candidates (leakage-safe CatBoost test scoring)
 - select_monthly_family_champions (one champion per family)
-- select_monthly_production_champion (primary metric + tie-breakers)
-- build_monthly_champion_artifacts (metadata schema + model resolution)
-- Scope guard: no CatBoost or weekly inputs required
+- select_monthly_production_champion (primary metric + tie-breakers, three families)
+- build_monthly_champion_artifacts (metadata schema + model resolution, incl. CatBoost)
+- Scope guard: CatBoost included, weekly excluded
 - Hard-fail when active family artifacts are missing
 """
 
@@ -19,6 +20,7 @@ import pandas as pd
 import pytest
 
 from hdf_pipelines.pipelines.model_selection.monthly.nodes import (
+    _score_catboost_candidates,
     _score_prophet_candidates,
     _score_sarimax_candidates,
     build_monthly_champion_artifacts,
@@ -26,7 +28,6 @@ from hdf_pipelines.pipelines.model_selection.monthly.nodes import (
     select_monthly_family_champions,
     select_monthly_production_champion,
 )
-
 
 # ── Test doubles ──────────────────────────────────────────────────────────────
 
@@ -230,6 +231,139 @@ def _make_params_sarimax() -> dict:
         # by extra SARIMAX calls from Ljung-Box or rolling-origin refits.
         "ljung_box": {"enabled": False},
         "operational_lead_time": {"enabled": False},
+    }
+
+
+# ── CatBoost test doubles ─────────────────────────────────────────────────────
+
+_CATBOOST_FEATURES: list[str] = [
+    "business_days",
+    "month",
+    "demand_lag_1",
+    "rolling_mean_3",
+]
+
+
+class _FakeCatBoostModel:
+    """CatBoost test double exposing the fit/predict/get_best_iteration surface.
+
+    ``predict`` returns a constant so test metrics are deterministic; ``fit``
+    records the row count so leakage-safety can be asserted.
+    """
+
+    def __init__(self, pred_value: float = 10.0, best_iteration: int = 50) -> None:
+        self._pred = pred_value
+        self._best = best_iteration
+        self.fit_rows: int | None = None
+
+    def get_best_iteration(self) -> int:
+        return self._best
+
+    def fit(self, x, y, verbose: bool = False):  # noqa: ANN001, ARG002
+        self.fit_rows = len(x)
+        return self
+
+    def predict(self, x):  # noqa: ANN001
+        return np.ones(len(x)) * self._pred
+
+
+def _make_catboost_df(n: int, start: str, demand_base: float = 10.0) -> pd.DataFrame:
+    dates = pd.date_range(start, periods=n, freq="MS")
+    return pd.DataFrame(
+        {
+            "month_start_date": dates,
+            "monthly_demand": np.linspace(demand_base, demand_base + 2.0, n),
+            "business_days": np.full(n, 21.0),
+            "month": [d.month for d in dates],
+            "demand_lag_1": np.linspace(demand_base - 1.0, demand_base + 1.0, n),
+            "rolling_mean_3": np.linspace(demand_base - 0.5, demand_base + 1.5, n),
+            "sku": ["SKU_001"] * n,
+        }
+    )
+
+
+def _make_catboost_train_df(n: int = 24) -> pd.DataFrame:
+    return _make_catboost_df(n, "2021-01-01", demand_base=8.0)
+
+
+def _make_catboost_validation_df(n: int = 3) -> pd.DataFrame:
+    return _make_catboost_df(n, "2023-01-01", demand_base=10.0)
+
+
+def _make_catboost_test_df(n: int = 6) -> pd.DataFrame:
+    return _make_catboost_df(n, "2023-04-01", demand_base=10.0)
+
+
+def _make_catboost_full_train_df(n: int = 33) -> pd.DataFrame:
+    return _make_catboost_df(n, "2021-01-01", demand_base=8.0)
+
+
+def _make_catboost_candidate_models(candidate_ids: list[str] | None = None) -> dict:
+    ids = candidate_ids or ["catboost_trial_001", "catboost_trial_002"]
+    return {
+        cid: {
+            "rank": i + 1,
+            "model_family": "catboost",
+            "granularity": "monthly",
+            "feature_columns": list(_CATBOOST_FEATURES),
+            "config": {"depth": 4, "learning_rate": 0.1, "iterations": 200},
+            "model": _FakeCatBoostModel(pred_value=10.0 + i, best_iteration=50),
+            "validation_metrics": {
+                "wape": 0.09 + i * 0.05,
+                "mase": 0.80,
+                "rmse": 4.0,
+                "bias": 0.0,
+                "mae": 3.0,
+            },
+        }
+        for i, cid in enumerate(ids)
+    }
+
+
+def _make_catboost_prechampion_configs(candidate_ids: list[str] | None = None) -> dict:
+    ids = candidate_ids or ["catboost_trial_001", "catboost_trial_002"]
+    return {
+        "model_family": "catboost",
+        "granularity": "monthly",
+        "selection_stage": "validation",
+        "objective_metric": "wape",
+        "top_n": len(ids),
+        "candidates": [
+            {
+                "candidate_id": cid,
+                "rank": i + 1,
+                "model_params": {"depth": 4, "learning_rate": 0.1, "iterations": 200},
+                "feature_columns": list(_CATBOOST_FEATURES),
+                "metrics": {
+                    "wape": 0.09 + i * 0.05,
+                    "mase": 0.80,
+                    "rmse": 4.0,
+                    "bias": 0.0,
+                    "mae": 3.0,
+                },
+            }
+            for i, cid in enumerate(ids)
+        ],
+    }
+
+
+def _make_catboost_split_metadata() -> dict:
+    return {
+        "granularity": "monthly",
+        "model_family": "catboost",
+        "date_column": "month_start_date",
+        "target_column": "monthly_demand",
+        "sku_column": "sku",
+        "all_feature_columns": list(_CATBOOST_FEATURES),
+        "categorical_feature_columns": [],
+    }
+
+
+def _make_params_catboost() -> dict:
+    return {
+        "date_column": "month_start_date",
+        "target_column": "monthly_demand",
+        "model_family": "catboost",
     }
 
 
@@ -757,11 +891,11 @@ def test_build_champion_refits_prophet_on_full_history():
     assert metadata["inference_contract"]["model_family"] == "prophet"
 
 
-# ── Test 5: scope guard — no CatBoost or weekly inputs required ───────────────
+# ── Test 5: scope guard — CatBoost included, weekly excluded ──────────────────
 
 
-def test_monthly_model_selection_does_not_require_catboost_or_weekly_inputs():
-    """The monthly multi-family selection nodes accept only prophet+sarimax inputs."""
+def test_monthly_model_selection_includes_catboost_but_not_weekly():
+    """The monthly multi-family selection wires CatBoost inputs but never weekly ones."""
     import inspect
 
     from hdf_pipelines.pipelines.model_selection.monthly.nodes import (
@@ -772,23 +906,25 @@ def test_monthly_model_selection_does_not_require_catboost_or_weekly_inputs():
     sig = inspect.signature(evaluate_monthly_family_candidates_on_test)
     param_names = list(sig.parameters.keys())
 
+    # CatBoost must now be a recognised candidate family.
+    assert any("catboost" in name.lower() for name in param_names), (
+        "evaluate_monthly_family_candidates_on_test must accept CatBoost inputs"
+    )
+    # Weekly remains out of scope for the monthly selection pipeline.
     for name in param_names:
-        assert "catboost" not in name.lower(), (
-            f"Parameter '{name}' references CatBoost — not supported in the monthly Prophet+SARIMAX selection pipeline"
-        )
         assert "weekly" not in name.lower(), (
-            f"Parameter '{name}' references weekly data — not supported in the monthly Prophet+SARIMAX selection pipeline"
+            f"Parameter '{name}' references weekly data — out of scope for monthly selection"
         )
 
-    # Pipeline nodes must not reference CatBoost or weekly catalog keys
+    # Pipeline nodes must reference CatBoost catalog keys but never weekly ones.
     p = create_pipeline()
     all_inputs = {inp for n in p.nodes for inp in n.inputs}
+    assert any("catboost" in key.lower() for key in all_inputs), (
+        "Monthly selection pipeline must consume CatBoost candidate artifacts"
+    )
     for key in all_inputs:
-        assert "catboost" not in key.lower(), (
-            f"Pipeline input '{key}' references CatBoost — not supported in the monthly Prophet+SARIMAX selection pipeline"
-        )
         assert "weekly" not in key.lower(), (
-            f"Pipeline input '{key}' references weekly data — not supported in the monthly Prophet+SARIMAX selection pipeline"
+            f"Pipeline input '{key}' references weekly data — out of scope for monthly selection"
         )
 
 
@@ -1210,3 +1346,445 @@ class TestSelectChampionsRollingOriginTieBreakers:
         assert len(summary) == 1
         # trial_001 has lower test_m3_wape (0.05 < 0.12) → wins the tie.
         assert summary.iloc[0]["family_champion_id"] == "sarimax_trial_001"
+
+
+# ── Test 12: CatBoost participates in monthly selection (Phase 2) ─────────────
+
+
+def _make_three_family_metrics_df() -> pd.DataFrame:
+    """Prophet + SARIMAX + CatBoost metrics where CatBoost has the lowest WAPE."""
+    base = _make_candidate_metrics_df()
+    catboost_rows = pd.DataFrame(
+        [
+            {
+                "family": "catboost",
+                "candidate_id": "catboost_trial_001",
+                "candidate_rank": 1,
+                "granularity": "monthly",
+                "selection_stage": "test",
+                "test_start_date": "2023-01-01",
+                "test_end_date": "2023-06-01",
+                "n_test_rows": 6,
+                "wape": 0.05,  # lowest WAPE across all three families
+                "mase": 0.70,
+                "rmse": 3.5,
+                "bias": 0.00,
+                "primary_metric": "wape",
+                "primary_metric_value": 0.05,
+                "is_family_champion": False,
+                "is_production_champion": False,
+            },
+            {
+                "family": "catboost",
+                "candidate_id": "catboost_trial_002",
+                "candidate_rank": 2,
+                "granularity": "monthly",
+                "selection_stage": "test",
+                "test_start_date": "2023-01-01",
+                "test_end_date": "2023-06-01",
+                "n_test_rows": 6,
+                "wape": 0.20,
+                "mase": 1.20,
+                "rmse": 7.0,
+                "bias": 0.04,
+                "primary_metric": "wape",
+                "primary_metric_value": 0.20,
+                "is_family_champion": False,
+                "is_production_champion": False,
+            },
+        ]
+    )
+    return pd.concat([base, catboost_rows], ignore_index=True)
+
+
+def _make_three_family_champion_summary() -> pd.DataFrame:
+    """Family champion summary with one champion per family (CatBoost best on WAPE)."""
+    return pd.DataFrame(
+        [
+            {
+                "family": "prophet",
+                "granularity": "monthly",
+                "family_champion_id": "prophet_candidate_001",
+                "family_champion_rank": 1,
+                "wape": 0.08,
+                "mase": 0.80,
+                "rmse": 4.0,
+                "bias": 0.01,
+                "selection_reason": "best wape",
+                "model_artifact_key": "monthly_prophet_candidate_models",
+                "metadata_artifact_key": "monthly_prophet_prechampion_configs",
+            },
+            {
+                "family": "sarimax",
+                "granularity": "monthly",
+                "family_champion_id": "sarimax_trial_001",
+                "family_champion_rank": 1,
+                "wape": 0.10,
+                "mase": 0.85,
+                "rmse": 4.5,
+                "bias": 0.00,
+                "selection_reason": "best wape",
+                "model_artifact_key": "monthly_sarimax_candidate_models",
+                "metadata_artifact_key": "monthly_sarimax_prechampion_configs",
+            },
+            {
+                "family": "catboost",
+                "granularity": "monthly",
+                "family_champion_id": "catboost_trial_001",
+                "family_champion_rank": 1,
+                "wape": 0.05,
+                "mase": 0.70,
+                "rmse": 3.5,
+                "bias": 0.00,
+                "selection_reason": "best wape",
+                "model_artifact_key": "monthly_catboost_candidate_models",
+                "metadata_artifact_key": "monthly_catboost_prechampion_configs",
+            },
+        ]
+    )
+
+
+def _make_catboost_production_summary() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "granularity": "monthly",
+                "active_families": ["prophet", "sarimax", "catboost"],
+                "production_champion_family": "catboost",
+                "production_champion_id": "catboost_trial_001",
+                "primary_metric": "wape",
+                "primary_metric_value": 0.05,
+                "tie_breakers": ["mase", "rmse", "abs_bias"],
+                "selection_timestamp": "2025-01-01T00:00:00+00:00",
+                "selection_reason": "Best wape catboost",
+                "candidate_count": 6,
+                "family_champion_count": 3,
+            }
+        ]
+    )
+
+
+def test_score_catboost_candidates_is_leakage_safe():
+    """CatBoost must refit on train+validation only; the held-out test split is never fit."""
+    n_train, n_val, n_test = 24, 3, 6
+    fake = _FakeCatBoostModel(pred_value=10.0)
+
+    with patch(
+        "hdf_pipelines.pipelines.model_selection.monthly.nodes.CatBoostRegressor",
+        return_value=fake,
+    ):
+        rows = _score_catboost_candidates(
+            candidate_models=_make_catboost_candidate_models(),
+            prechampion_configs=_make_catboost_prechampion_configs(),
+            split_metadata=_make_catboost_split_metadata(),
+            train_df=_make_catboost_train_df(n_train),
+            validation_df=_make_catboost_validation_df(n_val),
+            test_df=_make_catboost_test_df(n_test),
+            params=_make_params_catboost(),
+            mase_period=12,
+            require_all=True,
+        )
+
+    assert len(rows) == 2  # noqa: PLR2004
+    assert all(r["family"] == "catboost" for r in rows)
+    for col in ("wape", "mase", "rmse", "bias"):
+        assert all(col in r for r in rows)
+    # Refit window must be train + validation only — never including the test split.
+    assert fake.fit_rows == n_train + n_val
+    assert fake.fit_rows != n_train + n_val + n_test
+
+
+def test_evaluate_monthly_candidates_scores_three_families():
+    """evaluate_monthly_family_candidates_on_test returns metrics for all three families."""
+    prophet_models = {
+        "prophet_candidate_001": _FakeProphetModel(yhat_multiplier=1.0),
+        "prophet_candidate_002": _FakeProphetModel(yhat_multiplier=0.9),
+    }
+    fake_cb = _FakeCatBoostModel(pred_value=10.0)
+    fake_fit_result = _make_fake_sarimax_result(n_forecast=6, value=10.0)
+
+    with patch(
+        "hdf_pipelines.pipelines.model_selection.monthly.nodes.SARIMAX"
+    ) as mock_sarimax_cls, patch(
+        "hdf_pipelines.pipelines.model_selection.monthly.nodes.CatBoostRegressor",
+        return_value=fake_cb,
+    ):
+        mock_sarimax_cls.return_value.fit.return_value = fake_fit_result
+
+        result = evaluate_monthly_family_candidates_on_test(
+            monthly_prophet_candidate_models=prophet_models,
+            monthly_prophet_prechampion_configs=_make_prophet_prechampion_configs(),
+            monthly_prophet_train=_make_prophet_train_df(),
+            monthly_prophet_validation=_make_prophet_validation_df(),
+            monthly_prophet_test=_make_prophet_test_df(),
+            monthly_sarimax_candidate_models=_make_sarimax_candidate_models(n_test=6),
+            monthly_sarimax_prechampion_configs=_make_sarimax_prechampion_configs(),
+            monthly_sarimax_training_metadata=_make_sarimax_training_metadata(),
+            monthly_sarimax_train=_make_sarimax_train_df(),
+            monthly_sarimax_validation=_make_sarimax_validation_df(),
+            monthly_sarimax_test=_make_sarimax_test_df(),
+            params_monthly=_make_params_monthly(
+                active_families=["prophet", "sarimax", "catboost"]
+            ),
+            params_prophet=_make_params_prophet(),
+            params_sarimax=_make_params_sarimax(),
+            monthly_catboost_candidate_models=_make_catboost_candidate_models(),
+            monthly_catboost_prechampion_configs=_make_catboost_prechampion_configs(),
+            monthly_catboost_split_metadata=_make_catboost_split_metadata(),
+            monthly_catboost_train=_make_catboost_train_df(),
+            monthly_catboost_validation=_make_catboost_validation_df(),
+            monthly_catboost_test=_make_catboost_test_df(),
+            params_catboost=_make_params_catboost(),
+        )
+
+    families = set(result["family"].unique())
+    assert families == {"prophet", "sarimax", "catboost"}
+    assert len(result[result["family"] == "catboost"]) == 2  # noqa: PLR2004
+
+
+def test_monthly_model_selection_compares_three_families():
+    """One family champion is selected for each of prophet, sarimax, and catboost."""
+    metrics_df = _make_three_family_metrics_df()
+    params = _make_params_monthly(active_families=["prophet", "sarimax", "catboost"])
+
+    summary = select_monthly_family_champions(metrics_df, params)
+
+    assert len(summary) == 3  # noqa: PLR2004
+    assert set(summary["family"]) == {"prophet", "sarimax", "catboost"}
+    catboost_row = summary[summary["family"] == "catboost"].iloc[0]
+    assert catboost_row["family_champion_id"] == "catboost_trial_001"
+
+
+def test_monthly_model_selection_selects_lowest_wape_catboost_wins():
+    """When CatBoost has the lowest WAPE it is elected as the production champion."""
+    metrics_df = _make_three_family_metrics_df()
+    params = _make_params_monthly(active_families=["prophet", "sarimax", "catboost"])
+
+    family_summary = select_monthly_family_champions(metrics_df, params)
+    prod_summary = select_monthly_production_champion(family_summary, metrics_df, params)
+
+    row = prod_summary.iloc[0]
+    assert row["production_champion_family"] == "catboost"
+    assert row["production_champion_id"] == "catboost_trial_001"
+    assert row["primary_metric"] == "wape"
+
+
+def test_champion_monthly_metadata_contains_model_family_catboost():
+    """A CatBoost production champion yields metadata with model_family='catboost'."""
+    cb_models = _make_catboost_candidate_models()
+
+    champion_model, metadata = build_monthly_champion_artifacts(
+        monthly_model_selection_summary=_make_catboost_production_summary(),
+        monthly_family_champion_summary=_make_three_family_champion_summary(),
+        monthly_candidate_test_metrics=_make_three_family_metrics_df(),
+        monthly_prophet_candidate_models={"prophet_candidate_001": _FakeProphetModel()},
+        monthly_sarimax_candidate_models=_make_sarimax_candidate_models(n_test=6),
+        monthly_prophet_full_train=_make_prophet_train_df(24),
+        monthly_sarimax_full_train=_make_sarimax_full_train_df(30),
+        monthly_sarimax_training_metadata=_make_sarimax_training_metadata(),
+        params_monthly=_make_params_monthly(
+            active_families=["prophet", "sarimax", "catboost"], refit_enabled=False
+        ),
+        monthly_catboost_candidate_models=cb_models,
+        monthly_catboost_full_train=_make_catboost_full_train_df(),
+        monthly_catboost_split_metadata=_make_catboost_split_metadata(),
+    )
+
+    assert metadata["model_family"] == "catboost"
+    assert metadata["champion_id"] == "catboost_trial_001"
+    # Refit disabled → the champion model is the resolved candidate dict as-is.
+    assert champion_model is cb_models["catboost_trial_001"]
+    assert metadata["inference_contract"]["model_family"] == "catboost"
+    assert metadata["inference_contract"]["recursive_inference"] is True
+    assert metadata["inference_contract"]["has_prediction_intervals"] is False
+
+
+def test_champion_monthly_metadata_contains_catboost_features_when_catboost_wins():
+    """CatBoost champion metadata must expose the feature contract for inference."""
+    _, metadata = build_monthly_champion_artifacts(
+        monthly_model_selection_summary=_make_catboost_production_summary(),
+        monthly_family_champion_summary=_make_three_family_champion_summary(),
+        monthly_candidate_test_metrics=_make_three_family_metrics_df(),
+        monthly_prophet_candidate_models={"prophet_candidate_001": _FakeProphetModel()},
+        monthly_sarimax_candidate_models=_make_sarimax_candidate_models(n_test=6),
+        monthly_prophet_full_train=_make_prophet_train_df(24),
+        monthly_sarimax_full_train=_make_sarimax_full_train_df(30),
+        monthly_sarimax_training_metadata=_make_sarimax_training_metadata(),
+        params_monthly=_make_params_monthly(
+            active_families=["prophet", "sarimax", "catboost"], refit_enabled=False
+        ),
+        monthly_catboost_candidate_models=_make_catboost_candidate_models(),
+        monthly_catboost_full_train=_make_catboost_full_train_df(),
+        monthly_catboost_split_metadata=_make_catboost_split_metadata(),
+    )
+
+    assert metadata["feature_columns"] == _CATBOOST_FEATURES
+    assert metadata["categorical_features"] == []
+    assert metadata["target_column"] == "monthly_demand"
+    assert metadata["date_column"] == "month_start_date"
+    assert metadata["requires_exogenous_future"] is True
+    # The inference contract mirrors the feature contract for the recursive adapter.
+    assert metadata["inference_contract"]["feature_columns"] == _CATBOOST_FEATURES
+    # Hyperparameters block carries the CatBoost config.
+    assert "depth" in metadata["hyperparameters"]
+    assert "learning_rate" in metadata["hyperparameters"]
+
+
+def test_build_champion_refits_catboost_on_full_history():
+    """CatBoost champion must be refit on full history into a candidate-dict artifact."""
+    fake_cb = _FakeCatBoostModel(pred_value=10.0)
+
+    with patch(
+        "hdf_pipelines.pipelines.model_selection.monthly.nodes.CatBoostRegressor",
+        return_value=fake_cb,
+    ):
+        champion_model, metadata = build_monthly_champion_artifacts(
+            monthly_model_selection_summary=_make_catboost_production_summary(),
+            monthly_family_champion_summary=_make_three_family_champion_summary(),
+            monthly_candidate_test_metrics=_make_three_family_metrics_df(),
+            monthly_prophet_candidate_models={
+                "prophet_candidate_001": _FakeProphetModel()
+            },
+            monthly_sarimax_candidate_models=_make_sarimax_candidate_models(n_test=6),
+            monthly_prophet_full_train=_make_prophet_train_df(24),
+            monthly_sarimax_full_train=_make_sarimax_full_train_df(30),
+            monthly_sarimax_training_metadata=_make_sarimax_training_metadata(),
+            params_monthly=_make_params_monthly(
+                active_families=["prophet", "sarimax", "catboost"], refit_enabled=True
+            ),
+            monthly_catboost_candidate_models=_make_catboost_candidate_models(),
+            monthly_catboost_full_train=_make_catboost_full_train_df(33),
+            monthly_catboost_split_metadata=_make_catboost_split_metadata(),
+        )
+
+    assert metadata["model_family"] == "catboost"
+    assert metadata["refit"]["performed"] is True
+    assert metadata["refit"]["n_obs"] == 33  # noqa: PLR2004
+    assert metadata["training_cutoff"] is not None
+
+    # The champion carries the freshly refit model in the candidate-dict shape.
+    assert isinstance(champion_model, dict)
+    assert champion_model["refit_scope"] == "full_history"
+    assert champion_model["model"] is fake_cb
+    assert champion_model["feature_columns"] == _CATBOOST_FEATURES
+
+
+# ── Test 13: Prophet & CatBoost rolling-origin M-2/M-3 WAPE (operational lead) ─
+
+
+def _enable_rolling_origin(params: dict, lead_times: list[int] | None = None) -> dict:
+    out = dict(params)
+    out["operational_lead_time"] = {
+        "enabled": True,
+        "lead_times": lead_times or [2, 3],
+    }
+    return out
+
+
+def test_score_prophet_candidates_computes_rolling_origin_when_enabled():
+    """Prophet candidates gain test_m2_wape/test_m3_wape when operational lead-time is on."""
+    n_test = 5
+    fake_model = MagicMock()
+    fake_model.predict.side_effect = lambda df: pd.DataFrame(
+        {"yhat": np.full(len(df), 10.0)}
+    )
+
+    with patch(
+        "hdf_pipelines.pipelines.model_selection.monthly.nodes._refit_prophet_on_frame",
+        return_value=fake_model,
+    ):
+        rows = _score_prophet_candidates(
+            candidate_models={
+                "prophet_candidate_001": _FakeProphetModel(),
+                "prophet_candidate_002": _FakeProphetModel(),
+            },
+            prechampion_configs=_make_prophet_prechampion_configs(),
+            train_df=_make_prophet_train_df(24),
+            validation_df=_make_prophet_validation_df(3),
+            test_df=_make_prophet_test_df(n_test),
+            params=_enable_rolling_origin(_make_params_prophet()),
+            mase_period=12,
+            require_all=True,
+        )
+
+    assert rows, "expected at least one scored Prophet candidate"
+    for r in rows:
+        for col in ("test_m2_wape", "test_m3_wape", "n_m2_pairs", "n_m3_pairs"):
+            assert col in r, f"rolling-origin column '{col}' missing from Prophet row"
+    # 5-month test → M-2 has 4 (origin,target) pairs, M-3 has 3.
+    assert rows[0]["n_m2_pairs"] == 4  # noqa: PLR2004
+    assert rows[0]["n_m3_pairs"] == 3  # noqa: PLR2004
+    assert rows[0]["test_m2_wape"] is not None
+    assert rows[0]["test_m2_wape"] >= 0.0
+
+
+def test_score_catboost_candidates_computes_recursive_rolling_origin_when_enabled():
+    """CatBoost candidates gain recursive test_m2_wape/test_m3_wape when enabled."""
+    n_test = 5
+    fake = _FakeCatBoostModel(pred_value=10.0)
+
+    with patch(
+        "hdf_pipelines.pipelines.model_selection.monthly.nodes.CatBoostRegressor",
+        return_value=fake,
+    ):
+        rows = _score_catboost_candidates(
+            candidate_models=_make_catboost_candidate_models(),
+            prechampion_configs=_make_catboost_prechampion_configs(),
+            split_metadata=_make_catboost_split_metadata(),
+            train_df=_make_catboost_train_df(24),
+            validation_df=_make_catboost_validation_df(3),
+            test_df=_make_catboost_test_df(n_test),
+            params=_enable_rolling_origin(_make_params_catboost()),
+            mase_period=12,
+            require_all=True,
+        )
+
+    assert rows, "expected at least one scored CatBoost candidate"
+    for r in rows:
+        for col in ("test_m2_wape", "test_m3_wape", "n_m2_pairs", "n_m3_pairs"):
+            assert col in r, f"rolling-origin column '{col}' missing from CatBoost row"
+    # Same pairing logic as SARIMAX/Prophet: 5-month test → 4 M-2 pairs, 3 M-3 pairs.
+    assert rows[0]["n_m2_pairs"] == 4  # noqa: PLR2004
+    assert rows[0]["n_m3_pairs"] == 3  # noqa: PLR2004
+
+
+def test_rolling_origin_disabled_by_default_for_prophet_and_catboost():
+    """Without operational_lead_time config, no rolling-origin columns are emitted."""
+    # Prophet (real refit avoided via mock; ro disabled means a single refit per candidate)
+    fake_model = MagicMock()
+    fake_model.predict.side_effect = lambda df: pd.DataFrame(
+        {"yhat": np.full(len(df), 10.0)}
+    )
+    with patch(
+        "hdf_pipelines.pipelines.model_selection.monthly.nodes._refit_prophet_on_frame",
+        return_value=fake_model,
+    ):
+        prophet_rows = _score_prophet_candidates(
+            candidate_models={"prophet_candidate_001": _FakeProphetModel()},
+            prechampion_configs=_make_prophet_prechampion_configs(["prophet_candidate_001"]),
+            train_df=_make_prophet_train_df(24),
+            validation_df=_make_prophet_validation_df(3),
+            test_df=_make_prophet_test_df(5),
+            params=_make_params_prophet(),  # no operational_lead_time
+            mase_period=12,
+            require_all=True,
+        )
+    assert "test_m2_wape" not in prophet_rows[0]
+
+    fake = _FakeCatBoostModel(pred_value=10.0)
+    with patch(
+        "hdf_pipelines.pipelines.model_selection.monthly.nodes.CatBoostRegressor",
+        return_value=fake,
+    ):
+        catboost_rows = _score_catboost_candidates(
+            candidate_models=_make_catboost_candidate_models(["catboost_trial_001"]),
+            prechampion_configs=_make_catboost_prechampion_configs(["catboost_trial_001"]),
+            split_metadata=_make_catboost_split_metadata(),
+            train_df=_make_catboost_train_df(24),
+            validation_df=_make_catboost_validation_df(3),
+            test_df=_make_catboost_test_df(5),
+            params=_make_params_catboost(),  # no operational_lead_time
+            mase_period=12,
+            require_all=True,
+        )
+    assert "test_m2_wape" not in catboost_rows[0]

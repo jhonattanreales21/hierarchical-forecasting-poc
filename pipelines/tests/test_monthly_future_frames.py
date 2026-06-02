@@ -178,6 +178,22 @@ def test_generic_future_frames_contain_sku_column():
         )
 
 
+def test_generic_future_frames_contain_month_calendar_feature():
+    """The deterministic 'month' calendar feature (needed by CatBoost) is present."""
+    f3, f6, f12 = _build_frames()
+    for frame, label in ((f3, "3m"), (f6, "6m"), (f12, "12m")):
+        assert "month" in frame.columns, (
+            f"monthly_future_{label} is missing the deterministic 'month' feature "
+            "required by tabular champions such as CatBoost"
+        )
+        # month must equal the calendar month derived from month_start_date.
+        expected = pd.to_datetime(frame["month_start_date"]).dt.month
+        assert (frame["month"] == expected).all(), (
+            f"monthly_future_{label} 'month' values do not match month_start_date"
+        )
+        assert frame["month"].between(1, 12).all()
+
+
 def test_generic_future_frames_sku_values_match_modeling_data():
     """SKU values in future frames match the SKUs present in historical data."""
     f3, _, _ = _build_frames()

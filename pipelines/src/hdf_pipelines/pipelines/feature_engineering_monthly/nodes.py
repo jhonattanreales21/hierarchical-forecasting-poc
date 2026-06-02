@@ -393,17 +393,21 @@ def build_monthly_exogenous_features(
         lags=lags,
         date_column=date_column,
     )
-    # Log the number of nulls introduced by lagging.
+    # Log and fill nulls introduced by lagging with zero.
     null_counts = exogenous_features[lagged_columns].isnull().sum()
     null_counts = null_counts[null_counts > 0]
     logger.info(
         "Generated monthly exogenous lag columns=%s.",
         lagged_columns,
     )
-    logger.info(
-        "Null values introduced by lagged monthly exogenous features:\n%s",
-        null_counts.to_string() if not null_counts.empty else "No lag nulls detected.",
-    )
+    if not null_counts.empty:
+        logger.info(
+            "Null values introduced by lagged monthly exogenous features (filled with 0):\n%s",
+            null_counts.to_string(),
+        )
+        exogenous_features[lagged_columns] = exogenous_features[lagged_columns].fillna(0.0)
+    else:
+        logger.info("No lag nulls detected.")
 
     exogenous_features = exogenous_features.sort_values(date_column).reset_index(
         drop=True
