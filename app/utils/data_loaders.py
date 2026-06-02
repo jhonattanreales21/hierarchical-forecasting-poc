@@ -12,6 +12,7 @@ import streamlit as st
 
 from utils.paths import (
     ACTUALS,
+    RAW_EXOGENOUS,
     CHAMPION_META,
     INFERENCE_META,
     SELECTION_FORECAST,
@@ -19,6 +20,34 @@ from utils.paths import (
     TEST_METRICS,
     forecast_parquet,
 )
+
+
+def _standardize_forecast_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize current and legacy forecast output schemas for the app."""
+    rename_map = {
+        "date": "ds",
+        "forecast": "yhat",
+        "forecast_lower": "yhat_lower",
+        "forecast_upper": "yhat_upper",
+    }
+    out = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
+    if "ds" in out.columns:
+        out["ds"] = pd.to_datetime(out["ds"])
+    return out
+
+
+def _standardize_champion_metadata(meta: dict) -> dict:
+    """Normalize current and legacy champion metadata keys."""
+    if not meta:
+        return meta
+    out = dict(meta)
+    metrics = out.get("test_metrics") or out.get("metrics") or {}
+    out["test_metrics"] = metrics
+    if "business_success_flag" not in out and "wape" in metrics:
+        out["business_success_flag"] = float(metrics["wape"]) <= 0.15
+    if "business_success_precision_threshold" not in out:
+        out["business_success_precision_threshold"] = 0.85
+    return out
 
 
 @st.cache_data
@@ -66,6 +95,30 @@ def load_monthly_modeling_data() -> pd.DataFrame:
 
 
 @st.cache_data
+def load_monthly_modeling_data_full() -> pd.DataFrame:
+    """Load monthly modeling data with all available feature columns."""
+    if not ACTUALS.exists():
+        return pd.DataFrame()
+    df = pd.read_parquet(ACTUALS)
+    if "ds" in df.columns:
+        df["ds"] = pd.to_datetime(df["ds"])
+        df = df.sort_values("ds")
+    return df.reset_index(drop=True)
+
+
+@st.cache_data
+def load_raw_exogenous_data() -> pd.DataFrame:
+    """Load raw monthly exogenous variables if available."""
+    if not RAW_EXOGENOUS.exists():
+        return pd.DataFrame()
+    df = pd.read_csv(RAW_EXOGENOUS)
+    df.columns = [str(col).strip() for col in df.columns]
+    if "Date" in df.columns:
+        df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+    return df.reset_index(drop=True)
+
+
+@st.cache_data
 def load_champion_test_forecast() -> pd.DataFrame:
     """Load the full champion test forecast with ds parsed as datetime.
 
@@ -75,7 +128,9 @@ def load_champion_test_forecast() -> pd.DataFrame:
     if not SELECTION_FORECAST.exists():
         return pd.DataFrame()
     df = pd.read_parquet(SELECTION_FORECAST)
-    df["ds"] = pd.to_datetime(df["ds"])
+    df = _standardize_forecast_columns(df)
+    if "ds" not in df.columns:
+        return df
     return df.sort_values("ds").reset_index(drop=True)
 
 
@@ -93,7 +148,9 @@ def load_monthly_forecast(horizon_months: int) -> pd.DataFrame:
     if not path.exists():
         return pd.DataFrame()
     df = pd.read_parquet(path)
-    df["ds"] = pd.to_datetime(df["ds"])
+    df = _standardize_forecast_columns(df)
+    if "ds" not in df.columns:
+        return df
     return df.sort_values("ds").reset_index(drop=True)
 
 
@@ -127,7 +184,7 @@ def load_champion_metadata() -> dict:
     Returns:
         Dict with champion metadata, or empty dict if missing.
     """
-    return load_json(CHAMPION_META)
+    return _standardize_champion_metadata(load_json(CHAMPION_META))
 
 
 def load_inference_metadata() -> dict:
