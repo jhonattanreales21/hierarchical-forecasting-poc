@@ -59,7 +59,7 @@ def register_pipelines() -> dict[str, Pipeline]:
     # Standalone Monthly Prophet model-selection pipeline (Prophet-specific champion)
     prophet_monthly_selection = create_prophet_monthly_selection_pipeline()
 
-    # Monthly multi-family model selection: Prophet vs SARIMAX
+    # Monthly multi-family model selection: Prophet vs SARIMAX vs CatBoost
     monthly_model_selection = create_monthly_model_selection_pipeline()
 
     # Prophet-only training + Prophet-specific selection. Kept as an isolated
@@ -87,9 +87,8 @@ def register_pipelines() -> dict[str, Pipeline]:
     # Active monthly training comparison: train all monthly families
     # (Prophet + SARIMAX + CatBoost) before selection.
     # ingestion → features → splits → train Prophet + SARIMAX + CatBoost → compare.
-    # NOTE: monthly_model_selection currently elects the champion from Prophet and
-    # SARIMAX only; CatBoost trains and emits artifacts but does not yet compete for
-    # the monthly champion (deferred to the model-selection phase).
+    # monthly_model_selection elects the production champion across all three
+    # families; CatBoost competes on the same leakage-safe held-out test metrics.
     monthly_training_comparison = (
         ingestion
         + fe_monthly
