@@ -66,11 +66,18 @@ def register_pipelines() -> dict[str, Pipeline]:
     # single-family reference route; it produces the Prophet-specific champion
     # artifacts and does not feed the generic metadata-driven inference.
     prophet_monthly_e2e = (
-        ingestion
-        + fe_monthly
-        + model_input
-        + prophet_monthly_training
-        + prophet_monthly_selection
+        ingestion + fe_monthly + model_input + prophet_monthly_training
+    )
+
+    # Single-family monthly routes for SARIMAX and CatBoost: raw → features →
+    # splits → train that family's candidates. These mirror prophet_monthly_e2e
+    # but stop after training, since only Prophet currently has a single-family
+    # selection stage. Exposed as the per-model shortcuts in the Makefile.
+    sarimax_monthly_e2e = (
+        ingestion + fe_monthly + model_input + sarimax_monthly_training
+    )
+    catboost_monthly_e2e = (
+        ingestion + fe_monthly + model_input + catboost_monthly_training
     )
 
     # Legacy two-family comparison kept for backward compatibility: trains only
@@ -109,7 +116,12 @@ def register_pipelines() -> dict[str, Pipeline]:
     # Scaffolded composed shortcuts — include NotImplementedError stubs; not part of default
     experimental_training = monthly_training + weekly_training
     experimental_full_experiment = (
-        ingestion + fe_monthly + fe_weekly + model_input + experimental_training + selection
+        ingestion
+        + fe_monthly
+        + fe_weekly
+        + model_input
+        + experimental_training
+        + selection
     )
     experimental_inference = inference + recon
 
@@ -122,9 +134,11 @@ def register_pipelines() -> dict[str, Pipeline]:
         "monthly_training_comparison": monthly_training_comparison,
         # Legacy alias: Prophet + SARIMAX only (no CatBoost training)
         "prophet_sarimax_comparison": prophet_sarimax_comparison,
-        # ── Prophet-only reference route ──────────────────────────────────────
+        # ── Single-family monthly routes (per-model Makefile shortcuts) ───────
         "monthly_mvp": monthly_mvp,
         "prophet_monthly_e2e": prophet_monthly_e2e,
+        "sarimax_monthly_e2e": sarimax_monthly_e2e,
+        "catboost_monthly_e2e": catboost_monthly_e2e,
         # ── Individual stage pipelines ────────────────────────────────────────
         "data_ingestion": ingestion,
         "feature_engineering_monthly": fe_monthly,
