@@ -46,11 +46,14 @@ train_monthly:
       objective:
         metric: "wape"
         direction: "minimize"
-      max_trials: 60
+      max_trials: 80
       top_n_prechampions: 10
       sampler:
         name: "tpe"
         seed: ${random_seed}
+        n_startup_trials: 40
+        multivariate: true
+        gamma: 0.30
       search_space:
         changepoint_prior_scale:
           type: "float"
@@ -125,6 +128,9 @@ train_monthly:
     sampler:
       name: "tpe"
       seed: ${random_seed}
+      n_startup_trials: 50
+      multivariate: true
+      gamma: 0.30
     search_space:
       depth:
         type: "int"
@@ -169,17 +175,20 @@ train_monthly:
     top_n_prechampions: 10
     max_failed_trials: 30
     validation:
-      forecast_steps: 5
+      forecast_steps: 4
     metrics:
       mase_seasonal_period: 12
       epsilon: 1.0
     tuning:
       optimizer: "optuna"
-      max_trials: 50
+      max_trials: 60
       use_exog: true
       sampler:
         name: "tpe"
         seed: ${random_seed}
+        n_startup_trials: 30
+        multivariate: true
+        gamma: 0.30
       search_space:
         p:
           type: "int"

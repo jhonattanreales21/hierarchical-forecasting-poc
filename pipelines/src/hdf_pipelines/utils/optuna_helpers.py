@@ -26,7 +26,18 @@ def create_optuna_study(
         )
 
     seed = sampler_config.get("seed")
-    sampler = TPESampler(seed=int(seed) if seed is not None else None)
+    n_startup_trials = sampler_config.get("n_startup_trials", 10)
+    multivariate = bool(sampler_config.get("multivariate", False))
+    gamma_value = float(sampler_config.get("gamma", 0.25))
+    # gamma expects Callable[[int], int]: fraction of trials to treat as "good"
+    gamma_fn = lambda n: min(int(np.ceil(gamma_value * n)), 25)  # noqa: E731
+
+    sampler = TPESampler(
+        seed=int(seed) if seed is not None else None,
+        n_startup_trials=int(n_startup_trials),
+        multivariate=multivariate,
+        gamma=gamma_fn,
+    )
     return optuna.create_study(direction=direction, sampler=sampler)
 
 
