@@ -116,11 +116,11 @@ train_monthly:
     primary_metric: "wape"
     selection_direction: "minimize"
     random_seed: ${random_seed}
-    early_stopping_rounds: 50
+    early_stopping_rounds: 100
     prechampion_count: 10
     mase_seasonal_period: 12
     epsilon: 1.0
-    max_trials: 50
+    max_trials: 100
     max_failed_trials: 25
     sampler:
       name: "tpe"
@@ -175,7 +175,7 @@ train_monthly:
       epsilon: 1.0
     tuning:
       optimizer: "optuna"
-      max_trials: 60
+      max_trials: 50
       use_exog: true
       sampler:
         name: "tpe"
