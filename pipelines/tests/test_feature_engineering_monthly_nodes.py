@@ -120,17 +120,19 @@ def test_build_monthly_calendar_features_returns_one_row_per_unique_month():
     assert result["business_days"].dtype == "int64"
 
 
-def test_build_monthly_exogenous_features_appends_lag_columns_with_leading_nulls():
-    """Lag columns are created and the first row carries NaN because there is no prior month."""
-    # pfizer_limited = [0.0, 1.0, 0.0] → lag_1 = [NaN, 0.0, 1.0]
+def test_build_monthly_exogenous_features_fills_leading_lag_nulls_with_zero():
+    """Lag columns are created and the leading null (no prior month) is filled with zero."""
+    # pfizer_limited = [0.0, 1.0, 0.0] → raw lag_1 = [NaN, 0.0, 1.0] → filled = [0.0, 0.0, 1.0]
     result = build_monthly_exogenous_features(
         _exogenous_monthly_df(periods=3),
         _feature_engineering_parameters(),
     )
 
     assert "pfizer_limited_lag_1" in result.columns
-    assert pd.isna(result["pfizer_limited_lag_1"].iloc[0])
+    assert result["pfizer_limited_lag_1"].notna().all()  # leading null filled, no NaN remains
+    assert result["pfizer_limited_lag_1"].iloc[0] == 0.0  # no prior month → filled with 0.0
     assert result["pfizer_limited_lag_1"].iloc[1] == 0.0  # carries Jan value into Feb
+    assert result["pfizer_limited_lag_1"].iloc[2] == 1.0  # carries Feb value into Mar
 
 
 def test_build_monthly_prophet_features_merges_demand_calendar_and_exogenous():

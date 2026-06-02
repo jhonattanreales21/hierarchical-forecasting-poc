@@ -19,6 +19,9 @@ from hdf_pipelines.pipelines.model_selection.monthly.pipeline import (
 from hdf_pipelines.pipelines.model_selection.prophet.pipeline import (
     create_pipeline as create_prophet_monthly_selection_pipeline,
 )
+from hdf_pipelines.pipelines.train_monthly.catboost.pipeline import (
+    create_pipeline as create_catboost_monthly_pipeline,
+)
 from hdf_pipelines.pipelines.train_monthly.prophet.pipeline import (
     create_pipeline as create_prophet_monthly_pipeline,
 )
@@ -50,6 +53,9 @@ def register_pipelines() -> dict[str, Pipeline]:
     # Standalone SARIMAX-only training pipeline
     sarimax_monthly_training = create_sarimax_monthly_pipeline()
 
+    # Standalone CatBoost-only training pipeline
+    catboost_monthly_training = create_catboost_monthly_pipeline()
+
     # Standalone Monthly Prophet model-selection pipeline (Prophet-specific champion)
     prophet_monthly_selection = create_prophet_monthly_selection_pipeline()
 
@@ -67,8 +73,8 @@ def register_pipelines() -> dict[str, Pipeline]:
         + prophet_monthly_selection
     )
 
-    # Train both families and elect the generic monthly production champion:
-    # ingestion → features → splits → train Prophet + SARIMAX → compare → champion
+    # Legacy two-family comparison kept for backward compatibility: trains only
+    # Prophet + SARIMAX before selection. Superseded by monthly_training_comparison.
     prophet_sarimax_comparison = (
         ingestion
         + fe_monthly
@@ -78,9 +84,25 @@ def register_pipelines() -> dict[str, Pipeline]:
         + monthly_model_selection
     )
 
+    # Active monthly training comparison: train all monthly families
+    # (Prophet + SARIMAX + CatBoost) before selection.
+    # ingestion → features → splits → train Prophet + SARIMAX + CatBoost → compare.
+    # NOTE: monthly_model_selection currently elects the champion from Prophet and
+    # SARIMAX only; CatBoost trains and emits artifacts but does not yet compete for
+    # the monthly champion (deferred to the model-selection phase).
+    monthly_training_comparison = (
+        ingestion
+        + fe_monthly
+        + model_input
+        + prophet_monthly_training
+        + sarimax_monthly_training
+        + catboost_monthly_training
+        + monthly_model_selection
+    )
+
     # Canonical reproducible monthly route: multi-family comparison followed by
     # metadata-driven champion inference. This is the project default.
-    monthly_forecast_e2e = prophet_sarimax_comparison + inference
+    monthly_forecast_e2e = monthly_training_comparison + inference
 
     # Prophet-only validated reference route (training + Prophet selection).
     monthly_mvp = prophet_monthly_e2e
@@ -98,6 +120,8 @@ def register_pipelines() -> dict[str, Pipeline]:
         "monthly_forecast_e2e": monthly_forecast_e2e,
         # ── Multi-family monthly comparison + selection ───────────────────────
         "monthly_model_selection": monthly_model_selection,
+        "monthly_training_comparison": monthly_training_comparison,
+        # Legacy alias: Prophet + SARIMAX only (no CatBoost training)
         "prophet_sarimax_comparison": prophet_sarimax_comparison,
         # ── Prophet-only reference route ──────────────────────────────────────
         "monthly_mvp": monthly_mvp,

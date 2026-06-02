@@ -34,7 +34,7 @@ _IDENTITY_COLUMNS = {"month_start_date", "monthly_demand", "sku", "ds", "y"}
 # ── Public node ───────────────────────────────────────────────────────────────
 
 
-def train_monthly_catboost_candidates(
+def train_monthly_catboost_candidates(  # noqa: PLR0915
     monthly_catboost_train: pd.DataFrame,
     monthly_catboost_validation: pd.DataFrame,
     monthly_catboost_split_metadata: dict,
@@ -462,7 +462,7 @@ def _validate_catboost_inputs(
         )
 
 
-def _fit_candidate(
+def _fit_candidate(  # noqa: PLR0913
     config: dict,
     X_train: np.ndarray,
     y_train: np.ndarray,
@@ -597,7 +597,7 @@ def _build_prechampion_configs(
             continue
         r = row.iloc[0]
         param_cols = {
-            k.removeprefix("param_"): v
+            k.removeprefix("param_"): _to_native(v)
             for k, v in r.items()
             if str(k).startswith("param_")
         }
@@ -725,6 +725,25 @@ def _build_training_metadata(  # noqa: PLR0913
             for r in failed
         ],
     }
+
+
+def _to_native(value: Any) -> Any:
+    """Convert numpy scalar types to native Python types for JSON serialisation.
+
+    Hyperparameter values read back from a ranked pandas row are often numpy
+    scalars (e.g. ``int64``, ``float64``) because pandas coerces numeric columns.
+    ``JSONDataset`` cannot serialise numpy scalars, so they are converted to
+    native Python types here. Non-numpy values are returned unchanged.
+
+    Args:
+        value: Any value, possibly a numpy scalar.
+
+    Returns:
+        A native Python scalar when ``value`` is a numpy scalar, else ``value``.
+    """
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
 
 
 def _safe_float(value: Any) -> float | None:
