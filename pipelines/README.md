@@ -34,11 +34,16 @@ The goal is to compare **~4 model families** (Prophet, CatBoost, SARIMAX, and op
 - A generic monthly production champion is persisted as `champion_monthly_model`
   plus `champion_monthly_metadata`.
 - Forecast inference is metadata-driven and dispatches by the selected champion
-  family (`prophet` or `sarimax`).
+  family (`prophet`, `sarimax`, or `catboost`).
 - The older Prophet-only route is retained as a reference route:
   `monthly_mvp` / `prophet_monthly_e2e`.
-- CatBoost remains an intended model family, but its monthly training nodes are
-  still placeholders and are not part of the stable default route.
+- CatBoost monthly training is now fully implemented: Optuna TPE tuning, validation
+  metrics, prechampion configs, and candidate model artifacts are produced by
+  `train_monthly.catboost`. The `model_input_preparation` stage generates
+  CatBoost-ready splits with target-derived lag and rolling features via
+  `adapt_monthly_data_for_catboost`. Recursive inference is also implemented and
+  wired in `forecast_inference`. CatBoost is available via the `train_monthly`
+  route but is not yet part of `monthly_forecast_e2e` or `monthly_model_selection`.
 - User-upload routing must distinguish daily demand from monthly demand before
   training. Daily input can feed monthly and weekly workflows; monthly-only
   input must stay monthly-only unless a documented disaggregation method is
@@ -50,16 +55,17 @@ The goal is to compare **~4 model families** (Prophet, CatBoost, SARIMAX, and op
 | --- | --- | --- |
 | `data_ingestion` | Implemented and tested | Cleans demand and exogenous inputs; emits daily, weekly, monthly, and monthly exogenous primary datasets. |
 | `feature_engineering_monthly` | Implemented and tested | Builds monthly calendar and exogenous features used by the monthly modeling path. |
-| `model_input_preparation` | Implemented and tested | Builds generic monthly splits, Prophet-compatible splits/future frames, and SARIMAX-compatible splits. |
-| `train_monthly.prophet` | Implemented and tested | Optuna-based tuning, validation metrics, top prechampions, and candidate artifacts. |
-| `train_monthly.sarimax` | Implemented and tested | Deterministic SARIMAX grid search, validation metrics, top prechampions, and candidate artifacts. |
-| `monthly_model_selection` | Implemented and tested | Compares monthly Prophet and SARIMAX candidates on held-out test data and elects the monthly production champion. |
-| `forecast_inference` | Implemented and tested | Generates standardized 3-, 6-, and 12-month forecasts from the generic monthly champion. |
+| `model_input_preparation` | Implemented and tested | Builds generic monthly splits, Prophet-compatible splits/future frames, SARIMAX-compatible splits, and CatBoost-ready splits with target-derived lag and rolling features. |
+| `train_monthly.prophet` | Implemented and tested | Optuna TPE tuning, validation metrics, top prechampions, and candidate artifacts. |
+| `train_monthly.sarimax` | Implemented and tested | Optuna TPE-based SARIMAX tuning with exogenous variables, Ljung-Box residual filter, rolling-origin M-2/M-3 validation metrics, top prechampions, and candidate artifacts. |
+| `train_monthly.catboost` | Implemented and tested | Optuna TPE tuning (50 trials, up to 10 prechampions), validation metrics, prechampion configs, candidate model artifacts, and training metadata. Recursive inference adapter wired in `forecast_inference`. |
+| `monthly_model_selection` | Implemented and tested | Compares monthly Prophet and SARIMAX candidates on held-out test data and elects the monthly production champion. CatBoost not yet included. |
+| `forecast_inference` | Implemented and tested | Generates standardized 3-, 6-, and 12-month forecasts from the generic monthly champion. Dispatches to Prophet, SARIMAX, or CatBoost (recursive) based on champion family. |
 | `monthly_mvp` / `prophet_monthly_e2e` | Reference route | Prophet-only training and Prophet-specific champion selection. Preserved for comparison and audit continuity. |
 | `feature_engineering_weekly` | Scaffolded | Node and pipeline structure exist; functions still raise `NotImplementedError`. |
 | `train_weekly` | Scaffolded | Prophet, CatBoost, and SARIMAX structures exist; functions still raise `NotImplementedError`. |
 | `reconciliation` | Scaffolded | Monthly-weekly reconciliation contract exists; implementation pending weekly completion. |
-| `train_monthly` | Not stable as a public route | Composes Prophet, CatBoost, and SARIMAX; currently includes CatBoost placeholder nodes. |
+| `train_monthly` | Implemented (experimental route) | Composes Prophet, CatBoost, and SARIMAX sub-pipelines; all three families are now implemented. Not the default route; CatBoost is not yet included in `monthly_model_selection`. |
 | `model_selection` | Legacy scaffold | Older multi-granularity selection path; use `monthly_model_selection` for the current implemented monthly path. |
 
 ## Canonical Monthly Flow
@@ -179,7 +185,12 @@ data/
 │   ├── monthly_sarimax_validation.parquet
 │   ├── monthly_sarimax_test.parquet
 │   ├── monthly_sarimax_full_train.parquet
-│   └── monthly_sarimax_split_metadata.json
+│   ├── monthly_sarimax_split_metadata.json
+│   ├── monthly_catboost_train.parquet
+│   ├── monthly_catboost_validation.parquet
+│   ├── monthly_catboost_test.parquet
+│   ├── monthly_catboost_full_train.parquet
+│   └── monthly_catboost_split_metadata.json
 ├── 06_models/
 │   ├── tuning/
 │   │   ├── monthly_prophet_tuning_results.parquet
@@ -190,11 +201,17 @@ data/
 │   │   ├── monthly_sarimax_validation_metrics.parquet
 │   │   ├── monthly_sarimax_prechampion_configs.json
 │   │   ├── monthly_sarimax_candidate_models.pkl
-│   │   └── monthly_sarimax_training_metadata.json
+│   │   ├── monthly_sarimax_training_metadata.json
+│   │   ├── monthly_catboost_tuning_results.parquet
+│   │   ├── monthly_catboost_validation_metrics.parquet
+│   │   ├── monthly_catboost_prechampion_configs.json
+│   │   ├── monthly_catboost_candidate_models.pkl
+│   │   └── monthly_catboost_training_metadata.json
 │   ├── candidates/
 │   │   ├── monthly_prophet_candidate_models.pkl
 │   │   ├── monthly_prophet.pkl
-│   │   └── monthly_sarimax.pkl
+│   │   ├── monthly_sarimax.pkl
+│   │   └── monthly_catboost.pkl
 │   ├── selection/
 │   │   ├── monthly_candidate_test_metrics.parquet
 │   │   ├── monthly_family_champion_summary.parquet
@@ -306,7 +323,8 @@ uv run pytest tests/test_run.py
 
 Current tests cover ingestion, monthly feature engineering, monthly model input
 preparation, monthly Prophet training helpers, monthly SARIMAX training helpers,
-monthly model selection, forecast inference, Optuna helpers, shared metrics, and
+monthly CatBoost training helpers, monthly model selection, forecast inference
+(including CatBoost recursive dispatch), Optuna helpers, shared metrics, and
 Kedro bootstrap/registry behavior.
 
 ## Project Structure

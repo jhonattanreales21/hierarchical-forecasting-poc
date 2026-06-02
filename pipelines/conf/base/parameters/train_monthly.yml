@@ -72,10 +72,10 @@ train_monthly:
           choices: ["additive", "multiplicative"]
         prior_scale_pfizer_limited_lag_1:
           type: "categorical"
-          choices: [1, 5, 10, 20, 25]
+          choices: [5, 10, 20, 25]
         prior_scale_pfizer_limited_lag_2:
           type: "categorical"
-          choices: [ 1, 5, 10, 20, 25]
+          choices: [5, 10, 20, 25]
         prior_scale_surgifoam_limited_lag_1:
           type: "categorical"
           choices: [0.01, 0.1, 0.5, 1, 5, 10]
@@ -90,10 +90,10 @@ train_monthly:
           choices: [0.01, 0.1, 0.5, 1, 5]
         prior_scale_market_share_stress:
           type: "categorical"
-          choices: [1, 5, 10, 20]
+          choices: [5, 10, 20]
         prior_scale_market_share_uplift:
           type: "categorical"
-          choices: [ 1, 5, 10, 20]
+          choices: [5, 10, 20]
       fixed_params:
         yearly_seasonality: false
         weekly_seasonality: false
@@ -117,11 +117,11 @@ train_monthly:
     selection_direction: "minimize"
     random_seed: ${random_seed}
     early_stopping_rounds: 50
-    prechampion_count: 3
+    prechampion_count: 10
     mase_seasonal_period: 12
     epsilon: 1.0
     max_trials: 50
-    max_failed_trials: 20
+    max_failed_trials: 25
     sampler:
       name: "tpe"
       seed: ${random_seed}

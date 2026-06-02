@@ -33,11 +33,11 @@ The forecasting system is built around a strict temporal hierarchy:
 
 Three model families are evaluated at each active layer:
 
-| Model | Role | Layers |
-|-------|------|--------|
-| **SARIMAX** | Structured statistical baseline with seasonal + exogenous terms | Monthly |
-| **Prophet** | Existing benchmark; robust to trend changes and seasonality | Monthly & Weekly |
-| **CatBoost** | Main tabular candidate with full exogenous variable support | Monthly & Weekly |
+| Model | Role | Layers | Status |
+|-------|------|--------|--------|
+| **SARIMAX** | Structured statistical baseline with seasonal + exogenous terms | Monthly | Implemented |
+| **Prophet** | Existing benchmark; robust to trend changes and seasonality | Monthly & Weekly | Implemented (monthly stable, weekly scaffolded) |
+| **CatBoost** | Main tabular candidate with full exogenous variable support and recursive inference | Monthly & Weekly | Monthly implemented (training + inference); weekly scaffolded |
 
 After training, forecasts at all granularities are **reconciled** using MinT (`mint_shrink`) to ensure temporal coherence — weekly forecasts within a month are consistent with the monthly total. The final outputs are exposed through a Streamlit app and a FastAPI layer.
 
