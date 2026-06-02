@@ -1420,12 +1420,23 @@ def adapt_monthly_data_for_catboost(
     drop_null: bool = bool(catboost_params.get("drop_rows_with_null_target_features", True))
     include_missingness_flags: bool = bool(catboost_params.get("include_missingness_flags", False))
     missingness_flag_columns: list[str] = list(catboost_params.get("missingness_flag_columns", []))
+    catboost_active_regressors: list[str] = list(catboost_params.get("active_regressors", []))
 
     _validate_required_columns(
         monthly_full_train,
         [date_column, target_column, sku_column],
         "monthly_full_train",
     )
+
+    if catboost_active_regressors:
+        missing_regressors = [
+            c for c in catboost_active_regressors if c not in monthly_full_train.columns
+        ]
+        if missing_regressors:
+            raise ValueError(
+                f"monthly_catboost.active_regressors contains columns not found in the dataset: "
+                f"{missing_regressors}. Available columns: {sorted(monthly_full_train.columns)}"
+            )
 
     logger.info(
         "Building CatBoost monthly feature dataset from monthly_full_train shape=%s.",
@@ -1528,6 +1539,27 @@ def adapt_monthly_data_for_catboost(
     logger.info("CatBoost train: %s", _summarize_date_range(catboost_train, date_column))
     logger.info("CatBoost validation: %s", _summarize_date_range(catboost_validation, date_column))
     logger.info("CatBoost test: %s", _summarize_date_range(catboost_test, date_column))
+
+    # When catboost_active_regressors is non-empty, restrict exogenous columns to that
+    # subset only (keeps target-derived features intact). Falls back to all shared columns
+    # when the list is empty.
+    if catboost_active_regressors:
+        keep_cols = [date_column, target_column, sku_column, *catboost_active_regressors, *new_columns]
+        catboost_train = catboost_train[[c for c in keep_cols if c in catboost_train.columns]].copy()
+        catboost_validation = catboost_validation[
+            [c for c in keep_cols if c in catboost_validation.columns]
+        ].copy()
+        catboost_test = catboost_test[[c for c in keep_cols if c in catboost_test.columns]].copy()
+        catboost_full_train = catboost_full_train[
+            [c for c in keep_cols if c in catboost_full_train.columns]
+        ].copy()
+        logger.info(
+            "CatBoost-specific active_regressors applied: %d exogenous columns selected: %s.",
+            len(catboost_active_regressors),
+            catboost_active_regressors,
+        )
+    else:
+        logger.info("No catboost-specific active_regressors configured — using all shared exogenous columns.")
 
     all_feature_columns = [
         col for col in catboost_full_train.columns
