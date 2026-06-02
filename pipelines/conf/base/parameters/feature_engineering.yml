@@ -8,6 +8,7 @@ feature_engineering_monthly:
     country_holidays: "CO"
     observed_holidays: true
     weekmask: "Mon Tue Wed Thu Fri"
+    min_working_weekday_count_for_flag: 5
 
   exogenous_features:
     enabled: true

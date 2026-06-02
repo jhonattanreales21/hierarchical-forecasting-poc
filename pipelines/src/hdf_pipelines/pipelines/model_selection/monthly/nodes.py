@@ -6,12 +6,14 @@ champion.
 """
 
 import logging
+import warnings as _warnings
 from datetime import UTC, datetime
 from typing import Any
 
 import numpy as np
 import pandas as pd
 from prophet import Prophet
+from statsmodels.stats.diagnostic import acorr_ljungbox
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 
 from shared.metrics import mase as _shared_mase
@@ -194,6 +196,17 @@ def select_monthly_family_champions(
         if family_df.empty:
             logger.warning("No candidates found for family '%s' — skipping.", family)
             continue
+
+        # For SARIMAX: exclude candidates flagged by the Ljung-Box filter before ranking.
+        if family == "sarimax" and "autocorrelation_excluded" in family_df.columns:
+            eligible = family_df[~family_df["autocorrelation_excluded"].fillna(False)]
+            if eligible.empty:
+                logger.warning(
+                    "All SARIMAX candidates were excluded by the Ljung-Box residual "
+                    "autocorrelation filter — falling back to full candidate set."
+                )
+                eligible = family_df
+            family_df = eligible
 
         family_df["abs_bias"] = family_df["bias"].abs()
         sort_cols = _build_sort_columns(primary_metric, tie_breakers, family_df.columns)
@@ -416,8 +429,11 @@ def build_monthly_champion_artifacts(  # noqa: PLR0913
         "model_family": production_family,
         "champion_id": production_candidate_id,
         "champion_level": "production",
-        # Surfaced at top level so metadata-driven inference can read it directly.
         "active_regressors": list(inference_contract["active_regressors"]),
+        "training_cutoff": refit_info.get("end_date"),
+        "hyperparameters": _extract_champion_hyperparameters(
+            production_family, champion_model, inference_contract
+        ),
         "family_champions": family_champions,
         "selection": {
             "primary_metric": str(summary_row.get("primary_metric", "wape")),
@@ -604,7 +620,7 @@ def _score_prophet_candidates(
     return rows
 
 
-def _score_sarimax_candidates(
+def _score_sarimax_candidates(  # noqa: PLR0915
     candidate_models: dict,
     prechampion_configs: dict,
     training_metadata: dict,
@@ -620,9 +636,25 @@ def _score_sarimax_candidates(
     Each candidate is refit on train + validation only (the test split is never
     seen), then forecast forward over the test period. The MASE denominator uses
     the train-only split, consistent with Prophet scoring.
+
+    Also computes:
+    - Ljung-Box residual autocorrelation test and marks candidates with p-value below
+      the configured threshold as ``autocorrelation_excluded``.
+    - Rolling-origin M-2/M-3 WAPE using progressively extended history windows.
     """
     date_col: str = params.get("date_column", "month_start_date")
     target_col: str = params.get("target_column", "monthly_demand")
+
+    # Ljung-Box config
+    ljung_box_cfg: dict = params.get("ljung_box", {})
+    lb_enabled: bool = bool(ljung_box_cfg.get("enabled", True))
+    lb_lags: int = int(ljung_box_cfg.get("lags", 10))
+    lb_threshold: float = float(ljung_box_cfg.get("pvalue_threshold", 0.05))
+
+    # Rolling-origin config
+    ro_cfg: dict = params.get("operational_lead_time", {})
+    ro_enabled: bool = bool(ro_cfg.get("enabled", True))
+    ro_lead_times: list[int] = [int(h) for h in ro_cfg.get("lead_times", [2, 3])]
 
     candidates_list: list[dict] = prechampion_configs.get("candidates", [])
     if not candidates_list:
@@ -639,7 +671,8 @@ def _score_sarimax_candidates(
             f"Target column '{target_col}' missing from monthly_sarimax_test."
         )
 
-    exog_cols: list[str] = list(training_metadata.get("exogenous_columns", []))
+    # Fall-back exog source: training metadata (legacy; candidate entry preferred).
+    exog_cols_default: list[str] = list(training_metadata.get("exogenous_columns", []))
 
     # Leakage-safe fit window: train + validation only (never the test split).
     fit_df = _concat_sorted([train_df, validation_df], date_col)
@@ -656,8 +689,6 @@ def _score_sarimax_candidates(
     test_start = str(test_df[date_col].min().date())
     test_end = str(test_df[date_col].max().date())
 
-    available_exog = [c for c in exog_cols if c in fit_df.columns]
-
     rows: list[dict] = []
     for pc in candidates_list:
         trial_id: str = str(pc.get("trial_id", ""))
@@ -669,10 +700,27 @@ def _score_sarimax_candidates(
             continue
 
         entry = candidate_models[trial_id]
+        # Prefer candidate-level exogenous_columns (emitted by hardened training).
+        candidate_exog: list[str] = list(entry.get("exogenous_columns") or exog_cols_default)
         config = entry.get("config", {})
         use_exog: bool = bool(config.get("use_exog", False))
 
         try:
+            # Resolve exog columns present in both fit_df and test_df for consistency.
+            available_exog = [
+                c for c in candidate_exog if c in fit_df.columns and c in test_df.columns
+            ]
+            if use_exog and candidate_exog:
+                missing_exog = [
+                    c for c in candidate_exog
+                    if c not in fit_df.columns or c not in test_df.columns
+                ]
+                if missing_exog:
+                    logger.warning(
+                        "SARIMAX candidate '%s': exogenous columns %s not found in "
+                        "fit or test DataFrames. Proceeding with: %s",
+                        trial_id, missing_exog, available_exog,
+                    )
             fit_exog = (
                 fit_df[available_exog].values.astype(float)
                 if (use_exog and available_exog)
@@ -695,8 +743,56 @@ def _score_sarimax_candidates(
             )
             result = model_obj.fit(disp=False)
 
+            # Ljung-Box residual autocorrelation test
+            lb_pvalue: float | None = None
+            autocorr_excluded: bool = False
+            if lb_enabled:
+                try:
+                    lb_df = acorr_ljungbox(result.resid, lags=[lb_lags], return_df=True)
+                    lb_pvalue = float(lb_df["lb_pvalue"].iloc[-1])
+                    autocorr_excluded = lb_pvalue < lb_threshold
+                    if autocorr_excluded:
+                        logger.warning(
+                            "SARIMAX candidate '%s': Ljung-Box p-value=%.4f < "
+                            "threshold=%.3f — marked for exclusion from champion "
+                            "selection.",
+                            trial_id, lb_pvalue, lb_threshold,
+                        )
+                except Exception as lb_exc:  # noqa: BLE001
+                    logger.warning(
+                        "SARIMAX candidate '%s': Ljung-Box test failed (%s) — "
+                        "skipping autocorrelation filter.",
+                        trial_id, lb_exc,
+                    )
+
             forecast_out = result.get_forecast(steps=n_test, exog=test_exog)
             y_pred = np.asarray(forecast_out.predicted_mean, dtype=float)[:n_test]
+
+            # Rolling-origin M-2/M-3 metrics
+            ro_metrics: dict = {}
+            if ro_enabled and ro_lead_times:
+                try:
+                    ro_metrics = _compute_sarimax_rolling_origin_metrics(
+                        fit_df=fit_df,
+                        test_df=test_df,
+                        config=config,
+                        available_exog=available_exog,
+                        use_exog=use_exog,
+                        date_col=date_col,
+                        target_col=target_col,
+                        lead_times=ro_lead_times,
+                    )
+                    logger.info(
+                        "SARIMAX candidate '%s' rolling-origin: %s",
+                        trial_id,
+                        {k: v for k, v in ro_metrics.items() if k.endswith("_wape")},
+                    )
+                except Exception as ro_exc:  # noqa: BLE001
+                    logger.warning(
+                        "SARIMAX candidate '%s': rolling-origin metrics failed "
+                        "(%s) — skipping.",
+                        trial_id, ro_exc,
+                    )
 
             rows.append(
                 _build_metrics_row(
@@ -709,12 +805,18 @@ def _score_sarimax_candidates(
                     test_start=test_start,
                     test_end=test_end,
                     candidate_rank=pc.get("rank"),
+                    ljung_box_pvalue=lb_pvalue,
+                    autocorrelation_excluded=autocorr_excluded,
+                    extra_metrics=ro_metrics,
                 )
             )
             logger.info(
-                "SARIMAX candidate '%s' scored — wape=%.4f",
+                "SARIMAX candidate '%s' scored — wape=%.4f  lb_pvalue=%s  "
+                "autocorr_excluded=%s",
                 trial_id,
                 rows[-1]["wape"] or float("nan"),
+                f"{lb_pvalue:.4f}" if lb_pvalue is not None else "n/a",
+                autocorr_excluded,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("SARIMAX candidate '%s' scoring failed: %s", trial_id, exc)
@@ -726,7 +828,7 @@ def _score_sarimax_candidates(
     return rows
 
 
-def _build_metrics_row(
+def _build_metrics_row(  # noqa: PLR0913
     family: str,
     candidate_id: str,
     y_true: np.ndarray,
@@ -736,6 +838,9 @@ def _build_metrics_row(
     test_start: str,
     test_end: str,
     candidate_rank: int | None,
+    ljung_box_pvalue: float | None = None,
+    autocorrelation_excluded: bool = False,
+    extra_metrics: dict | None = None,
 ) -> dict:
     """Compute test metrics and return a single candidate row dict."""
     wape_val = _safe_float(_shared_wape(y_true, y_pred))
@@ -751,7 +856,7 @@ def _build_metrics_row(
         float(np.sum(y_pred - y_true)) / (float(np.sum(np.abs(y_true))) + epsilon)
     )
 
-    return {
+    row = {
         "family": family,
         "candidate_id": candidate_id,
         "candidate_rank": candidate_rank,
@@ -764,11 +869,125 @@ def _build_metrics_row(
         "mase": mase_val,
         "rmse": rmse_val,
         "bias": bias_val,
+        "ljung_box_pvalue": ljung_box_pvalue,
+        "autocorrelation_excluded": autocorrelation_excluded,
         "primary_metric": "wape",
         "primary_metric_value": wape_val,
         "is_family_champion": False,
         "is_production_champion": False,
     }
+    if extra_metrics:
+        row.update(extra_metrics)
+    return row
+
+
+def _compute_sarimax_rolling_origin_metrics(  # noqa: PLR0913
+    fit_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    config: dict,
+    available_exog: list[str],
+    use_exog: bool,
+    date_col: str,
+    target_col: str,
+    lead_times: list[int],
+) -> dict:
+    """Compute rolling-origin WAPE for each lead time using the held-out test window.
+
+    For lead_time h, the set of valid (origin, target) pairs is:
+    - target = test_df row at 0-based index i, where i >= h - 1
+    - origin = fit_df extended with the first (i - h + 1) test rows
+
+    Each origin gets a fresh SARIMAX refit; the h-th step forecast is compared to
+    the actual at position i. The pairs are aggregated into WAPE.
+
+    Args:
+        fit_df: Combined train+validation DataFrame (leakage-safe fit window).
+        test_df: Held-out test DataFrame already sorted by date_col.
+        config: SARIMAX order/seasonal_order/trend/enforce_* config dict.
+        available_exog: Exogenous column names available in both fit_df and test_df.
+        use_exog: Whether to pass exogenous features to SARIMAX.
+        date_col: Date column name.
+        target_col: Target column name.
+        lead_times: List of lead-time horizons to evaluate (e.g. [2, 3]).
+
+    Returns:
+        Dict with keys ``test_m{h}_wape`` and ``n_m{h}_pairs`` for each ``h``
+        in ``lead_times``. Values are ``None`` / 0 when no valid pairs exist.
+    """
+    results: dict = {}
+
+    for h in lead_times:
+        actuals: list[float] = []
+        preds: list[float] = []
+
+        for i in range(len(test_df)):
+            if i < h - 1:
+                continue  # not enough history ahead of this target for lead_time h
+
+            n_extra = i - (h - 1)  # test rows to extend the origin window
+            if n_extra == 0:
+                origin_df = fit_df
+            else:
+                origin_df = pd.concat(
+                    [fit_df, test_df.iloc[:n_extra].copy()], ignore_index=True
+                )
+
+            origin_y = origin_df[target_col].values.astype(float)
+            origin_exog = (
+                origin_df[available_exog].values.astype(float)
+                if (use_exog and available_exog)
+                else None
+            )
+            future_slice = test_df.iloc[n_extra : n_extra + h]
+            future_exog = (
+                future_slice[available_exog].values.astype(float)
+                if (use_exog and available_exog)
+                else None
+            )
+
+            try:
+                model_ro = SARIMAX(
+                    endog=origin_y,
+                    exog=origin_exog,
+                    order=tuple(config["order"]),
+                    seasonal_order=tuple(config["seasonal_order"]),
+                    trend=config.get("trend"),
+                    enforce_stationarity=bool(config.get("enforce_stationarity", False)),
+                    enforce_invertibility=bool(config.get("enforce_invertibility", False)),
+                )
+                with _warnings.catch_warnings(record=True):
+                    _warnings.simplefilter("always")
+                    result_ro = model_ro.fit(disp=False)
+
+                forecast_ro = result_ro.get_forecast(steps=h, exog=future_exog)
+                y_pred_ro = np.asarray(forecast_ro.predicted_mean, dtype=float)
+
+                if len(y_pred_ro) >= h:
+                    pred_h = float(y_pred_ro[h - 1])
+                    actual_h = float(test_df.iloc[i][target_col])
+                    if np.isfinite(pred_h) and np.isfinite(actual_h):
+                        preds.append(pred_h)
+                        actuals.append(actual_h)
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "Rolling-origin SARIMAX: refit failed at test index=%d lead_time=%d "
+                    "— skipping pair.",
+                    i, h,
+                )
+                continue
+
+        m_label = f"test_m{h}_wape"
+        n_label = f"n_m{h}_pairs"
+        if actuals:
+            results[m_label] = _safe_float(
+                _shared_wape(np.array(actuals), np.array(preds))
+            )
+            results[n_label] = len(actuals)
+        else:
+            results[m_label] = None
+            results[n_label] = 0
+
+    return results
 
 
 def _build_sort_columns(
@@ -957,6 +1176,14 @@ def _refit_sarimax_full_history(
 
     y = df[target_col].to_numpy(dtype=float)
     available_exog = [c for c in exog_cols if c in df.columns]
+    missing_exog = [c for c in exog_cols if c not in df.columns]
+    if missing_exog:
+        logger.warning(
+            "SARIMAX full-history refit: exogenous columns %s not found in "
+            "full_train_df. Proceeding with available columns: %s",
+            missing_exog,
+            available_exog,
+        )
     use_exog = bool(config.get("use_exog", False)) and bool(available_exog)
     exog = df[available_exog].to_numpy(dtype=float) if use_exog else None
 
@@ -996,6 +1223,34 @@ def _refit_info(performed: bool, full_train_df: pd.DataFrame, date_col: str) -> 
             "Reported test metrics come from the pre-refit selection stage."
         ),
     }
+
+
+def _extract_champion_hyperparameters(
+    production_family: str,
+    champion_model: Any,
+    inference_contract: dict,
+) -> dict:
+    """Extract the champion's key hyperparameters for audit and downstream inspection.
+
+    Args:
+        production_family: Elected production champion family.
+        champion_model: The fitted champion model (Prophet) or candidate dict (SARIMAX).
+        inference_contract: Inference contract dict containing SARIMAX config when applicable.
+
+    Returns:
+        Dict of hyperparameter names to values; schema is family-specific.
+    """
+    if production_family == "prophet":
+        return _extract_prophet_params(champion_model)
+    if production_family == "sarimax":
+        config = dict(inference_contract.get("sarimax_config") or {})
+        return {
+            "order": config.get("order"),
+            "seasonal_order": config.get("seasonal_order"),
+            "trend": config.get("trend"),
+            "use_exog": bool(config.get("use_exog", False)),
+        }
+    return {}
 
 
 def _build_inference_contract(
@@ -1047,6 +1302,8 @@ def _build_inference_contract(
                 "seasonal_order": config.get("seasonal_order"),
                 "trend": config.get("trend"),
                 "use_exog": bool(config.get("use_exog", False)),
+                "enforce_stationarity": bool(config.get("enforce_stationarity", False)),
+                "enforce_invertibility": bool(config.get("enforce_invertibility", False)),
             },
         }
 

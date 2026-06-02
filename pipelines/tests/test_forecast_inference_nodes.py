@@ -295,3 +295,57 @@ def test_sarimax_exog_omitted_when_not_trained_with_exog():
     model = _sarimax_model(use_exog=False)
     _run_node(model, _sarimax_metadata())
     assert model["model"].last_exog is None
+
+
+# ── Inference metadata contracts ──────────────────────────────────────────────
+
+
+def test_inference_metadata_source_frames_are_generic_names():
+    """source_future_frames in inference metadata must use generic monthly_future_*m names."""
+    _, _, _, _, meta = _run_node(_FakeProphet(), _prophet_metadata())
+
+    source_frames = meta.get("source_future_frames", {})
+    assert source_frames.get("3") == "monthly_future_3m"
+    assert source_frames.get("6") == "monthly_future_6m"
+    assert source_frames.get("12") == "monthly_future_12m"
+
+
+def test_inference_metadata_notes_empty_for_prophet():
+    """Prophet inference should produce no stale or temporary notes."""
+    _, _, _, _, meta = _run_node(_FakeProphet(), _prophet_metadata())
+
+    notes = meta.get("notes", [])
+    assert notes == [], (
+        f"Prophet inference metadata contains unexpected notes: {notes}"
+    )
+
+
+def test_inference_metadata_notes_present_for_sarimax():
+    """SARIMAX inference metadata should carry the refit-recommendation note."""
+    _, _, _, _, meta = _run_node(_sarimax_model(), _sarimax_metadata())
+
+    notes = meta.get("notes", [])
+    assert len(notes) == 1
+    assert "refit" in notes[0].lower() or "full-history" in notes[0].lower()
+
+
+def test_inference_metadata_contains_required_audit_fields():
+    """Monthly inference metadata must expose all fields needed for a production audit."""
+    _, _, _, _, meta = _run_node(_FakeProphet(), _prophet_metadata())
+
+    required_fields = {
+        "granularity",
+        "model_family",
+        "champion_id",
+        "run_id",
+        "forecast_generated_at",
+        "supported_horizons",
+        "default_horizon",
+        "output_schema_version",
+        "selection_metric",
+        "has_prediction_interval",
+        "horizons",
+        "source_future_frames",
+    }
+    missing = required_fields - set(meta.keys())
+    assert not missing, f"inference_metadata is missing required audit fields: {missing}"

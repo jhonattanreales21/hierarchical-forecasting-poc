@@ -276,10 +276,9 @@ def predict_monthly_sarimax(
 def _resolve_date_column(future_df: pd.DataFrame, candidates: list[str]) -> str:
     """Return the first candidate date column present in the future frame.
 
-    The canonical generic future frames are not built yet, so monthly inference
-    temporarily consumes the Prophet future frames (date column ``ds``). This
-    resolver lets each adapter accept either the family-native date column or the
-    Prophet ``ds`` fallback.
+    Each adapter passes a family-preferred name first (e.g. ``month_start_date``
+    for SARIMAX, ``ds`` for Prophet) followed by fallbacks so either frame format
+    is accepted without error.
 
     Args:
         future_df: Future feature frame.

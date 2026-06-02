@@ -17,6 +17,28 @@ EXPECTED_FIRST_WEEK_TOTAL = 15.0
 EXPECTED_SECOND_WEEK_TOTAL = 8.0
 
 
+def _data_ingestion_params() -> dict:
+    """Return the default data_ingestion parameter block matching data_ingestion.yml."""
+    return {
+        "demand_masking": {"scale_factor": 1.0, "sku_prefix": "sku"},
+        "raw_data": {
+            "demand_expected_columns": [
+                "SKU", "Year", "Month", "Month Name", "Date",
+                "Monthly Demand", "Daily Demand",
+            ],
+            "demand_rename_map": {
+                "SKU": "sku", "Year": "year", "Month": "month",
+                "Month Name": "month_name", "Date": "date",
+                "Monthly Demand": "monthly_demand", "Daily Demand": "daily_demand",
+            },
+            "exogenous_expected_columns": [
+                "Date", "pfizer_limited", "surgifoam_limited",
+                "rebate_target", "expected_market_share",
+            ],
+        },
+    }
+
+
 def _raw_demand_df() -> pd.DataFrame:
     """Return a minimal valid raw demand DataFrame matching the source CSV column contract."""
     return pd.DataFrame(
@@ -37,11 +59,11 @@ def test_load_and_clean_demand_raises_on_missing_columns():
     df = _raw_demand_df().drop(columns=["Daily Demand"])
 
     with pytest.raises(ValueError, match="Missing required columns in raw demand data"):
-        load_and_clean_demand(df)
+        load_and_clean_demand(df, _data_ingestion_params())
 
 
 def test_mask_raw_demand_anonymizes_skus_and_scales_demand_columns():
-    """Raw demand is anonymized before cleaning and both demand measures are scaled."""
+    """Raw demand is anonymized: SKUs get deterministic placeholders, demand is scaled by scale_factor."""
     df = pd.DataFrame(
         {
             "SKU": [" Real SKU A ", "Real SKU A", "Real SKU B"],
@@ -53,12 +75,15 @@ def test_mask_raw_demand_anonymizes_skus_and_scales_demand_columns():
             "Daily Demand": [50.0, 75.0, 25.0],
         }
     )
+    params = _data_ingestion_params()
 
-    result = mask_raw_demand(df)
+    result = mask_raw_demand(df, params)
 
+    # SKU names are replaced with deterministic placeholders in order of first appearance.
     assert result["SKU"].tolist() == ["sku1", "sku1", "sku2"]
-    assert result["Monthly Demand"].tolist() == [10.0, 10.0, 25.0]
-    assert result["Daily Demand"].tolist() == [0.5, 0.75, 0.25]
+    # With scale_factor=1.0 (default), demand values are unchanged.
+    assert result["Monthly Demand"].tolist() == [1000.0, 1000.0, 2500.0]
+    assert result["Daily Demand"].tolist() == [50.0, 75.0, 25.0]
 
 
 def test_load_and_clean_exogenous_strips_trailing_whitespace_from_column_names():
@@ -73,10 +98,11 @@ def test_load_and_clean_exogenous_strips_trailing_whitespace_from_column_names()
             "pfizer_limited": [0.0, 1.0],
             "surgifoam_limited ": [0.0, 0.0],  # intentional trailing space
             "rebate_target": [0.5, 0.5],
+            "expected_market_share": [0.3, 0.4],
         }
     )
 
-    result = load_and_clean_exogenous(df)
+    result = load_and_clean_exogenous(df, _data_ingestion_params())
 
     assert "surgifoam_limited" in result.columns
     assert "month_start_date" in result.columns

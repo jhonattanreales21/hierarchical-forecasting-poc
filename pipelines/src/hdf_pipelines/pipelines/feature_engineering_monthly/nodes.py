@@ -31,7 +31,6 @@ _CALENDAR_FEATURE_COLUMNS = [
     "thursday_holidays",
     "total_holidays",
 ]
-_MIN_WORKING_WEEKDAY_COUNT_FOR_FLAG = 5
 
 
 def _validate_required_columns(
@@ -132,6 +131,7 @@ def _count_monthly_calendar_features(
     month_start_date: pd.Timestamp,
     holiday_dates: pd.DatetimeIndex,
     business_weekdays: set[int],
+    min_working_weekday_count: int,
 ) -> dict[str, int | pd.Timestamp]:
     """Count deterministic calendar features for a single month."""
     # Expand the month to daily dates so weekday and holiday counts remain explicit.
@@ -153,12 +153,8 @@ def _count_monthly_calendar_features(
         "total_thursdays": int(is_thursday.sum()),
         "working_tuesdays": working_tuesdays,
         "working_thursdays": working_thursdays,
-        "has_5_working_tuesdays": int(
-            working_tuesdays >= _MIN_WORKING_WEEKDAY_COUNT_FOR_FLAG
-        ),
-        "has_5_working_thursdays": int(
-            working_thursdays >= _MIN_WORKING_WEEKDAY_COUNT_FOR_FLAG
-        ),
+        "has_5_working_tuesdays": int(working_tuesdays >= min_working_weekday_count),
+        "has_5_working_thursdays": int(working_thursdays >= min_working_weekday_count),
         "tuesday_holidays": int((is_tuesday & is_holiday).sum()),
         "thursday_holidays": int((is_thursday & is_holiday).sum()),
         "total_holidays": int(is_holiday.sum()),
@@ -251,6 +247,7 @@ def build_monthly_calendar_features(
         demand_df[date_column].drop_duplicates().sort_values().tolist()
     )
     calendar_params = parameters["calendar_features"]
+    min_working_count: int = int(calendar_params.get("min_working_weekday_count_for_flag", 5))
     holiday_dates = _get_country_holidays(
         country_code=calendar_params["country_holidays"],
         years=month_index.year.unique().tolist(),
@@ -259,7 +256,9 @@ def build_monthly_calendar_features(
     business_weekdays = _parse_weekmask(calendar_params["weekmask"])
 
     calendar_rows = [
-        _count_monthly_calendar_features(month_start, holiday_dates, business_weekdays)
+        _count_monthly_calendar_features(
+            month_start, holiday_dates, business_weekdays, min_working_count
+        )
         for month_start in month_index
     ]
     calendar_features = (
