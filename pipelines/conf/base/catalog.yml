@@ -262,6 +262,27 @@ monthly_sarimax_training_metadata:
   type: json.JSONDataset
   filepath: data/06_models/tuning/monthly_sarimax_training_metadata.json
 
+# 06_models — Monthly CatBoost training and tuning artifacts
+monthly_catboost_tuning_results:
+  type: pandas.ParquetDataset
+  filepath: data/06_models/tuning/monthly_catboost_tuning_results.parquet
+
+monthly_catboost_validation_metrics:
+  type: pandas.ParquetDataset
+  filepath: data/06_models/tuning/monthly_catboost_validation_metrics.parquet
+
+monthly_catboost_prechampion_configs:
+  type: json.JSONDataset
+  filepath: data/06_models/tuning/monthly_catboost_prechampion_configs.json
+
+monthly_catboost_candidate_models:
+  type: pickle.PickleDataset
+  filepath: data/06_models/tuning/monthly_catboost_candidate_models.pkl
+
+monthly_catboost_training_metadata:
+  type: json.JSONDataset
+  filepath: data/06_models/tuning/monthly_catboost_training_metadata.json
+
 # 06_models — candidate models per granularity × family
 candidate_monthly_prophet:
   type: pickle.PickleDataset

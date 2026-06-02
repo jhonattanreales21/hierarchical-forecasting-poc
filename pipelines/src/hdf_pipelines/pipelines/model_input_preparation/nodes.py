@@ -1420,12 +1420,23 @@ def adapt_monthly_data_for_catboost(
     drop_null: bool = bool(catboost_params.get("drop_rows_with_null_target_features", True))
     include_missingness_flags: bool = bool(catboost_params.get("include_missingness_flags", False))
     missingness_flag_columns: list[str] = list(catboost_params.get("missingness_flag_columns", []))
+    catboost_active_regressors: list[str] = list(catboost_params.get("active_regressors", []))
 
     _validate_required_columns(
         monthly_full_train,
         [date_column, target_column, sku_column],
         "monthly_full_train",
     )
+
+    if catboost_active_regressors:
+        missing_regressors = [
+            c for c in catboost_active_regressors if c not in monthly_full_train.columns
+        ]
+        if missing_regressors:
+            raise ValueError(
+                f"monthly_catboost.active_regressors contains columns not found in the dataset: "
+                f"{missing_regressors}. Available columns: {sorted(monthly_full_train.columns)}"
+            )
 
     logger.info(
         "Building CatBoost monthly feature dataset from monthly_full_train shape=%s.",
@@ -1529,6 +1540,27 @@ def adapt_monthly_data_for_catboost(
     logger.info("CatBoost validation: %s", _summarize_date_range(catboost_validation, date_column))
     logger.info("CatBoost test: %s", _summarize_date_range(catboost_test, date_column))
 
+    # When catboost_active_regressors is non-empty, restrict exogenous columns to that
+    # subset only (keeps target-derived features intact). Falls back to all shared columns
+    # when the list is empty.
+    if catboost_active_regressors:
+        keep_cols = [date_column, target_column, sku_column, *catboost_active_regressors, *new_columns]
+        catboost_train = catboost_train[[c for c in keep_cols if c in catboost_train.columns]].copy()
+        catboost_validation = catboost_validation[
+            [c for c in keep_cols if c in catboost_validation.columns]
+        ].copy()
+        catboost_test = catboost_test[[c for c in keep_cols if c in catboost_test.columns]].copy()
+        catboost_full_train = catboost_full_train[
+            [c for c in keep_cols if c in catboost_full_train.columns]
+        ].copy()
+        logger.info(
+            "CatBoost-specific active_regressors applied: %d exogenous columns selected: %s.",
+            len(catboost_active_regressors),
+            catboost_active_regressors,
+        )
+    else:
+        logger.info("No catboost-specific active_regressors configured — using all shared exogenous columns.")
+
     all_feature_columns = [
         col for col in catboost_full_train.columns
         if col not in {date_column, target_column, sku_column}
@@ -1538,6 +1570,31 @@ def adapt_monthly_data_for_catboost(
         if col not in {date_column, target_column, sku_column} and col not in new_columns
     ]
 
+    # Target-derived columns that cannot be known at future inference time without
+    # re-computing them from arriving actuals (lags, rolling, diffs, pct_changes).
+    _target_derived_prefixes = (
+        "demand_lag_",
+        "rolling_mean_",
+        "rolling_std_",
+        "rolling_min_",
+        "rolling_max_",
+        "rolling_mean_3_vs_12",
+        "demand_diff_",
+        "demand_pct_change_",
+    )
+    future_required_columns = [
+        col for col in all_feature_columns
+        if not any(col.startswith(prefix) for prefix in _target_derived_prefixes)
+        and col != "rolling_mean_3_vs_12"
+    ]
+
+    # Columns expected to be structurally null at the boundary of the lag warmup
+    # window (e.g. demand_diff_12 requires 13 + 1 prior observations).
+    structural_null_columns = [
+        col for col in all_feature_columns
+        if col.startswith("demand_diff_") or col.startswith("demand_pct_change_")
+    ]
+
     catboost_metadata: dict[str, Any] = {
         "granularity": "monthly",
         "model_family": "catboost",
@@ -1545,6 +1602,9 @@ def adapt_monthly_data_for_catboost(
         "target_column": target_column,
         "sku_column": sku_column,
         "all_feature_columns": all_feature_columns,
+        "categorical_feature_columns": [],
+        "null_handling_policy": "catboost_native",
+        "structural_null_columns": structural_null_columns,
         "base_feature_columns": base_feature_columns,
         "new_feature_columns": new_columns,
         "target_lag_columns": target_lag_cols,
@@ -1553,7 +1613,7 @@ def adapt_monthly_data_for_catboost(
             c for c in new_columns
             if c.startswith("demand_diff_") or c.startswith("demand_pct_change_")
         ],
-        "future_required_columns": base_feature_columns,
+        "future_required_columns": future_required_columns,
         "lag_settings": {"target_lags": target_lags},
         "rolling_settings": {
             "windows": rolling_windows,

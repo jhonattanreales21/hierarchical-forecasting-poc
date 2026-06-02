@@ -443,9 +443,12 @@ def _create_prophet_model(
         daily_seasonality=bool(candidate_config.get("daily_seasonality", False)),
         interval_width=float(candidate_config.get("interval_width", 0.8)),
     )
-    # Register regressors before fit; all share the same mode for this MVP
     for regressor_name in active_regressors:
-        model.add_regressor(regressor_name, mode=regressor_mode)
+        prior_scale_val = candidate_config.get(f"prior_scale_{regressor_name}")
+        kwargs: dict = {"mode": regressor_mode}
+        if prior_scale_val is not None:
+            kwargs["prior_scale"] = float(prior_scale_val)
+        model.add_regressor(regressor_name, **kwargs)
     return model
 
 
@@ -652,6 +655,11 @@ def _build_prechampion_configs(
         else:
             m = {}
 
+        regressor_prior_scales = {
+            str(k): _safe_float(row.get(k))
+            for k in row.index
+            if str(k).startswith("prior_scale_")
+        }
         prechampions.append(
             {
                 "candidate_id": cid,
@@ -682,6 +690,7 @@ def _build_prechampion_configs(
                     "weekly_seasonality": bool(row.get("weekly_seasonality", False)),
                     "daily_seasonality": bool(row.get("daily_seasonality", False)),
                     "interval_width": _safe_float(row.get("interval_width")),
+                    **regressor_prior_scales,
                 },
                 "active_regressors": active_regressors,
             }

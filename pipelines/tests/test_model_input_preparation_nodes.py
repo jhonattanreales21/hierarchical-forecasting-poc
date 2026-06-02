@@ -839,3 +839,89 @@ def test_catboost_adapter_full_train_contains_all_splits():
     )
 
     assert len(cb_full_train) == len(cb_train) + len(cb_val) + len(cb_test)
+
+
+# ── Phase 7 — hardened metadata contract ──────────────────────────────────────
+
+
+def test_catboost_adapter_metadata_phase7_fields_present():
+    """Phase 7: metadata must include categorical_feature_columns, null_handling_policy,
+    and structural_null_columns."""
+    full_train = _catboost_full_train_df()
+    train, val, test = _split_catboost_df(full_train)
+    metadata = _catboost_split_metadata()
+
+    _, _, _, _, split_meta = adapt_monthly_data_for_catboost(
+        train, val, test, full_train, metadata, _catboost_parameters()
+    )
+
+    assert "categorical_feature_columns" in split_meta
+    assert split_meta["categorical_feature_columns"] == []
+    assert "null_handling_policy" in split_meta
+    assert split_meta["null_handling_policy"] == "catboost_native"
+    assert "structural_null_columns" in split_meta
+    assert isinstance(split_meta["structural_null_columns"], list)
+
+
+def test_catboost_adapter_feature_columns_exclude_identity():
+    """all_feature_columns must not contain date, target, or sku columns."""
+    full_train = _catboost_full_train_df()
+    train, val, test = _split_catboost_df(full_train)
+    metadata = _catboost_split_metadata()
+
+    _, _, _, _, split_meta = adapt_monthly_data_for_catboost(
+        train, val, test, full_train, metadata, _catboost_parameters()
+    )
+
+    identity_cols = {
+        split_meta["date_column"],
+        split_meta["target_column"],
+        split_meta["sku_column"],
+    }
+    for col in split_meta["all_feature_columns"]:
+        assert col not in identity_cols, (
+            f"Identity column {col!r} must not appear in all_feature_columns."
+        )
+
+
+def test_catboost_adapter_future_required_columns_exclude_target_derived():
+    """future_required_columns must not include target-derived lag/rolling/diff/pct_change columns."""
+    full_train = _catboost_full_train_df()
+    train, val, test = _split_catboost_df(full_train)
+    metadata = _catboost_split_metadata()
+
+    _, _, _, _, split_meta = adapt_monthly_data_for_catboost(
+        train, val, test, full_train, metadata, _catboost_parameters()
+    )
+
+    target_derived_prefixes = (
+        "demand_lag_",
+        "rolling_mean_",
+        "rolling_std_",
+        "rolling_min_",
+        "rolling_max_",
+        "rolling_mean_3_vs_12",
+        "demand_diff_",
+        "demand_pct_change_",
+    )
+    for col in split_meta["future_required_columns"]:
+        for prefix in target_derived_prefixes:
+            assert not col.startswith(prefix), (
+                f"Target-derived column {col!r} must not appear in future_required_columns."
+            )
+
+
+def test_catboost_adapter_metadata_feature_columns_match_dataset_columns():
+    """all_feature_columns in metadata must correspond to columns actually in the dataset."""
+    full_train = _catboost_full_train_df()
+    train, val, test = _split_catboost_df(full_train)
+    metadata = _catboost_split_metadata()
+
+    cb_train, cb_val, cb_test, cb_full_train, split_meta = adapt_monthly_data_for_catboost(
+        train, val, test, full_train, metadata, _catboost_parameters()
+    )
+
+    for col in split_meta["all_feature_columns"]:
+        assert col in cb_full_train.columns, (
+            f"Metadata feature column {col!r} not found in catboost_full_train."
+        )

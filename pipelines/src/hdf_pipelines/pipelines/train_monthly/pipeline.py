@@ -31,12 +31,20 @@ def create_pipeline(**kwargs) -> Pipeline:
         create_catboost_pipeline(),
         namespace="train_monthly.catboost",
         inputs={
-            "train": "model_input_monthly_catboost_train",
-            "validation": "model_input_monthly_catboost_validation",
+            "monthly_catboost_train": "monthly_catboost_train",
+            "monthly_catboost_validation": "monthly_catboost_validation",
+            "monthly_catboost_split_metadata": "monthly_catboost_split_metadata",
         },
-        parameters={"parameters": "params:train_monthly"},
-        outputs={"candidate_model": "candidate_monthly_catboost"},
+        outputs={
+            "monthly_catboost_tuning_results": "monthly_catboost_tuning_results",
+            "monthly_catboost_validation_metrics": "monthly_catboost_validation_metrics",
+            "monthly_catboost_prechampion_configs": "monthly_catboost_prechampion_configs",
+            "monthly_catboost_candidate_models": "monthly_catboost_candidate_models",
+            "monthly_catboost_training_metadata": "monthly_catboost_training_metadata",
+        },
+        parameters={"train_monthly.catboost": "train_monthly.catboost"},
     )
+
     sarimax_pipe = pipeline(
         create_sarimax_pipeline(),
         namespace="train_monthly.sarimax",
