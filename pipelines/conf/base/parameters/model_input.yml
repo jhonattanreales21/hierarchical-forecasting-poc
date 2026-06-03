@@ -27,9 +27,9 @@ model_input_preparation:
       - "surgifoam_limited_lag_2"
       - "rebate_target_lag_2"
       # - "expected_market_share_lag_2"
-      - "pfizer_limited_lag_3"
-      - "surgifoam_limited_lag_3"
-      - "rebate_target_lag_3"
+      # - "pfizer_limited_lag_3"
+      # - "surgifoam_limited_lag_3"
+      # - "rebate_target_lag_3"
       # - "expected_market_share_lag_3"
       - "market_share_stress"
       - "market_share_stress_lag_1"
@@ -83,9 +83,9 @@ model_input_preparation:
       - "pfizer_limited_lag_2"
       - "surgifoam_limited_lag_2"
       - "rebate_target_lag_2"
-      - "pfizer_limited_lag_3"
-      - "surgifoam_limited_lag_3"
-      - "rebate_target_lag_3"
+      # - "pfizer_limited_lag_3"
+      # - "surgifoam_limited_lag_3"
+      # - "rebate_target_lag_3"
       # - "expected_market_share_lag_2"
       # - "expected_market_share_lag_3"
       - "market_share_stress"
@@ -145,15 +145,15 @@ model_input_preparation:
       - pfizer_limited
       - pfizer_limited_lag_1
       - pfizer_limited_lag_2
-      - pfizer_limited_lag_3
+      # - pfizer_limited_lag_3
       - surgifoam_limited
       - surgifoam_limited_lag_1
       - surgifoam_limited_lag_2
-      - surgifoam_limited_lag_3
+      # - surgifoam_limited_lag_3
       - rebate_target
       - rebate_target_lag_1
       - rebate_target_lag_2
-      - rebate_target_lag_3
+      # - rebate_target_lag_3
       # - expected_market_share
       # - expected_market_share_lag_1
       # - expected_market_share_lag_2
