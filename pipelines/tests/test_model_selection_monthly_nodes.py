@@ -23,6 +23,7 @@ from hdf_pipelines.pipelines.model_selection.monthly.nodes import (
     _score_catboost_candidates,
     _score_prophet_candidates,
     _score_sarimax_candidates,
+    annotate_monthly_candidate_champion_flags,
     build_monthly_champion_artifacts,
     evaluate_monthly_family_candidates_on_test,
     select_monthly_family_champions,
@@ -673,7 +674,39 @@ def test_select_monthly_production_champion_uses_primary_metric_then_tie_breaker
     assert prod_summary_tie.iloc[0]["production_champion_family"] == "prophet"
 
 
-# ── Test 4: champion metadata has required schema ─────────────────────────────
+# ── Test 4: candidate metrics carry selected champion flags ───────────────────
+
+
+def test_annotate_monthly_candidate_champion_flags_marks_selected_rows():
+    """Candidate metrics flags reflect family and production champion summaries."""
+    metrics_df = _make_candidate_metrics_df()
+    family_summary = select_monthly_family_champions(metrics_df, _make_params_monthly())
+    production_summary = select_monthly_production_champion(
+        family_summary, metrics_df, _make_params_monthly()
+    )
+
+    annotated = annotate_monthly_candidate_champion_flags(
+        metrics_df, family_summary, production_summary
+    )
+    expected_family_champion_ids = {
+        "prophet_candidate_001",
+        "sarimax_trial_001",
+    }
+
+    assert int(annotated["is_family_champion"].sum()) == len(
+        expected_family_champion_ids
+    )
+    assert int(annotated["is_production_champion"].sum()) == 1
+
+    family_champions = annotated[annotated["is_family_champion"]]
+    assert set(family_champions["candidate_id"]) == expected_family_champion_ids
+
+    production_champion = annotated[annotated["is_production_champion"]].iloc[0]
+    assert production_champion["family"] == "prophet"
+    assert production_champion["candidate_id"] == "prophet_candidate_001"
+
+
+# ── Test 5: champion metadata has required schema ─────────────────────────────
 
 
 def test_build_monthly_champion_metadata_has_required_schema():
