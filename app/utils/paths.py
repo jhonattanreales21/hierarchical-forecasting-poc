@@ -25,12 +25,7 @@ CHAMPION_META = _first_existing(
 )
 
 # Selection artifacts (06_models/selection/)
-SELECTION_FORECAST = _first_existing(
-    DATA_ROOT
-    / "06_models"
-    / "selection"
-    / "monthly_prophet_champion_test_forecast.parquet",
-)
+# Generic, model-family-agnostic production selection summary (single row).
 SELECTION_SUMMARY = _first_existing(
     DATA_ROOT
     / "06_models"
@@ -41,9 +36,22 @@ SELECTION_SUMMARY = _first_existing(
     / "selection"
     / "monthly_prophet_model_selection_summary.parquet",
 )
+# Best candidate per family (one row per Prophet / SARIMAX / CatBoost).
+FAMILY_CHAMPION_SUMMARY = (
+    DATA_ROOT / "06_models" / "selection" / "monthly_family_champion_summary.parquet"
+)
+# Per-candidate held-out test metrics across all families.
 TEST_METRICS = _first_existing(
     DATA_ROOT / "06_models" / "selection" / "monthly_candidate_test_metrics.parquet",
     DATA_ROOT / "06_models" / "selection" / "monthly_prophet_test_metrics.parquet",
+)
+# Legacy Prophet-specific test-period backtest forecast. Used only as a
+# historical/test visualization overlay; must not drive the champion narrative.
+LEGACY_TEST_FORECAST = (
+    DATA_ROOT
+    / "06_models"
+    / "selection"
+    / "monthly_prophet_champion_test_forecast.parquet"
 )
 
 # Model input (05_model_input/)

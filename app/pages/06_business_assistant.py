@@ -13,9 +13,12 @@ from shared.rag import FaissVectorStore, build_chunks_from_path, save_uploaded_f
 from shared.viz import plot_forecast
 from ui.components import render_empty_state, render_page_header, render_section_header
 from ui.styles import apply_global_styles
+from utils.champion import extract_champion_identity, forecast_has_intervals
 from utils.data_loaders import (
     load_champion_metadata,
-    load_champion_test_forecast,
+    load_inference_metadata,
+    load_legacy_test_forecast,
+    load_model_selection_summary,
     load_monthly_forecast,
     load_monthly_modeling_data,
     load_monthly_modeling_data_full,
@@ -105,6 +108,10 @@ with st.sidebar:
         st.info("Build the default Recothrom RAG document or upload a newer document.")
 
 meta = load_champion_metadata()
+inference_meta = load_inference_metadata()
+identity = extract_champion_identity(
+    meta, inference_meta, load_model_selection_summary()
+)
 actuals = load_monthly_modeling_data()
 raw_exogenous = load_raw_exogenous_data()
 historical_full = merge_historical_inputs(
@@ -112,8 +119,8 @@ historical_full = merge_historical_inputs(
     raw_exogenous,
 )
 
-raw_test_fc = load_champion_test_forecast()
-champion_id = meta.get("champion_id", "")
+raw_test_fc = load_legacy_test_forecast()
+champion_id = identity.get("champion_id") or ""
 test_fc = (
     raw_test_fc[raw_test_fc["candidate_id"] == champion_id]
     .copy()
@@ -159,6 +166,7 @@ with left_col:
             title="Forecast Assistant Context",
             champion_id=champion_id,
             test_mape=meta.get("test_metrics", {}).get("mape"),
+            show_future_intervals=forecast_has_intervals(chart_future_fc, identity),
         )
         for trace in fig.data:
             if trace.name == "Forecast (future)":

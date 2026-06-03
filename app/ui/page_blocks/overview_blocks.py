@@ -46,8 +46,8 @@ def render_temporal_hierarchy_overview() -> None:
     st.markdown("""
 | Layer | Role | Status |
 |-------|------|--------|
-| **Monthly** | Primary analytical and decision layer — main stakeholder output | Active (MVP) |
-| **Weekly** | Secondary enhancement — 14-week operational complement | Planned |
+| **Monthly** | Primary analytical and decision layer — main stakeholder output | Active (primary) |
+| **Weekly** | Secondary enhancement — 14-week operational complement | Planned / scaffolded |
 | **Daily** | Low-priority exploratory extension | Disabled |
         """)
     st.caption(
