@@ -17,7 +17,7 @@ feature_engineering_monthly:
       - "surgifoam_limited"
       - "rebate_target"
       - "expected_market_share"
-    lags: [1, 2, 3]
+    lags: [1, 2]
     derived_features:
       market_share_stress:
         enabled: true

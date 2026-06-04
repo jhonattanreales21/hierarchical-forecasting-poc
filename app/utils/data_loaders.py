@@ -10,44 +10,21 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+from utils.champion import (
+    standardize_champion_metadata,
+    standardize_forecast_columns,
+)
 from utils.paths import (
     ACTUALS,
     RAW_EXOGENOUS,
     CHAMPION_META,
+    FAMILY_CHAMPION_SUMMARY,
     INFERENCE_META,
-    SELECTION_FORECAST,
+    LEGACY_TEST_FORECAST,
     SELECTION_SUMMARY,
     TEST_METRICS,
     forecast_parquet,
 )
-
-
-def _standardize_forecast_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Normalize current and legacy forecast output schemas for the app."""
-    rename_map = {
-        "date": "ds",
-        "forecast": "yhat",
-        "forecast_lower": "yhat_lower",
-        "forecast_upper": "yhat_upper",
-    }
-    out = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
-    if "ds" in out.columns:
-        out["ds"] = pd.to_datetime(out["ds"])
-    return out
-
-
-def _standardize_champion_metadata(meta: dict) -> dict:
-    """Normalize current and legacy champion metadata keys."""
-    if not meta:
-        return meta
-    out = dict(meta)
-    metrics = out.get("test_metrics") or out.get("metrics") or {}
-    out["test_metrics"] = metrics
-    if "business_success_flag" not in out and "wape" in metrics:
-        out["business_success_flag"] = float(metrics["wape"]) <= 0.15
-    if "business_success_precision_threshold" not in out:
-        out["business_success_precision_threshold"] = 0.85
-    return out
 
 
 @st.cache_data
@@ -119,16 +96,20 @@ def load_raw_exogenous_data() -> pd.DataFrame:
 
 
 @st.cache_data
-def load_champion_test_forecast() -> pd.DataFrame:
-    """Load the full champion test forecast with ds parsed as datetime.
+def load_legacy_test_forecast() -> pd.DataFrame:
+    """Load the legacy Prophet test-period backtest forecast, if present.
+
+    This is a model-specific (Prophet) artifact retained only as a historical
+    test-window overlay. It must not be used to infer the current production
+    champion family.
 
     Returns:
-        DataFrame with all candidates, sorted by ds.
+        DataFrame with all candidates, sorted by ds, or empty if missing.
     """
-    if not SELECTION_FORECAST.exists():
+    if not LEGACY_TEST_FORECAST.exists():
         return pd.DataFrame()
-    df = pd.read_parquet(SELECTION_FORECAST)
-    df = _standardize_forecast_columns(df)
+    df = pd.read_parquet(LEGACY_TEST_FORECAST)
+    df = standardize_forecast_columns(df)
     if "ds" not in df.columns:
         return df
     return df.sort_values("ds").reset_index(drop=True)
@@ -148,7 +129,7 @@ def load_monthly_forecast(horizon_months: int) -> pd.DataFrame:
     if not path.exists():
         return pd.DataFrame()
     df = pd.read_parquet(path)
-    df = _standardize_forecast_columns(df)
+    df = standardize_forecast_columns(df)
     if "ds" not in df.columns:
         return df
     return df.sort_values("ds").reset_index(drop=True)
@@ -178,13 +159,25 @@ def load_test_metrics() -> pd.DataFrame:
     return pd.read_parquet(TEST_METRICS)
 
 
+@st.cache_data
+def load_family_champion_summary() -> pd.DataFrame:
+    """Load the per-family champion summary (best candidate per model family).
+
+    Returns:
+        DataFrame with one row per family, or empty DataFrame if missing.
+    """
+    if not FAMILY_CHAMPION_SUMMARY.exists():
+        return pd.DataFrame()
+    return pd.read_parquet(FAMILY_CHAMPION_SUMMARY)
+
+
 def load_champion_metadata() -> dict:
     """Load champion model metadata JSON.
 
     Returns:
         Dict with champion metadata, or empty dict if missing.
     """
-    return _standardize_champion_metadata(load_json(CHAMPION_META))
+    return standardize_champion_metadata(load_json(CHAMPION_META))
 
 
 def load_inference_metadata() -> dict:

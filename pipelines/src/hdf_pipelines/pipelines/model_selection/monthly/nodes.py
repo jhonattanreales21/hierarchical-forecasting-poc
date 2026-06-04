@@ -387,6 +387,93 @@ def select_monthly_production_champion(
 # ── Node 4 ────────────────────────────────────────────────────────────────────
 
 
+def annotate_monthly_candidate_champion_flags(
+    monthly_candidate_test_metrics: pd.DataFrame,
+    monthly_family_champion_summary: pd.DataFrame,
+    monthly_model_selection_summary: pd.DataFrame,
+) -> pd.DataFrame:
+    """Mark family and production champions in the candidate metrics table.
+
+    ``monthly_candidate_test_metrics`` is the app/reporting-facing audit table, so
+    its champion flags must reflect the separately persisted family and production
+    champion summaries.
+
+    Args:
+        monthly_candidate_test_metrics: Full held-out test metrics for all
+            candidates.
+        monthly_family_champion_summary: One selected champion row per model family.
+        monthly_model_selection_summary: One selected production champion row.
+
+    Returns:
+        Copy of the candidate metrics table with coherent ``is_family_champion`` and
+        ``is_production_champion`` boolean flags.
+
+    Raises:
+        ValueError: When candidate metrics are empty, no family champions are
+            available, or the production champion summary is empty.
+    """
+    if monthly_candidate_test_metrics.empty:
+        raise ValueError(
+            "monthly_candidate_test_metrics is empty; cannot annotate champion flags."
+        )
+    if monthly_family_champion_summary.empty:
+        raise ValueError(
+            "monthly_family_champion_summary is empty; cannot annotate champion flags."
+        )
+    if monthly_model_selection_summary.empty:
+        raise ValueError(
+            "monthly_model_selection_summary is empty; cannot annotate champion flags."
+        )
+
+    metrics_df = monthly_candidate_test_metrics.copy()
+    family_champion_pairs = set(
+        zip(
+            monthly_family_champion_summary["family"].astype(str),
+            monthly_family_champion_summary["family_champion_id"].astype(str),
+            strict=True,
+        )
+    )
+
+    production_row = monthly_model_selection_summary.iloc[0]
+    production_pair = (
+        str(production_row["production_champion_family"]),
+        str(production_row["production_champion_id"]),
+    )
+
+    candidate_pairs = list(
+        zip(
+            metrics_df["family"].astype(str),
+            metrics_df["candidate_id"].astype(str),
+            strict=True,
+        )
+    )
+    metrics_df["is_family_champion"] = [
+        pair in family_champion_pairs for pair in candidate_pairs
+    ]
+    metrics_df["is_production_champion"] = [
+        pair == production_pair for pair in candidate_pairs
+    ]
+
+    family_flag_count = int(metrics_df["is_family_champion"].sum())
+    production_flag_count = int(metrics_df["is_production_champion"].sum())
+    expected_family_count = len(family_champion_pairs)
+    if family_flag_count != expected_family_count:
+        raise ValueError(
+            "Could not map all family champions back to candidate metrics: "
+            f"expected {expected_family_count}, marked {family_flag_count}."
+        )
+    if production_flag_count != 1:
+        raise ValueError(
+            "Could not map exactly one production champion back to candidate metrics: "
+            f"marked {production_flag_count}."
+        )
+
+    return metrics_df
+
+
+# ── Node 5 ────────────────────────────────────────────────────────────────────
+
+
 def build_monthly_champion_artifacts(  # noqa: PLR0913
     monthly_model_selection_summary: pd.DataFrame,
     monthly_family_champion_summary: pd.DataFrame,

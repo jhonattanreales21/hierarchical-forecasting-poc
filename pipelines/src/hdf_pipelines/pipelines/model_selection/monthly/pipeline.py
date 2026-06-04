@@ -41,6 +41,7 @@ Outputs (to catalog):
 from kedro.pipeline import Pipeline, node, pipeline
 
 from .nodes import (
+    annotate_monthly_candidate_champion_flags,
     build_monthly_champion_artifacts,
     evaluate_monthly_family_candidates_on_test,
     select_monthly_family_champions,
@@ -77,13 +78,13 @@ def create_pipeline(**kwargs) -> Pipeline:
                     "monthly_catboost_test",
                     "params:model_selection.monthly_catboost",
                 ],
-                outputs="monthly_candidate_test_metrics",
+                outputs="monthly_candidate_test_metrics_unflagged",
                 name="evaluate_monthly_family_candidates_on_test",
             ),
             node(
                 func=select_monthly_family_champions,
                 inputs=[
-                    "monthly_candidate_test_metrics",
+                    "monthly_candidate_test_metrics_unflagged",
                     "params:model_selection.monthly",
                 ],
                 outputs="monthly_family_champion_summary",
@@ -93,11 +94,21 @@ def create_pipeline(**kwargs) -> Pipeline:
                 func=select_monthly_production_champion,
                 inputs=[
                     "monthly_family_champion_summary",
-                    "monthly_candidate_test_metrics",
+                    "monthly_candidate_test_metrics_unflagged",
                     "params:model_selection.monthly",
                 ],
                 outputs="monthly_model_selection_summary",
                 name="select_monthly_production_champion",
+            ),
+            node(
+                func=annotate_monthly_candidate_champion_flags,
+                inputs=[
+                    "monthly_candidate_test_metrics_unflagged",
+                    "monthly_family_champion_summary",
+                    "monthly_model_selection_summary",
+                ],
+                outputs="monthly_candidate_test_metrics",
+                name="annotate_monthly_candidate_champion_flags",
             ),
             node(
                 func=build_monthly_champion_artifacts,
