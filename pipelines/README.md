@@ -4,319 +4,419 @@
 
 ## Overview
 
-Kedro-based pipeline layer for the **Hierarchical Demand Forecasting PoC** — a Master's final project in Applied AI. This package (`hdf_pipelines`) orchestrates the full forecasting lifecycle: data ingestion, feature engineering, model training, selection, reconciliation, and inference across monthly and weekly temporal granularities.
+`hdf_pipelines` is the Kedro package for the **Hierarchical Demand Forecasting
+PoC**. It owns the reproducible data and ML workflow for a single critical SKU:
+ingestion, temporal aggregation, monthly feature engineering, model input
+preparation, monthly model training, model selection, champion inference, and
+the scaffolded weekly/reconciliation layers.
 
-The pipeline is the backbone of a multi-layer system that also includes a FastAPI serving layer and a Streamlit viewer app. All data I/O follows Kedro's data engineering convention using a versioned catalog.
+The project hierarchy is temporal, not product-, category-, or location-based:
 
----
+1. Monthly planning layer - primary analytical and business-facing layer.
+2. Weekly operational layer - secondary enhancement.
+3. Daily layer - optional exploratory allocation/disaggregation only.
+
+The pipeline layer is the source of truth for forecasting logic. Streamlit and
+FastAPI consume curated outputs and may trigger workflows, but they must not
+contain core validation, aggregation, training, model selection, reconciliation,
+or inference logic.
 
 ## North Star
 
 The goal is to compare **~4 model families** (Prophet, CatBoost, SARIMAX, and optionally N-HiTS) at **two granularities** (monthly and weekly) and select the best-performing champion per layer. The monthly layer is the primary decision surface; the weekly layer is an operational complement. Both layers feed into a temporal hierarchical reconciliation step.
 
-The current milestone completes the **Monthly Prophet MVP** — a fully runnable end-to-end path from raw data to official 3-month, 6-month and 12-month forecast outputs. CatBoost, SARIMAX, weekly, and reconciliation stages are scaffolded and will be validated in subsequent iterations.
+## Current Decisions
 
----
+- The canonical reproducible route is now `monthly_forecast_e2e`.
+- `kedro run` is equivalent to `kedro run --pipeline monthly_forecast_e2e`.
+- The monthly layer is the required champion layer; weekly remains scaffolded.
+- Monthly model selection currently compares Prophet and SARIMAX.
+- A generic monthly production champion is persisted as `champion_monthly_model`
+  plus `champion_monthly_metadata`.
+- Forecast inference is metadata-driven and dispatches by the selected champion
+  family (`prophet`, `sarimax`, or `catboost`).
+- The older Prophet-only route is retained as a reference route:
+  `monthly_mvp` / `prophet_monthly_e2e`.
+- CatBoost monthly training is now fully implemented: Optuna TPE tuning, validation
+  metrics, prechampion configs, and candidate model artifacts are produced by
+  `train_monthly.catboost`. The `model_input_preparation` stage generates
+  CatBoost-ready splits with target-derived lag and rolling features via
+  `adapt_monthly_data_for_catboost`. Recursive inference is also implemented and
+  wired in `forecast_inference`. CatBoost is available via the `train_monthly`
+  route but is not yet part of `monthly_forecast_e2e` or `monthly_model_selection`.
+- User-upload routing must distinguish daily demand from monthly demand before
+  training. Daily input can feed monthly and weekly workflows; monthly-only
+  input must stay monthly-only unless a documented disaggregation method is
+  added.
 
 ## Pipeline Status
 
-| Pipeline | Status | Tests | Notes |
-|----------|--------|-------|-------|
-| `data_ingestion` | ✅ Complete | ✅ | Cleaned demand + exogenous primary datasets |
-| `feature_engineering_monthly` | ✅ Complete | ✅ | Calendar + exogenous features; Prophet-ready output |
-| `model_input_preparation` | ✅ Complete | ✅ | Monthly Prophet train/val/test splits + future horizons (3m, 6m, 12m) |
-| `train_monthly` | 🔄 Prophet done | — | Prophet: tuning + champion refit on full train ✅ · CatBoost, SARIMAX: scaffolded |
-| `model_selection` | 🔄 Prophet done | — | Monthly Prophet: test-set evaluation + champion selection ✅ · CatBoost, SARIMAX, weekly: scaffolded |
-| `forecast_inference` | 🔄 Prophet done | — | Monthly Prophet: 3m + 6m forecasts + latest + metadata ✅ · weekly, daily allocation: scaffolded |
-| `feature_engineering_weekly` | 🔧 Wired | — | Nodes defined and wired; not yet end-to-end validated |
-| `train_weekly` | 🔧 Wired | — | Prophet, CatBoost, SARIMAX sub-pipelines scaffolded |
-| `reconciliation` | 🔧 Wired | — | MinT reconciliation + diagnostics; pending weekly completion |
+| Pipeline | Status | Notes |
+| --- | --- | --- |
+| `data_ingestion` | Implemented and tested | Cleans demand and exogenous inputs; emits daily, weekly, monthly, and monthly exogenous primary datasets. |
+| `feature_engineering_monthly` | Implemented and tested | Builds monthly calendar and exogenous features used by the monthly modeling path. |
+| `model_input_preparation` | Implemented and tested | Builds generic monthly splits, Prophet-compatible splits/future frames, SARIMAX-compatible splits, and CatBoost-ready splits with target-derived lag and rolling features. |
+| `train_monthly.prophet` | Implemented and tested | Optuna TPE tuning, validation metrics, top prechampions, and candidate artifacts. |
+| `train_monthly.sarimax` | Implemented and tested | Optuna TPE-based SARIMAX tuning with exogenous variables, Ljung-Box residual filter, rolling-origin M-2/M-3 validation metrics, top prechampions, and candidate artifacts. |
+| `train_monthly.catboost` | Implemented and tested | Optuna TPE tuning (50 trials, up to 10 prechampions), validation metrics, prechampion configs, candidate model artifacts, and training metadata. Recursive inference adapter wired in `forecast_inference`. |
+| `monthly_model_selection` | Implemented and tested | Compares monthly Prophet and SARIMAX candidates on held-out test data and elects the monthly production champion. CatBoost not yet included. |
+| `forecast_inference` | Implemented and tested | Generates standardized 3-, 6-, and 12-month forecasts from the generic monthly champion. Dispatches to Prophet, SARIMAX, or CatBoost (recursive) based on champion family. |
+| `monthly_mvp` / `prophet_monthly_e2e` | Reference route | Prophet-only training and Prophet-specific champion selection. Preserved for comparison and audit continuity. |
+| `feature_engineering_weekly` | Scaffolded | Node and pipeline structure exist; functions still raise `NotImplementedError`. |
+| `train_weekly` | Scaffolded | Prophet, CatBoost, and SARIMAX structures exist; functions still raise `NotImplementedError`. |
+| `reconciliation` | Scaffolded | Monthly-weekly reconciliation contract exists; implementation pending weekly completion. |
+| `train_monthly` | Implemented (experimental route) | Composes Prophet, CatBoost, and SARIMAX sub-pipelines; all three families are now implemented. Not the default route; CatBoost is not yet included in `monthly_model_selection`. |
+| `model_selection` | Legacy scaffold | Older multi-granularity selection path; use `monthly_model_selection` for the current implemented monthly path. |
 
-**✅ Complete** — nodes implemented, pipeline runs end-to-end, outputs validated, unit tests in place.
-**🔄 Prophet done** — Monthly Prophet path is fully operational; remaining model families (CatBoost, SARIMAX) and the weekly layer are scaffolded and pending validation.
-**🔧 Wired** — `pipeline.py` and `nodes.py` in place and registered; not yet end-to-end tested.
+## Canonical Monthly Flow
 
----
+The current stable end-to-end route is:
 
-## Monthly Prophet MVP — End-to-End Flow
-
-The following pipeline sequence is fully validated and produces real, inspectable outputs:
-
-```
+```text
 data_ingestion
-  → feature_engineering_monthly
-    → model_input_preparation
-      → train_monthly_prophet        # hyperparameter tuning + champion refit
-        → model_selection_monthly_prophet   # test-set ranking + champion selection
-          → forecast_inference       # 3m + 6m + 12m official forecasts
+  -> feature_engineering_monthly
+    -> model_input_preparation
+      -> train_monthly.prophet
+      -> train_monthly.sarimax
+        -> monthly_model_selection
+          -> forecast_inference
 ```
 
-Run the complete MVP slice step by step:
+This route performs the monthly multi-family comparison, refits the elected
+production champion according to the champion protocol, and generates
+application-ready monthly forecast outputs.
+
+Run it from `pipelines/`:
 
 ```bash
-kedro run --pipeline data_ingestion
-kedro run --pipeline feature_engineering_monthly
-kedro run --pipeline model_input_preparation
-kedro run --pipeline train_monthly_prophet
-kedro run --pipeline model_selection_monthly_prophet
-kedro run --pipeline forecast_inference
+uv run kedro run --pipeline monthly_forecast_e2e
 ```
 
-Or run the entire flow with a single command using the composed pipeline:
+Or simply:
 
 ```bash
-kedro run --pipeline prophet_monthly_e2e
+uv run kedro run
 ```
 
----
+## Registered Routes
 
-## Environment Setup
-
-This project uses `uv` for dependency management. **Do not use `pip` directly.**
+List registered pipelines with:
 
 ```bash
-# From the pipelines/ directory
-uv sync                    # Install all dependencies (including dev)
-uv sync --no-dev           # Production dependencies only
+uv run kedro registry list
 ```
 
----
-
-## Running Pipelines
-
-### Current default route
+Current public routes:
 
 ```bash
-# Run the validated Monthly Prophet MVP — the current stable default
-kedro run --pipeline monthly_mvp
-kedro run                          # equivalent to monthly_mvp
+# Stable default monthly route
+uv run kedro run --pipeline monthly_forecast_e2e
+uv run kedro run
+
+# Monthly comparison without final inference
+uv run kedro run --pipeline prophet_sarimax_comparison
+
+# Monthly generic model selection only
+# Requires existing Prophet and SARIMAX candidate artifacts.
+uv run kedro run --pipeline monthly_model_selection
+
+# Prophet-only reference path
+uv run kedro run --pipeline monthly_mvp
+uv run kedro run --pipeline prophet_monthly_e2e
+
+# Individual implemented stages
+uv run kedro run --pipeline data_ingestion
+uv run kedro run --pipeline feature_engineering_monthly
+uv run kedro run --pipeline model_input_preparation
+uv run kedro run --pipeline forecast_inference
 ```
 
-This executes: `data_ingestion → feature_engineering_monthly → model_input_preparation → train_monthly_prophet → model_selection_monthly_prophet → forecast_inference`
-
-### Individual validated stages
+Scaffolded or legacy routes are registered for architecture continuity, but are
+not part of the stable path yet:
 
 ```bash
-kedro run --pipeline data_ingestion
-kedro run --pipeline feature_engineering_monthly
-kedro run --pipeline model_input_preparation
-kedro run --pipeline train_monthly             # Prophet only (CatBoost, SARIMAX scaffolded)
-kedro run --pipeline model_selection           # Prophet path only
-kedro run --pipeline forecast_inference        # Monthly Prophet outputs only
-kedro run --pipeline prophet_monthly_e2e       # same as monthly_mvp
+uv run kedro run --pipeline feature_engineering_weekly
+uv run kedro run --pipeline train_weekly
+uv run kedro run --pipeline reconciliation
+uv run kedro run --pipeline train_monthly
+uv run kedro run --pipeline model_selection
+uv run kedro run --pipeline experimental_training
+uv run kedro run --pipeline experimental_full_experiment
+uv run kedro run --pipeline experimental_inference
 ```
 
-### Scaffolded stages — ⚠️ not yet end-to-end validated
+These routes include placeholder nodes and may raise `NotImplementedError`.
 
-```bash
-kedro run --pipeline feature_engineering_weekly    # NotImplementedError
-kedro run --pipeline train_weekly                  # NotImplementedError
-kedro run --pipeline reconciliation                # NotImplementedError
-```
+## Data Layer Outputs
 
-### Experimental composed shortcuts — ⚠️ include NotImplementedError stubs, will fail
+Key artifacts produced by the current monthly route:
 
-```bash
-kedro run --pipeline experimental_training              # train_monthly + train_weekly
-kedro run --pipeline experimental_full_experiment       # ingestion → all features → training → selection
-kedro run --pipeline experimental_inference             # forecast_inference + reconciliation
-```
-
-### Full intended execution order (target architecture, not yet fully executable)
-
-```
-data_ingestion
-    → feature_engineering_monthly
-    → feature_engineering_weekly        [🔧 scaffolded]
-        → model_input_preparation
-            → train_monthly (prophet · catboost · sarimax)
-            → train_weekly  (prophet · catboost · sarimax)  [🔧 scaffolded]
-                → model_selection                            [🔧 scaffolded]
-                    → reconciliation                         [🔧 scaffolded]
-                        → forecast_inference
-```
-
----
-
-## Data Layer — Current Outputs
-
-Artifacts produced by the Monthly Prophet MVP path:
-
-```
+```text
 data/
 ├── 02_intermediate/
 │   ├── demand_cleaned.parquet
 │   └── exogenous_cleaned.parquet
 ├── 03_primary/
 │   ├── demand_daily.parquet
-│   ├── demand_monthly.parquet
 │   ├── demand_weekly.parquet
+│   ├── demand_monthly.parquet
 │   └── exogenous_monthly.parquet
 ├── 04_feature/
 │   ├── monthly_calendar_features.parquet
 │   ├── monthly_exogenous_features.parquet
 │   └── monthly_prophet_features.parquet
 ├── 05_model_input/
+│   ├── monthly_modeling_data.parquet
+│   ├── monthly_train.parquet
+│   ├── monthly_validation.parquet
+│   ├── monthly_test.parquet
+│   ├── monthly_full_train.parquet
+│   ├── monthly_split_metadata.json
 │   ├── monthly_prophet_modeling_data.parquet
 │   ├── monthly_prophet_train.parquet
 │   ├── monthly_prophet_validation.parquet
 │   ├── monthly_prophet_test.parquet
 │   ├── monthly_prophet_full_train.parquet
-│   ├── monthly_prophet_future_3m.parquet       # inference input (3-month horizon)
-│   ├── monthly_prophet_future_6m.parquet       # inference input (6-month horizon)
-│   ├── monthly_prophet_future_12m.parquet      # inference input (12-month horizon)
-│   └── monthly_prophet_split_metadata.json
+│   ├── monthly_prophet_future_3m.parquet
+│   ├── monthly_prophet_future_6m.parquet
+│   ├── monthly_prophet_future_12m.parquet
+│   ├── monthly_prophet_split_metadata.json
+│   ├── monthly_sarimax_train.parquet
+│   ├── monthly_sarimax_validation.parquet
+│   ├── monthly_sarimax_test.parquet
+│   ├── monthly_sarimax_full_train.parquet
+│   ├── monthly_sarimax_split_metadata.json
+│   ├── monthly_catboost_train.parquet
+│   ├── monthly_catboost_validation.parquet
+│   ├── monthly_catboost_test.parquet
+│   ├── monthly_catboost_full_train.parquet
+│   └── monthly_catboost_split_metadata.json
 ├── 06_models/
-│   ├── candidates/
-│   │   └── monthly_prophet_candidate_models.pkl  # all tuned Prophet candidates
 │   ├── tuning/
 │   │   ├── monthly_prophet_tuning_results.parquet
 │   │   ├── monthly_prophet_validation_metrics.parquet
 │   │   ├── monthly_prophet_prechampion_configs.json
-│   │   └── monthly_prophet_training_metadata.json
+│   │   ├── monthly_prophet_training_metadata.json
+│   │   ├── monthly_sarimax_tuning_results.parquet
+│   │   ├── monthly_sarimax_validation_metrics.parquet
+│   │   ├── monthly_sarimax_prechampion_configs.json
+│   │   ├── monthly_sarimax_candidate_models.pkl
+│   │   ├── monthly_sarimax_training_metadata.json
+│   │   ├── monthly_catboost_tuning_results.parquet
+│   │   ├── monthly_catboost_validation_metrics.parquet
+│   │   ├── monthly_catboost_prechampion_configs.json
+│   │   ├── monthly_catboost_candidate_models.pkl
+│   │   └── monthly_catboost_training_metadata.json
+│   ├── candidates/
+│   │   ├── monthly_prophet_candidate_models.pkl
+│   │   ├── monthly_prophet.pkl
+│   │   ├── monthly_sarimax.pkl
+│   │   └── monthly_catboost.pkl
 │   ├── selection/
-│   │   ├── monthly_prophet_test_metrics.parquet
-│   │   ├── monthly_prophet_model_selection_summary.parquet
-│   │   └── monthly_prophet_champion_test_forecast.parquet
+│   │   ├── monthly_candidate_test_metrics.parquet
+│   │   ├── monthly_family_champion_summary.parquet
+│   │   └── monthly_model_selection_summary.parquet
 │   └── champions/
-│       ├── monthly_prophet_champion.pkl          # champion model (refit on full train)
-│       └── monthly_prophet_champion_metadata.json
+│       ├── monthly_champion.pkl
+│       └── champion_monthly_metadata.json
 └── 07_model_output/
-    ├── monthly_prophet_forecast_3m.parquet      # official 3-month forecast
-    ├── monthly_prophet_forecast_6m.parquet      # official 6-month forecast
-    ├── monthly_prophet_forecast_12m.parquet     # official 12-month forecast
-    ├── monthly_prophet_forecast_latest.parquet  # alias of 12m; consumed by app + API
-    └── monthly_prophet_inference_metadata.json  # run ID, regressors, horizon summaries
+    ├── monthly_forecast_3m.parquet
+    ├── monthly_forecast_6m.parquet
+    ├── monthly_forecast_12m.parquet
+    ├── monthly_forecast_latest.parquet
+    └── monthly_inference_metadata.json
 ```
 
-Layers `08_reporting/` and reconciled outputs in `07_model_output/` will be populated once the full multi-model selection and reconciliation stages are validated.
+Legacy and future-stage catalog entries also exist for raw/reconciled monthly
+and weekly forecasts, CatBoost placeholders, weekly model inputs, reporting
+tables, and reconciliation diagnostics.
 
----
+## Champion Protocol
 
-## Project Structure
+The implemented monthly path follows the staged model-selection decision:
 
-```
-pipelines/
-├── conf/
-│   ├── base/                          # Shared configuration (catalog, parameters)
-│   │   ├── catalog.yml                # Dataset definitions (all I/O goes here)
-│   │   ├── parameters.yml             # Global parameters
-│   │   ├── parameters/                # Per-pipeline parameter files
-│   │   │   ├── feature_engineering.yml
-│   │   │   ├── model_input.yml
-│   │   │   ├── train_monthly.yml
-│   │   │   ├── train_weekly.yml
-│   │   │   ├── model_selection.yml
-│   │   │   ├── reconciliation.yml
-│   │   │   ├── evaluation.yml
-│   │   │   └── forecast_inference.yml
-│   │   └── logging.yml
-│   └── local/                         # Local overrides and credentials (gitignored)
-│
-├── data/
-│   ├── 01_raw/                        # Raw input data (gitignored)
-│   ├── 02_intermediate/               # ✅ Cleaned/preprocessed data
-│   ├── 03_primary/                    # ✅ Domain-level aggregated data
-│   ├── 04_feature/                    # ✅ Feature-engineered datasets
-│   ├── 05_model_input/                # ✅ Model input tables and splits (Prophet)
-│   ├── 06_models/                     # 🔄 Prophet training + selection artifacts
-│   ├── 07_model_output/               # 🔄 Prophet forecast outputs (3m, 6m, latest)
-│   └── 08_reporting/                  # 🔧 Evaluation reports (pending multi-model)
-│
-├── src/hdf_pipelines/
-│   ├── __init__.py
-│   ├── __main__.py
-│   ├── settings.py                    # Kedro project settings (OmegaConfigLoader)
-│   ├── pipeline_registry.py           # Registers all pipelines and composed shortcuts
-│   └── pipelines/
-│       ├── data_ingestion/            # ✅ Load, clean, and aggregate raw demand + exogenous data
-│       ├── feature_engineering_monthly/  # ✅ Calendar and exogenous features at monthly resolution
-│       ├── feature_engineering_weekly/   # 🔧 Aggregate demand and build weekly features
-│       ├── model_input_preparation/   # ✅ Merge monthly features → Prophet train/val/test/future splits
-│       ├── train_monthly/             # 🔄 Prophet: tuned + champion ✅ · CatBoost, SARIMAX: scaffolded
-│       │   ├── prophet/               # ✅ Hyperparameter search + candidate training + champion refit
-│       │   ├── catboost/              # 🔧 Scaffolded
-│       │   └── sarimax/               # 🔧 Scaffolded
-│       ├── train_weekly/              # 🔧 Prophet, CatBoost, SARIMAX sub-pipelines scaffolded
-│       │   ├── prophet/
-│       │   ├── catboost/
-│       │   └── sarimax/
-│       ├── model_selection/           # 🔄 Monthly Prophet: test evaluation + champion ✅ · others: scaffolded
-│       │   └── prophet/               # ✅ Test-set evaluation, ranking, champion metadata, model refit
-│       ├── reconciliation/            # 🔧 MinT reconciliation; pending monthly + weekly completion
-│       └── forecast_inference/        # 🔄 Monthly Prophet: 3m + 6m + latest ✅ · weekly + allocation: scaffolded
-│
-├── notebooks/
-│   └── kedro_demo.ipynb              # Demo notebook (catalog + pipeline exploration)
-├── tests/
-│   ├── test_data_ingestion_nodes.py
-│   ├── test_feature_engineering_monthly_nodes.py
-│   ├── test_model_input_preparation_nodes.py
-│   ├── test_metrics.py
-│   ├── test_pipeline_registry.py
-│   └── test_run.py
-└── pyproject.toml
+1. Fit and tune candidates on the training split only.
+2. Score tuned configurations on the validation split.
+3. Preserve the top prechampions per model family.
+4. Evaluate prechampions on the held-out temporal test split.
+5. Select family champions and one monthly production champion.
+6. Refit the selected production champion on all available historical data when
+   configured.
+7. Use the refit champion for the official 3-, 6-, and 12-month forecast outputs.
+
+The primary selection metric is WAPE. MASE, RMSE, and bias-related tie breakers
+are retained for auditability and academic reporting.
+
+## Data Contracts
+
+Demand and exogenous inputs must satisfy the project contracts before feature
+generation:
+
+- Dates are parsed as dates and sorted before feature generation.
+- Duplicate timestamps at the same temporal level are invalid unless explicitly
+  aggregated.
+- Missing periods are handled explicitly and should not be silently inferred.
+- Negative demand is invalid unless documented as returns or adjustments.
+- Exogenous columns are configured explicitly and treated as core model inputs.
+- Monthly input supports monthly training only.
+- Daily input may be aggregated to monthly and weekly layers inside the pipeline
+  layer.
+
+## Configuration
+
+All dataset I/O goes through `conf/base/catalog.yml`. Node code must not read or
+write project data paths directly.
+
+Configuration files:
+
+```text
+conf/base/
+├── catalog.yml
+├── parameters.yml
+└── parameters/
+    ├── evaluation.yml
+    ├── feature_engineering.yml
+    ├── forecast_inference.yml
+    ├── model_input.yml
+    ├── model_selection.yml
+    ├── reconciliation.yml
+    ├── train_monthly.yml
+    └── train_weekly.yml
 ```
 
----
+Local overrides and credentials belong in `conf/local/`, which is gitignored.
 
-## Catalog and Parameters
+## Environment Setup
 
-All datasets are defined in `conf/base/catalog.yml`. Never read or write data files directly from node code — always go through the catalog.
+This repository uses `uv`. Do not use `pip` directly.
 
-Per-pipeline parameters live in `conf/base/parameters/<pipeline_name>.yml`. Global parameters are in `conf/base/parameters.yml`.
+From the repository root:
 
 ```bash
-kedro catalog list       # List all registered datasets
-kedro pipeline list      # List all registered pipelines
+uv sync --all-packages
+uv tree
 ```
 
----
+From `pipelines/`:
+
+```bash
+uv run kedro registry list
+uv run kedro catalog describe-datasets --pipeline monthly_forecast_e2e
+```
 
 ## Linting and Testing
 
-```bash
-# Lint
-ruff check src/
-ruff format src/
+From the repository root:
 
-# Tests
-pytest                          # Run all tests with coverage
-pytest tests/test_run.py        # Smoke test for Kedro bootstrap
+```bash
+uv run --package hdf_pipelines ruff check pipelines/
+uv run --package hdf_pipelines pytest pipelines/ --cov
 ```
 
-Current test coverage includes: `data_ingestion`, `feature_engineering_monthly`, `model_input_preparation`, and shared `metrics`. Tests for the training and inference nodes are pending.
+From `pipelines/`:
 
----
+```bash
+uv run ruff check .
+uv run pytest
+uv run pytest tests/test_run.py
+```
+
+Current tests cover ingestion, monthly feature engineering, monthly model input
+preparation, monthly Prophet training helpers, monthly SARIMAX training helpers,
+monthly CatBoost training helpers, monthly model selection, forecast inference
+(including CatBoost recursive dispatch), Optuna helpers, shared metrics, and
+Kedro bootstrap/registry behavior.
+
+## Project Structure
+
+```text
+pipelines/
+├── conf/
+│   ├── base/
+│   │   ├── catalog.yml
+│   │   ├── parameters.yml
+│   │   └── parameters/
+│   └── local/
+├── data/
+│   ├── 01_raw/
+│   ├── 02_intermediate/
+│   ├── 03_primary/
+│   ├── 04_feature/
+│   ├── 05_model_input/
+│   ├── 06_models/
+│   ├── 07_model_output/
+│   └── 08_reporting/
+├── docs/
+│   ├── demand_forecast_temporal_hierarchical_blueprint.md
+│   ├── kedro_functional_logic_proposal.md
+│   ├── monthly_model_input_contract.md
+│   └── monthly_mvp_contract_snapshot.md
+├── notebooks/
+├── src/hdf_pipelines/
+│   ├── settings.py
+│   ├── pipeline_registry.py
+│   └── pipelines/
+│       ├── data_ingestion/
+│       ├── feature_engineering_monthly/
+│       ├── feature_engineering_weekly/
+│       ├── model_input_preparation/
+│       ├── train_monthly/
+│       │   ├── prophet/
+│       │   ├── catboost/
+│       │   └── sarimax/
+│       ├── train_weekly/
+│       ├── model_selection/
+│       │   ├── monthly/
+│       │   └── prophet/
+│       ├── reconciliation/
+│       └── forecast_inference/
+└── tests/
+```
+
+## Notebooks
+
+Kedro-coupled notebooks live under `pipelines/notebooks/` and should be launched
+from `pipelines/`:
+
+```bash
+uv run kedro jupyter lab
+uv run kedro jupyter notebook
+uv run kedro ipython
+```
+
+Production logic belongs in pipeline nodes under `src/hdf_pipelines/pipelines/`,
+not in notebooks.
 
 ## Visualization
 
 ```bash
-kedro viz run    # Launch Kedro-Viz at http://localhost:4141
+uv run kedro viz run
 ```
 
-Kedro-Viz renders the full DAG of nodes, datasets, and pipeline dependencies — useful for understanding execution flow and debugging catalog wiring.
+Kedro-Viz renders the DAG of nodes, datasets, and registered pipeline routes.
 
----
+## Key References
 
-## Notebooks
+- Blueprint: `docs/demand_forecast_temporal_hierarchical_blueprint.md`
+- Monthly model input contract: `docs/monthly_model_input_contract.md`
+- Monthly MVP contract snapshot: `docs/monthly_mvp_contract_snapshot.md`
+- Kedro functional proposal: `docs/kedro_functional_logic_proposal.md`
+- Root architecture overview: `../docs/architecture.md`
+- Root contribution guide: `../CONTRIBUTING.md`
 
-`notebooks/kedro_demo.ipynb` demonstrates how to load catalog datasets and explore pipeline outputs interactively. Production logic must live in pipeline nodes under `src/hdf_pipelines/pipelines/`.
+Consult the blueprint before changing architecture, hierarchy priorities,
+validation methodology, or model-selection behavior.
 
-```bash
-kedro jupyter lab       # Launch JupyterLab with catalog/context pre-loaded
-kedro jupyter notebook  # Launch classic Jupyter
-kedro ipython           # Launch IPython session
-```
+## Conventions
 
-> Use [`nbstripout`](https://github.com/kynan/nbstripout) to strip notebook outputs before committing: `nbstripout --install`.
-
----
-
-## Key Conventions
-
-- **Nodes must be pure functions**: inputs in, outputs out. No side effects, no direct file I/O.
-- **All datasets go through the catalog** — no `pd.read_csv(...)` in node code.
-- **Config is environment-aware**: `conf/base/` is shared, `conf/local/` is gitignored.
-- **Do not commit data, credentials, or `.env` files.**
-- **Use `uv`**, not `pip`, for all dependency management.
+- Nodes are pure functions: DataFrames and parameters in, DataFrames/artifacts
+  out.
+- All production data I/O goes through the Kedro catalog.
+- Reusable metrics, schemas, loaders, and retrieval utilities belong in
+  `shared/`.
+- Monthly quality and reproducibility must not be compromised by weekly or daily
+  extensions.
+- Forecasting evaluation must be time-aware and leakage-safe.
+- Do not commit raw data, generated heavy artifacts, credentials, or `.env`
+  files.
+- Use `uv` for dependency management.

@@ -20,4 +20,4 @@ dependencies = [
 shared = { workspace = true }
 
 [dependency-groups]
-dev = ["ruff"]
+dev = ["ruff", "pytest"]

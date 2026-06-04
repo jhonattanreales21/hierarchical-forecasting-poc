@@ -18,11 +18,19 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+from shared.catboost_recursive import (
+    build_demand_buffer as _build_demand_buffer,
+)
+from shared.catboost_recursive import (
+    compute_recursive_target_features as _compute_recursive_features_for_step,
+)
+from shared.catboost_recursive import (
+    extract_periods_from_column_names as _extract_periods_from_column_names,
+)
 
 logger = logging.getLogger(__name__)
 
-# Supported monthly families. CatBoost is intentionally excluded.
-SUPPORTED_MONTHLY_FAMILIES: tuple[str, ...] = ("prophet", "sarimax")
+SUPPORTED_MONTHLY_FAMILIES: tuple[str, ...] = ("prophet", "sarimax", "catboost")
 
 # Columns every adapter must return before standardisation decorates the frame.
 _ADAPTER_CORE_COLUMNS: tuple[str, ...] = (
@@ -45,6 +53,9 @@ def dispatch_monthly_prediction(
     future_df: pd.DataFrame,
     params: dict,
     horizon: int,
+    *,
+    history_df: pd.DataFrame | None = None,
+    catboost_split_metadata: dict | None = None,
 ) -> pd.DataFrame:
     """Route a monthly forecast request to the correct family adapter.
 
@@ -55,19 +66,27 @@ def dispatch_monthly_prediction(
     Args:
         model: The champion model artifact. For Prophet this is the fitted model;
             for SARIMAX it is the candidate entry dict (``{"config", "model", ...}``)
-            or a fitted results object.
+            or a fitted results object; for CatBoost it is the candidate entry dict
+            carrying ``"model"`` (a fitted ``CatBoostRegressor``) and
+            ``"feature_columns"``.
         metadata: ``champion_monthly_metadata`` produced by model selection. Must
             contain a non-empty ``model_family``.
         future_df: Future feature frame for this horizon (date column plus any
             regressor/exogenous columns).
         params: Contents of ``forecast_inference.monthly``.
         horizon: Forecast horizon in months (3, 6, or 12); used for error messages.
+        history_df: Historical CatBoost-ready DataFrame used to seed the recursive
+            demand buffer. Only consumed by the CatBoost adapter; ignored by others.
+        catboost_split_metadata: Split metadata produced by
+            ``adapt_monthly_data_for_catboost``; provides column names, lag settings,
+            rolling settings, and future-required column lists. Only consumed by the
+            CatBoost adapter; ignored by others.
 
     Returns:
         Core forecast DataFrame with the canonical adapter columns.
 
     Raises:
-        ValueError: If ``model_family`` is missing, is CatBoost, or is unsupported.
+        ValueError: If ``model_family`` is missing or unsupported.
     """
     model_family = str(metadata.get("model_family", "")).strip().lower()
 
@@ -83,9 +102,14 @@ def dispatch_monthly_prediction(
     if model_family == "sarimax":
         return predict_monthly_sarimax(model, future_df, metadata, params, horizon)
     if model_family == "catboost":
-        raise ValueError(
-            "Monthly champion model_family 'catboost' is not supported. "
-            f"Supported families are: {', '.join(SUPPORTED_MONTHLY_FAMILIES)}."
+        return predict_monthly_catboost(
+            model,
+            future_df,
+            metadata,
+            params,
+            horizon,
+            history_df=history_df,
+            catboost_split_metadata=catboost_split_metadata,
         )
 
     raise ValueError(
@@ -270,16 +294,247 @@ def predict_monthly_sarimax(
     return core[list(_ADAPTER_CORE_COLUMNS)]
 
 
+# ── CatBoost adapter ──────────────────────────────────────────────────────────
+
+
+def predict_monthly_catboost(
+    model: Any,
+    future_df: pd.DataFrame,
+    metadata: dict,
+    params: dict,
+    horizon: int,
+    *,
+    history_df: pd.DataFrame | None = None,
+    catboost_split_metadata: dict | None = None,
+) -> pd.DataFrame:
+    """Generate monthly forecasts from a CatBoost champion using recursive inference.
+
+    Builds target-derived lag, rolling, and trend features recursively from the
+    demand history plus prior predictions, then merges future-known calendar and
+    exogenous features for each forecast step. The exact training ``feature_columns``
+    order is preserved to ensure the feature matrix matches training.
+
+    Prediction intervals are not produced; ``forecast_lower`` and ``forecast_upper``
+    are set to ``NaN`` with ``interval_method=None``.
+
+    Args:
+        model: CatBoost champion artifact — a candidate dict carrying ``"model"``
+            (fitted ``CatBoostRegressor``) and ``"feature_columns"`` (ordered list),
+            or a bare ``CatBoostRegressor`` when ``feature_columns`` can be resolved
+            from ``metadata``.
+        future_df: Future feature frame for this horizon (date column plus
+            future-known calendar/exogenous columns; must not contain the target).
+        metadata: ``champion_monthly_metadata``. ``feature_columns`` is read when
+            absent from the model artifact.
+        params: Contents of ``forecast_inference.monthly``.
+        horizon: Forecast horizon in months (3, 6, or 12).
+        history_df: CatBoost-ready historical DataFrame (e.g.
+            ``monthly_catboost_full_train``) used to seed the recursive demand
+            buffer. Target column must be present.
+        catboost_split_metadata: Split metadata from ``adapt_monthly_data_for_catboost``;
+            provides ``date_column``, ``target_column``, ``lag_settings``,
+            ``rolling_settings``, ``trend_feature_columns``, and
+            ``future_required_columns``.
+
+    Returns:
+        Core forecast DataFrame with the canonical adapter columns.
+
+    Raises:
+        ValueError: If the future frame is empty, required future columns are missing,
+            or the model artifact cannot be resolved.
+    """
+    catboost_cfg: dict = params.get("catboost", {})
+    sku_col: str = params.get("sku_column", "sku")
+
+    if future_df.empty:
+        raise ValueError(
+            f"CatBoost monthly inference received an empty {horizon}-month future frame."
+        )
+
+    cb_model, feature_columns = _unwrap_catboost_model(model, metadata)
+
+    split_meta = catboost_split_metadata or {}
+    target_col = str(split_meta.get("target_column") or catboost_cfg.get("target_column") or "monthly_demand")
+    raw_date_col = str(
+        split_meta.get("date_column") or catboost_cfg.get("date_column") or "month_start_date"
+    )
+    date_col = _resolve_date_column(future_df, [raw_date_col, "month_start_date", "ds"])
+
+    ordered = future_df.copy()
+    ordered[date_col] = pd.to_datetime(ordered[date_col])
+    ordered = ordered.sort_values(date_col).reset_index(drop=True)
+
+    future_required = list(split_meta.get("future_required_columns") or [])
+    _validate_catboost_future_required_columns(ordered, future_required, horizon, feature_columns, metadata)
+
+    # Resolve recursive feature settings from split metadata or fallback defaults.
+    lag_settings = dict(split_meta.get("lag_settings") or {})
+    target_lags = sorted(int(x) for x in lag_settings.get("target_lags", [1, 2, 3, 6, 12]))
+
+    rolling_settings = dict(split_meta.get("rolling_settings") or {})
+    rolling_windows = sorted(int(x) for x in rolling_settings.get("windows", [3, 6, 12]))
+    include_std = bool(rolling_settings.get("include_std", True))
+    include_min_max = bool(rolling_settings.get("include_min_max", True))
+
+    trend_feature_cols = list(split_meta.get("trend_feature_columns") or [])
+    trend_diffs = _extract_periods_from_column_names(trend_feature_cols, "demand_diff_")
+    trend_pct_changes = _extract_periods_from_column_names(trend_feature_cols, "demand_pct_change_")
+
+    demand_buffer = _build_demand_buffer(history_df, target_col, date_col)
+
+    min_required_buffer = max(target_lags, default=0)
+    if min_required_buffer and len(demand_buffer) < min_required_buffer:
+        logger.warning(
+            "CatBoost demand buffer has %d observations but max lag is %d. "
+            "Leading recursive steps will produce NaN lag features.",
+            len(demand_buffer),
+            min_required_buffer,
+        )
+
+    # Recursive forecast loop: one step at a time, appending each prediction.
+    forecast_rows: list[dict] = []
+    for _, row in ordered.iterrows():
+        recursive_feats = _compute_recursive_features_for_step(
+            demand_buffer=demand_buffer,
+            target_lags=target_lags,
+            rolling_windows=rolling_windows,
+            include_std=include_std,
+            include_min_max=include_min_max,
+            trend_diffs=trend_diffs,
+            trend_pct_changes=trend_pct_changes,
+        )
+
+        # Build feature vector in exact training column order.
+        feature_values = []
+        for col in feature_columns:
+            if col in recursive_feats:
+                feature_values.append(recursive_feats[col])
+            elif col in row.index:
+                feature_values.append(row[col])
+            else:
+                feature_values.append(np.nan)
+
+        X = np.array([feature_values], dtype=float)
+        prediction = float(cb_model.predict(X)[0])
+        forecast_rows.append({"date": row[date_col], "forecast": prediction})
+        demand_buffer.append(prediction)
+
+    core = pd.DataFrame(forecast_rows)
+    core["date"] = pd.to_datetime(core["date"])
+    core["forecast"] = core["forecast"].astype(float)
+    core["forecast_lower"] = np.nan
+    core["forecast_upper"] = np.nan
+    core["has_prediction_interval"] = False
+    core["interval_method"] = None
+    core["sku"] = ordered[sku_col].to_numpy() if sku_col in ordered.columns else None
+
+    logger.info(
+        "CatBoost adapter produced %d rows for the %d-month horizon "
+        "(recursive, %d features, intervals=None).",
+        len(core),
+        horizon,
+        len(feature_columns),
+    )
+    return core[list(_ADAPTER_CORE_COLUMNS)]
+
+
+# ── CatBoost private helpers ──────────────────────────────────────────────────
+
+
+def _unwrap_catboost_model(model: Any, metadata: dict) -> tuple[Any, list[str]]:
+    """Extract the fitted CatBoostRegressor and ordered feature_columns.
+
+    Resolution order for ``feature_columns``:
+    1. ``model["feature_columns"]`` when the artifact is a candidate dict.
+    2. ``metadata["feature_columns"]`` from champion metadata.
+    3. ``model.feature_names_`` attribute on the fitted model.
+
+    Raises:
+        ValueError: If no ``feature_columns`` can be resolved or the model object
+            cannot be identified as a CatBoostRegressor.
+    """
+    feature_columns_from_meta = list(metadata.get("feature_columns") or [])
+
+    if isinstance(model, dict):
+        cb_model = model.get("model")
+        if cb_model is None:
+            raise ValueError(
+                "CatBoost champion artifact dict has no 'model' key holding a fitted "
+                f"CatBoostRegressor. Keys present: {list(model.keys())}."
+            )
+        feature_columns = list(model.get("feature_columns") or feature_columns_from_meta)
+    elif hasattr(model, "predict"):
+        cb_model = model
+        feature_columns = list(feature_columns_from_meta)
+    else:
+        raise ValueError(
+            "CatBoost champion artifact is neither a candidate dict nor a model "
+            f"exposing predict(); received type {type(model)!r}."
+        )
+
+    if not feature_columns:
+        try:
+            names = list(getattr(cb_model, "feature_names_", None) or [])
+            if names:
+                feature_columns = names
+        except Exception:  # noqa: BLE001
+            pass
+
+    if not feature_columns:
+        champion_id = str(metadata.get("champion_id", "unknown"))
+        raise ValueError(
+            "Cannot resolve CatBoost feature_columns for inference. "
+            "The champion artifact must carry 'feature_columns' in the candidate dict "
+            "or champion_monthly_metadata must include 'feature_columns'. "
+            f"Champion ID: {champion_id}."
+        )
+
+    return cb_model, feature_columns
+
+
+def _validate_catboost_future_required_columns(
+    future_df: pd.DataFrame,
+    future_required_columns: list[str],
+    horizon: int,
+    feature_columns: list[str],
+    metadata: dict,
+) -> None:
+    """Validate that all future-required (non-recursive) columns are present.
+
+    These columns cannot be computed recursively from demand history and must
+    come from the generic future monthly frames.
+
+    Raises:
+        ValueError: Naming every missing column, the horizon, and the champion id.
+    """
+    if not future_required_columns:
+        return
+
+    missing = [c for c in future_required_columns if c not in future_df.columns]
+    if not missing:
+        return
+
+    champion_id = str(metadata.get("champion_id", "unknown"))
+    feature_preview = feature_columns[:8]
+    suffix = "..." if len(feature_columns) > 8 else ""
+    raise ValueError(
+        f"CatBoost monthly inference ({horizon}-month horizon, champion={champion_id}) "
+        f"requires future calendar/exogenous columns that are missing from the future "
+        f"frame: {missing}. These columns must be provided externally — they cannot be "
+        f"computed recursively from demand history. "
+        f"Model feature_columns (first 8): {feature_preview}{suffix}."
+    )
+
+
 # ── Private helpers ───────────────────────────────────────────────────────────
 
 
 def _resolve_date_column(future_df: pd.DataFrame, candidates: list[str]) -> str:
     """Return the first candidate date column present in the future frame.
 
-    The canonical generic future frames are not built yet, so monthly inference
-    temporarily consumes the Prophet future frames (date column ``ds``). This
-    resolver lets each adapter accept either the family-native date column or the
-    Prophet ``ds`` fallback.
+    Each adapter passes a family-preferred name first (e.g. ``month_start_date``
+    for SARIMAX, ``ds`` for Prophet) followed by fallbacks so either frame format
+    is accepted without error.
 
     Args:
         future_df: Future feature frame.

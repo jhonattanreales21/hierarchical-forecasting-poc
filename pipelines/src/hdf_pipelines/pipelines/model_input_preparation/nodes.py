@@ -41,8 +41,6 @@ _CALENDAR_FEATURE_COLUMNS = [
     "thursday_holidays",
     "total_holidays",
 ]
-_SUPPORTED_FUTURE_HORIZONS = (3, 6, 12)
-_MIN_WORKING_WEEKDAY_COUNT_FOR_FLAG = 5
 
 
 # ── Parameter extraction helpers ──────────────────────────────────────────────
@@ -359,6 +357,7 @@ def _count_monthly_calendar_features(
     month_start_date: pd.Timestamp,
     holiday_dates: pd.DatetimeIndex,
     business_weekdays: set[int],
+    min_working_weekday_count: int,
 ) -> dict[str, int | pd.Timestamp]:
     """Count deterministic calendar features for a single month."""
     month_start = pd.Timestamp(month_start_date).normalize()
@@ -380,12 +379,8 @@ def _count_monthly_calendar_features(
         "total_thursdays": int(is_thursday.sum()),
         "working_tuesdays": working_tuesdays,
         "working_thursdays": working_thursdays,
-        "has_5_working_tuesdays": int(
-            working_tuesdays >= _MIN_WORKING_WEEKDAY_COUNT_FOR_FLAG
-        ),
-        "has_5_working_thursdays": int(
-            working_thursdays >= _MIN_WORKING_WEEKDAY_COUNT_FOR_FLAG
-        ),
+        "has_5_working_tuesdays": int(working_tuesdays >= min_working_weekday_count),
+        "has_5_working_thursdays": int(working_thursdays >= min_working_weekday_count),
         "tuesday_holidays": int((is_tuesday & is_holiday).sum()),
         "thursday_holidays": int((is_thursday & is_holiday).sum()),
         "total_holidays": int(is_holiday.sum()),
@@ -447,10 +442,15 @@ def _build_future_calendar_features(
         business_weekdays = _parse_weekmask(
             calendar_parameters["calendar_features"]["weekmask"]
         )
+        min_working_count: int = int(
+            calendar_parameters["calendar_features"].get(
+                "min_working_weekday_count_for_flag", 5
+            )
+        )
         generated_calendar = pd.DataFrame(
             [
                 _count_monthly_calendar_features(
-                    month_start, holiday_dates, business_weekdays
+                    month_start, holiday_dates, business_weekdays, min_working_count
                 )
                 for month_start in missing_calendar_dates
             ]
@@ -1055,19 +1055,23 @@ def build_monthly_prophet_future_regressors(
         Tuple of three DataFrames (future_3m, future_6m, future_12m) with schema
         ``[ds, sku, *active_regressors]``.
     """
+    monthly_params = _get_monthly_params(parameters)
+    supported_horizons: list[int] = list(
+        monthly_params.get("supported_future_horizons", [3, 6, 12])
+    )
     prophet_params = _get_monthly_prophet_params(parameters)
     prophet_date_column = prophet_params["prophet_date_column"]
     sku_column = prophet_params["sku_column"]
     active_regressors = list(prophet_params["active_regressors"])
     required_horizons = [
         horizon
-        for horizon in _SUPPORTED_FUTURE_HORIZONS
+        for horizon in supported_horizons
         if horizon in prophet_params["future"]["horizons_months"]
     ]
-    if required_horizons != list(_SUPPORTED_FUTURE_HORIZONS):
+    if required_horizons != supported_horizons:
         raise ValueError(
             "model_input_preparation.monthly_prophet.future.horizons_months must "
-            f"include {_SUPPORTED_FUTURE_HORIZONS}."
+            f"include {supported_horizons}."
         )
 
     logger.info(
@@ -1109,7 +1113,7 @@ def build_monthly_prophet_future_regressors(
         )
 
     future_datasets: dict[int, pd.DataFrame] = {}
-    for horizon in _SUPPORTED_FUTURE_HORIZONS:
+    for horizon in supported_horizons:
         future_months = _generate_future_months(last_historical_ds, horizon)
         future_calendar = _build_future_calendar_features(
             future_months, monthly_calendar_features, calendar_parameters
@@ -1154,6 +1158,499 @@ def build_monthly_prophet_future_regressors(
 
     return future_datasets[3], future_datasets[6], future_datasets[12]
 
+
+def build_monthly_generic_future_frames(
+    monthly_modeling_data: pd.DataFrame,
+    monthly_calendar_features: pd.DataFrame,
+    monthly_exogenous_features: pd.DataFrame,
+    parameters: dict,
+    calendar_parameters: dict,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Build family-agnostic future feature frames for each supported forecast horizon.
+
+    Produces three DataFrames (3m, 6m, 12m) with schema
+    ``[month_start_date, sku, *active_regressors, month]``.  These are the canonical
+    inputs for metadata-driven champion inference regardless of the elected model
+    family. Calendar features are reused from ``monthly_calendar_features`` where
+    available and computed deterministically for missing future months. Exogenous
+    regressors are looked up from ``monthly_exogenous_features`` and must be fully
+    available for all future months. The deterministic ``month`` calendar feature is
+    appended so tabular champions (e.g. CatBoost) have every future-known feature they
+    require; families that ignore it are unaffected.
+
+    Args:
+        monthly_modeling_data: Generic modeling DataFrame with columns
+            ``[month_start_date, monthly_demand, sku, *active_regressors]``.
+        monthly_calendar_features: Monthly calendar feature table.
+        monthly_exogenous_features: Monthly exogenous feature table.
+        parameters: Pipeline parameters. Reads the ``monthly`` block.
+        calendar_parameters: Calendar feature parameters used to generate calendar
+            features for future months not present in ``monthly_calendar_features``.
+
+    Returns:
+        Tuple ``(monthly_future_3m, monthly_future_6m, monthly_future_12m)`` with
+        schema ``[month_start_date, sku, *active_regressors]``.
+    """
+    monthly_params = _get_monthly_params(parameters)
+    date_column: str = monthly_params["date_column"]
+    target_column: str = monthly_params["target_column"]
+    sku_column: str = monthly_params["sku_column"]
+    active_regressors: list[str] = list(monthly_params["active_regressors"])
+    supported_horizons: list[int] = list(
+        monthly_params.get("supported_future_horizons", [3, 6, 12])
+    )
+
+    last_historical_date = pd.Timestamp(monthly_modeling_data[date_column].max())
+    sku_values = (
+        monthly_modeling_data[sku_column]
+        .dropna()
+        .drop_duplicates()
+        .sort_values()
+    )
+
+    exogenous_regressors = [
+        col for col in active_regressors
+        if col in monthly_exogenous_features.columns
+    ]
+    missing_regressor_sources = sorted(
+        set(active_regressors)
+        - set(_CALENDAR_FEATURE_COLUMNS)
+        - set(monthly_exogenous_features.columns)
+    )
+    if missing_regressor_sources:
+        raise ValueError(
+            "Active regressors are not available in calendar or exogenous sources: "
+            f"{missing_regressor_sources}"
+        )
+
+    logger.info(
+        "Building generic monthly future frames — horizons=%s, last_history=%s.",
+        supported_horizons,
+        last_historical_date.date(),
+    )
+
+    future_datasets: dict[int, pd.DataFrame] = {}
+    for horizon in supported_horizons:
+        future_months = _generate_future_months(last_historical_date, horizon)
+        future_calendar = _build_future_calendar_features(
+            future_months, monthly_calendar_features, calendar_parameters
+        )
+        future_exogenous = _build_future_exogenous_features(
+            future_months, monthly_exogenous_features, exogenous_regressors
+        )
+
+        future_regressors = future_calendar.merge(
+            future_exogenous, on="month_start_date", how="left", validate="one_to_one"
+        )
+        future_regressors = future_regressors[
+            ["month_start_date", *active_regressors]
+        ].copy()
+
+        sku_frame = pd.DataFrame({sku_column: sku_values.tolist()})
+        future_dataset = sku_frame.assign(_join_key=1).merge(
+            future_regressors.assign(_join_key=1), on="_join_key", how="inner"
+        )
+        future_dataset = (
+            future_dataset.drop(columns="_join_key")
+            [[date_column, sku_column, *active_regressors]]
+            .sort_values([sku_column, date_column])
+            .reset_index(drop=True)
+        )
+
+        # Deterministic calendar feature required by tabular champions (e.g. CatBoost)
+        # but not part of the Prophet/SARIMAX active regressor set. It is always known
+        # at inference time and is harmless to families that ignore it.
+        future_dataset["month"] = (
+            pd.to_datetime(future_dataset[date_column]).dt.month.astype("int64")
+        )
+
+        if target_column in future_dataset.columns:
+            raise ValueError(
+                f"Generic monthly future frames must not include the target column "
+                f"'{target_column}'."
+            )
+        _validate_no_nulls(
+            future_dataset,
+            [date_column, *active_regressors],
+            f"monthly_future_{horizon}m",
+        )
+        future_datasets[horizon] = future_dataset
+        logger.info(
+            "Generic future horizon %sm: %s",
+            horizon,
+            _summarize_date_range(future_dataset, date_column),
+        )
+
+    return future_datasets[3], future_datasets[6], future_datasets[12]
+
+
+# ── CatBoost adapter ─────────────────────────────────────────────────────────
+
+def _get_monthly_catboost_params(parameters: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the Monthly CatBoost configuration block."""
+    if "monthly_catboost" in parameters:
+        return dict(parameters["monthly_catboost"])
+    return dict(parameters)
+
+
+def _compute_catboost_target_features(
+    df: pd.DataFrame,
+    target_column: str,
+    sku_column: str,
+    date_column: str,
+    target_lags: list[int],
+    rolling_windows: list[int],
+    include_rolling_std: bool,
+    include_rolling_min_max: bool,
+    trend_diffs: list[int],
+    trend_pct_changes: list[int],
+) -> tuple[pd.DataFrame, list[str]]:
+    """Compute target-derived lag, rolling, and trend features on the full sorted dataset.
+
+    All features are computed within each SKU group after sorting by date so that
+    split boundaries do not introduce null lags in non-leading rows. Rolling aggregations
+    are applied to the once-shifted demand series so the current period's demand is never
+    used as input for the same period's prediction.
+
+    Args:
+        df: Combined monthly dataset sorted by (sku_column, date_column).
+        target_column: Name of the demand target column.
+        sku_column: Name of the SKU identifier column.
+        date_column: Name of the month-start date column.
+        target_lags: Lag integers for direct demand lags.
+        rolling_windows: Window sizes for rolling aggregations.
+        include_rolling_std: Whether to compute rolling standard deviation.
+        include_rolling_min_max: Whether to compute rolling min and max.
+        trend_diffs: Difference periods (e.g. [1, 12]).
+        trend_pct_changes: Percent-change periods (e.g. [1, 12]).
+
+    Returns:
+        Tuple of (DataFrame with new feature columns, list of added column names).
+    """
+    result = df.sort_values([sku_column, date_column]).reset_index(drop=True).copy()
+    added: list[str] = []
+
+    # Direct target lags within each SKU group.
+    for lag in sorted(target_lags):
+        col = f"demand_lag_{lag}"
+        result[col] = result.groupby(sku_column, sort=False)[target_column].transform(
+            lambda s, n=lag: s.shift(n)
+        )
+        added.append(col)
+
+    # Rolling aggregations on the once-shifted series (leakage-safe).
+    for window in sorted(rolling_windows):
+        result[f"rolling_mean_{window}"] = result.groupby(sku_column, sort=False)[target_column].transform(
+            lambda s, w=window: s.shift(1).rolling(w).mean()
+        )
+        added.append(f"rolling_mean_{window}")
+
+        if include_rolling_std:
+            result[f"rolling_std_{window}"] = result.groupby(sku_column, sort=False)[target_column].transform(
+                lambda s, w=window: s.shift(1).rolling(w).std()
+            )
+            added.append(f"rolling_std_{window}")
+
+        if include_rolling_min_max:
+            result[f"rolling_min_{window}"] = result.groupby(sku_column, sort=False)[target_column].transform(
+                lambda s, w=window: s.shift(1).rolling(w).min()
+            )
+            result[f"rolling_max_{window}"] = result.groupby(sku_column, sort=False)[target_column].transform(
+                lambda s, w=window: s.shift(1).rolling(w).max()
+            )
+            added.extend([f"rolling_min_{window}", f"rolling_max_{window}"])
+
+    # Trend difference features (on once-shifted demand to avoid same-period leakage).
+    for period in sorted(trend_diffs):
+        col = f"demand_diff_{period}"
+        result[col] = result.groupby(sku_column, sort=False)[target_column].transform(
+            lambda s, p=period: s.shift(1).diff(p)
+        )
+        added.append(col)
+
+    # Percent-change features (on once-shifted demand).
+    for period in sorted(trend_pct_changes):
+        col = f"demand_pct_change_{period}"
+        result[col] = result.groupby(sku_column, sort=False)[target_column].transform(
+            lambda s, p=period: s.shift(1).pct_change(p)
+        )
+        added.append(col)
+
+    # Ratio of short vs long rolling mean — only when both are available.
+    if "rolling_mean_3" in added and "rolling_mean_12" in added:
+        denom = result["rolling_mean_12"].replace(0.0, float("nan"))
+        result["rolling_mean_3_vs_12"] = result["rolling_mean_3"] / denom
+        added.append("rolling_mean_3_vs_12")
+
+    return result, added
+
+
+def adapt_monthly_data_for_catboost(
+    monthly_train: pd.DataFrame,
+    monthly_validation: pd.DataFrame,
+    monthly_test: pd.DataFrame,
+    monthly_full_train: pd.DataFrame,
+    monthly_split_metadata: dict[str, Any],
+    parameters: dict,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, Any]]:
+    """Build CatBoost-ready monthly datasets with target-derived lag and rolling features.
+
+    Computes target-derived lag, rolling, trend, and calendar enrichment features on the
+    full chronological dataset before re-splitting, so that split boundaries do not create
+    null lags at the first rows of the validation or test period.  Leading rows with null
+    target lag features are dropped from the train split only.
+
+    Args:
+        monthly_train: Generic monthly train split.
+        monthly_validation: Generic monthly validation split.
+        monthly_test: Generic monthly test split.
+        monthly_full_train: Generic monthly full-train dataset (all splits combined).
+        monthly_split_metadata: Generic split metadata with train/validation/test date ranges.
+        parameters: Pipeline parameters. Reads the ``monthly_catboost`` block.
+
+    Returns:
+        Tuple of five items:
+            - monthly_catboost_train: CatBoost-ready train DataFrame.
+            - monthly_catboost_validation: CatBoost-ready validation DataFrame.
+            - monthly_catboost_test: CatBoost-ready test DataFrame.
+            - monthly_catboost_full_train: CatBoost-ready full-train DataFrame.
+            - monthly_catboost_split_metadata: Metadata dict for the CatBoost splits.
+    """
+    catboost_params = _get_monthly_catboost_params(parameters)
+    date_column: str = catboost_params.get("date_column", "month_start_date")
+    target_column: str = catboost_params.get("target_column", "monthly_demand")
+    sku_column: str = catboost_params.get("sku_column", "sku")
+    target_lags: list[int] = list(catboost_params.get("target_lags", [1, 2, 3, 6, 12]))
+    rolling_windows: list[int] = list(catboost_params.get("rolling_windows", [3, 6, 12]))
+    include_rolling_std: bool = bool(catboost_params.get("include_rolling_std", True))
+    include_rolling_min_max: bool = bool(catboost_params.get("include_rolling_min_max", True))
+    trend_diffs: list[int] = list(catboost_params.get("trend_diffs", [1, 12]))
+    trend_pct_changes: list[int] = list(catboost_params.get("trend_pct_changes", [1, 12]))
+    drop_null: bool = bool(catboost_params.get("drop_rows_with_null_target_features", True))
+    include_missingness_flags: bool = bool(catboost_params.get("include_missingness_flags", False))
+    missingness_flag_columns: list[str] = list(catboost_params.get("missingness_flag_columns", []))
+    catboost_active_regressors: list[str] = list(catboost_params.get("active_regressors", []))
+
+    _validate_required_columns(
+        monthly_full_train,
+        [date_column, target_column, sku_column],
+        "monthly_full_train",
+    )
+
+    if catboost_active_regressors:
+        missing_regressors = [
+            c for c in catboost_active_regressors if c not in monthly_full_train.columns
+        ]
+        if missing_regressors:
+            raise ValueError(
+                f"monthly_catboost.active_regressors contains columns not found in the dataset: "
+                f"{missing_regressors}. Available columns: {sorted(monthly_full_train.columns)}"
+            )
+
+    logger.info(
+        "Building CatBoost monthly feature dataset from monthly_full_train shape=%s.",
+        monthly_full_train.shape,
+    )
+
+    combined = _ensure_datetime_column(monthly_full_train.copy(), date_column, "monthly_full_train")
+
+    # Add month calendar feature — deterministic and always known at inference time.
+    combined["month"] = combined[date_column].dt.month.astype("int64")
+    new_columns: list[str] = ["month"]
+
+    # Compute all target-derived features on the full sorted dataset.
+    combined, target_feature_columns = _compute_catboost_target_features(
+        combined,
+        target_column=target_column,
+        sku_column=sku_column,
+        date_column=date_column,
+        target_lags=target_lags,
+        rolling_windows=rolling_windows,
+        include_rolling_std=include_rolling_std,
+        include_rolling_min_max=include_rolling_min_max,
+        trend_diffs=trend_diffs,
+        trend_pct_changes=trend_pct_changes,
+    )
+    new_columns.extend(target_feature_columns)
+
+    # Optionally add missingness flags for specified exogenous columns.
+    if include_missingness_flags and missingness_flag_columns:
+        for flag_source in missingness_flag_columns:
+            if flag_source in combined.columns:
+                combined[f"is_missing_{flag_source}"] = combined[flag_source].isna().astype("int8")
+                new_columns.append(f"is_missing_{flag_source}")
+            else:
+                logger.warning(
+                    "missingness_flag_columns entry %r not found in dataset — skipped.",
+                    flag_source,
+                )
+
+    logger.info(
+        "Generated %d new CatBoost feature columns: %s.",
+        len(new_columns),
+        new_columns,
+    )
+
+    # Re-split using date boundaries from the generic split metadata.
+    train_end = pd.Timestamp(monthly_split_metadata["train"]["end_date"])
+    val_end = pd.Timestamp(monthly_split_metadata["validation"]["end_date"])
+    test_end = pd.Timestamp(monthly_split_metadata["test"]["end_date"])
+
+    catboost_train = combined.loc[combined[date_column] <= train_end].copy()
+    catboost_validation = combined.loc[
+        (combined[date_column] > train_end) & (combined[date_column] <= val_end)
+    ].copy()
+    catboost_test = combined.loc[
+        (combined[date_column] > val_end) & (combined[date_column] <= test_end)
+    ].copy()
+
+    # Drop leading train rows where target lag features are null (lag warmup period).
+    target_lag_cols = [
+        f"demand_lag_{lag}" for lag in target_lags if f"demand_lag_{lag}" in combined.columns
+    ]
+    dropped_count = 0
+    if target_lag_cols and drop_null:
+        null_mask = catboost_train[target_lag_cols].isnull().any(axis=1)
+        dropped_count = int(null_mask.sum())
+        catboost_train = catboost_train.loc[~null_mask].copy()
+        logger.info(
+            "Dropped %d leading train rows with null target lag features (lag warmup).",
+            dropped_count,
+        )
+
+    # Warn when validation or test rows still carry null target lag features.
+    for split_name, split_df in [("validation", catboost_validation), ("test", catboost_test)]:
+        if target_lag_cols and split_df[target_lag_cols].isnull().any().any():
+            null_counts = split_df[target_lag_cols].isnull().sum()
+            logger.warning(
+                "Null target lag features detected in %s split — training data may be too short: %s",
+                split_name,
+                null_counts[null_counts > 0].to_dict(),
+            )
+
+    for split_name, split_df in [
+        ("train", catboost_train),
+        ("validation", catboost_validation),
+        ("test", catboost_test),
+    ]:
+        if split_df.empty:
+            raise ValueError(
+                f"CatBoost {split_name} split is empty after feature generation. "
+                "Check that training data is long enough to survive the lag warmup period."
+            )
+
+    catboost_full_train = (
+        pd.concat([catboost_train, catboost_validation, catboost_test], ignore_index=True)
+        .sort_values([sku_column, date_column])
+        .reset_index(drop=True)
+    )
+
+    logger.info("CatBoost train: %s", _summarize_date_range(catboost_train, date_column))
+    logger.info("CatBoost validation: %s", _summarize_date_range(catboost_validation, date_column))
+    logger.info("CatBoost test: %s", _summarize_date_range(catboost_test, date_column))
+
+    # When catboost_active_regressors is non-empty, restrict exogenous columns to that
+    # subset only (keeps target-derived features intact). Falls back to all shared columns
+    # when the list is empty.
+    if catboost_active_regressors:
+        keep_cols = [date_column, target_column, sku_column, *catboost_active_regressors, *new_columns]
+        catboost_train = catboost_train[[c for c in keep_cols if c in catboost_train.columns]].copy()
+        catboost_validation = catboost_validation[
+            [c for c in keep_cols if c in catboost_validation.columns]
+        ].copy()
+        catboost_test = catboost_test[[c for c in keep_cols if c in catboost_test.columns]].copy()
+        catboost_full_train = catboost_full_train[
+            [c for c in keep_cols if c in catboost_full_train.columns]
+        ].copy()
+        logger.info(
+            "CatBoost-specific active_regressors applied: %d exogenous columns selected: %s.",
+            len(catboost_active_regressors),
+            catboost_active_regressors,
+        )
+    else:
+        logger.info("No catboost-specific active_regressors configured — using all shared exogenous columns.")
+
+    all_feature_columns = [
+        col for col in catboost_full_train.columns
+        if col not in {date_column, target_column, sku_column}
+    ]
+    base_feature_columns = [
+        col for col in catboost_full_train.columns
+        if col not in {date_column, target_column, sku_column} and col not in new_columns
+    ]
+
+    # Target-derived columns that cannot be known at future inference time without
+    # re-computing them from arriving actuals (lags, rolling, diffs, pct_changes).
+    _target_derived_prefixes = (
+        "demand_lag_",
+        "rolling_mean_",
+        "rolling_std_",
+        "rolling_min_",
+        "rolling_max_",
+        "rolling_mean_3_vs_12",
+        "demand_diff_",
+        "demand_pct_change_",
+    )
+    future_required_columns = [
+        col for col in all_feature_columns
+        if not any(col.startswith(prefix) for prefix in _target_derived_prefixes)
+        and col != "rolling_mean_3_vs_12"
+    ]
+
+    # Columns expected to be structurally null at the boundary of the lag warmup
+    # window (e.g. demand_diff_12 requires 13 + 1 prior observations).
+    structural_null_columns = [
+        col for col in all_feature_columns
+        if col.startswith("demand_diff_") or col.startswith("demand_pct_change_")
+    ]
+
+    catboost_metadata: dict[str, Any] = {
+        "granularity": "monthly",
+        "model_family": "catboost",
+        "date_column": date_column,
+        "target_column": target_column,
+        "sku_column": sku_column,
+        "all_feature_columns": all_feature_columns,
+        "categorical_feature_columns": [],
+        "null_handling_policy": "catboost_native",
+        "structural_null_columns": structural_null_columns,
+        "base_feature_columns": base_feature_columns,
+        "new_feature_columns": new_columns,
+        "target_lag_columns": target_lag_cols,
+        "rolling_feature_columns": [c for c in new_columns if c.startswith("rolling_")],
+        "trend_feature_columns": [
+            c for c in new_columns
+            if c.startswith("demand_diff_") or c.startswith("demand_pct_change_")
+        ],
+        "future_required_columns": future_required_columns,
+        "lag_settings": {"target_lags": target_lags},
+        "rolling_settings": {
+            "windows": rolling_windows,
+            "include_std": include_rolling_std,
+            "include_min_max": include_rolling_min_max,
+        },
+        "splits": {
+            "train": _summarize_date_range(catboost_train, date_column),
+            "validation": _summarize_date_range(catboost_validation, date_column),
+            "test": _summarize_date_range(catboost_test, date_column),
+            "full_train": _summarize_date_range(catboost_full_train, date_column),
+        },
+        "dropped_rows": {"null_target_features_in_train": dropped_count},
+        "source_metadata": {"from": "monthly_split_metadata"},
+        "created_by": "model_input_preparation.catboost_adapter",
+    }
+
+    logger.info("Built monthly_catboost_split_metadata.")
+    return (
+        catboost_train.reset_index(drop=True),
+        catboost_validation.reset_index(drop=True),
+        catboost_test.reset_index(drop=True),
+        catboost_full_train,
+        catboost_metadata,
+    )
+
+
+# ── Prophet future regressors and split metadata ──────────────────────────────
 
 def build_monthly_prophet_split_metadata(  # noqa: PLR0912, PLR0913
     monthly_prophet_train: pd.DataFrame,

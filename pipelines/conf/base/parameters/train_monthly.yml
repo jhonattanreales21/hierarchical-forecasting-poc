@@ -25,17 +25,17 @@ train_monthly:
       - "pfizer_limited"
       - "surgifoam_limited"
       - "rebate_target"
-      - "expected_market_share"
+      # - "expected_market_share"
       - "pfizer_limited_lag_1"
       - "surgifoam_limited_lag_1"
       - "rebate_target_lag_1"
-      - "expected_market_share_lag_1"
+      # - "expected_market_share_lag_1"
       - "pfizer_limited_lag_2"
       - "surgifoam_limited_lag_2"
       - "rebate_target_lag_2"
-      - "pfizer_limited_lag_3"
-      - "surgifoam_limited_lag_3"
-      - "rebate_target_lag_3"
+      # - "pfizer_limited_lag_3"
+      # - "surgifoam_limited_lag_3"
+      # - "rebate_target_lag_3"
       - "market_share_stress"
       - "market_share_stress_lag_1"
       - "market_share_uplift"
@@ -46,11 +46,14 @@ train_monthly:
       objective:
         metric: "wape"
         direction: "minimize"
-      max_trials: 30
-      top_n_prechampions: 3
+      max_trials: 80
+      top_n_prechampions: 10
       sampler:
         name: "tpe"
         seed: ${random_seed}
+        n_startup_trials: 40
+        multivariate: true
+        gamma: 0.40
       search_space:
         changepoint_prior_scale:
           type: "float"
@@ -70,8 +73,32 @@ train_monthly:
         seasonality_mode:
           type: "categorical"
           choices: ["additive", "multiplicative"]
+        prior_scale_pfizer_limited_lag_1:
+          type: "categorical"
+          choices: [5, 10, 20, 25]
+        prior_scale_pfizer_limited_lag_2:
+          type: "categorical"
+          choices: [5, 10, 20, 25]
+        prior_scale_surgifoam_limited_lag_1:
+          type: "categorical"
+          choices: [0.01, 0.1, 0.5, 1, 5, 10]
+        prior_scale_surgifoam_limited_lag_2:
+          type: "categorical"
+          choices: [0.01, 0.1, 0.5, 1, 5, 10]
+        prior_scale_rebate_target:
+          type: "categorical"
+          choices: [0.01, 0.1, 0.5, 1, 5]
+        prior_scale_rebate_target_lag_1:
+          type: "categorical"
+          choices: [0.01, 0.1, 0.5, 1, 5]
+        prior_scale_market_share_stress:
+          type: "categorical"
+          choices: [5, 10, 20]
+        prior_scale_market_share_uplift:
+          type: "categorical"
+          choices: [5, 10, 20]
       fixed_params:
-        yearly_seasonality: true
+        yearly_seasonality: false
         weekly_seasonality: false
         daily_seasonality: false
         interval_width: 0.8
@@ -89,10 +116,54 @@ train_monthly:
 
   catboost:
     enabled: true
-    tuning:
-      iterations: [200, 500, 1000]
-      learning_rate: [0.01, 0.05, 0.1]
-      depth: [4, 6, 8]
+    primary_metric: "wape"
+    selection_direction: "minimize"
+    random_seed: ${random_seed}
+    early_stopping_rounds: 100
+    prechampion_count: 10
+    mase_seasonal_period: 12
+    epsilon: 1.0
+    max_trials: 80
+    max_failed_trials: 25
+    sampler:
+      name: "tpe"
+      seed: ${random_seed}
+      n_startup_trials: 50
+      multivariate: true
+      gamma: 0.40
+    search_space:
+      depth:
+        type: "int"
+        low: 3
+        high: 8
+      learning_rate:
+        type: "float"
+        low: 0.005
+        high: 0.5
+        log: true
+      iterations:
+        type: "int"
+        low: 100
+        high: 1000
+      l2_leaf_reg:
+        type: "float"
+        low: 1.0
+        high: 10.0
+        log: true
+      subsample:
+        type: "float"
+        low: 0.75
+        high: 1.0
+      colsample_bylevel:
+        type: "float"
+        low: 0.75
+        high: 1.0
+      min_data_in_leaf:
+        type: "int"
+        low: 2
+        high: 15
+    fixed_params:
+      loss_function: "RMSE"
 
   sarimax:
     enabled: true
@@ -101,27 +172,52 @@ train_monthly:
     objective:
       metric: "wape"
       direction: "minimize"
-    top_n_prechampions: 3
-    max_failed_trials: null
+    top_n_prechampions: 10
+    max_failed_trials: 30
     validation:
-      forecast_steps: null
+      forecast_steps: 4 # Should align with validation_months in model_input.yml
     metrics:
       mase_seasonal_period: 12
       epsilon: 1.0
     tuning:
-      order_grid:
-        - [0, 1, 1]
-        - [1, 1, 0]
-        - [1, 1, 1]
-        - [2, 1, 1]
-      seasonal_order_grid:
-        - [0, 1, 1, 12]
-        - [1, 1, 0, 12]
-        - [1, 1, 1, 12]
-      trend_options:
-        - null
-      enforce_stationarity_options:
-        - false
-      enforce_invertibility_options:
-        - false
+      optimizer: "optuna"
+      max_trials: 60
       use_exog: true
+      sampler:
+        name: "tpe"
+        seed: ${random_seed}
+        n_startup_trials: 40
+        multivariate: true
+        gamma: 0.40
+      search_space:
+        p:
+          type: "int"
+          low: 0
+          high: 3
+        d:
+          type: "int"
+          low: 0
+          high: 2
+        q:
+          type: "int"
+          low: 0
+          high: 3
+        P:
+          type: "int"
+          low: 0
+          high: 2
+        D:
+          type: "int"
+          low: 0
+          high: 1
+        Q:
+          type: "int"
+          low: 0
+          high: 2
+        trend:
+          type: "categorical"
+          choices: ["none", "n"] #"c", "t"
+      fixed_params:
+        s: 12
+        enforce_stationarity: false
+        enforce_invertibility: false

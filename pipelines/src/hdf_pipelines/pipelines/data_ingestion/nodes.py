@@ -6,40 +6,21 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-_DEMAND_MASK_SCALE_FACTOR = 100.0
 
-# Raw CSV header names — used for contract validation before any renaming.
-_DEMAND_RAW_COLUMNS = frozenset(
-    ["SKU", "Year", "Month", "Month Name", "Date", "Monthly Demand", "Daily Demand"]
-)
-
-_DEMAND_RENAME = {
-    "SKU": "sku",
-    "Year": "year",
-    "Month": "month",
-    "Month Name": "month_name",
-    "Date": "date",
-    "Monthly Demand": "monthly_demand",
-    "Daily Demand": "daily_demand",
-}
-
-# Validated after stripping whitespace; raw header has "surgifoam_limited " (trailing space).
-_EXOGENOUS_STRIPPED_COLUMNS = frozenset(
-    ["Date", "pfizer_limited", "surgifoam_limited", "rebate_target", "expected_market_share"]
-)
-
-
-def mask_raw_demand(raw_demand: pd.DataFrame) -> pd.DataFrame:
+def mask_raw_demand(raw_demand: pd.DataFrame, parameters: dict) -> pd.DataFrame:
     """Mask raw demand values before the cleaning stage.
 
     Replaces real SKU names with deterministic placeholders in order of first
     appearance (``sku1``, ``sku2``, ...), and scales both raw demand measures
-    by dividing them by ``100``. Non-numeric demand values are left as-is so
+    by the configured ``scale_factor``. Non-numeric demand values are left as-is so
     the downstream cleaning node remains the single place responsible for
     numeric validation and warning emission.
 
     Args:
         raw_demand: Raw demand DataFrame loaded by the Kedro catalog.
+        parameters: ``data_ingestion`` parameter block from ``data_ingestion.yml``.
+            Reads ``demand_masking.scale_factor``, ``demand_masking.sku_prefix``,
+            and ``raw_data.demand_expected_columns``.
 
     Returns:
         Copy of the raw demand DataFrame with masked SKU labels and scaled
@@ -48,7 +29,14 @@ def mask_raw_demand(raw_demand: pd.DataFrame) -> pd.DataFrame:
     Raises:
         ValueError: If any required raw column is absent from ``raw_demand``.
     """
-    missing = _DEMAND_RAW_COLUMNS - set(raw_demand.columns)
+    masking_cfg = parameters.get("demand_masking", {})
+    scale_factor: float = float(masking_cfg.get("scale_factor", 1.0))
+    sku_prefix: str = str(masking_cfg.get("sku_prefix", "sku"))
+    expected_columns = frozenset(
+        parameters.get("raw_data", {}).get("demand_expected_columns", [])
+    )
+
+    missing = expected_columns - set(raw_demand.columns)
     if missing:
         raise ValueError(
             f"Missing required columns in raw demand data: {sorted(missing)}"
@@ -58,7 +46,7 @@ def mask_raw_demand(raw_demand: pd.DataFrame) -> pd.DataFrame:
 
     normalized_sku = df["SKU"].astype("string").str.strip()
     sku_lookup = {
-        sku_name: f"sku{idx}"
+        sku_name: f"{sku_prefix}{idx}"
         for idx, sku_name in enumerate(
             normalized_sku.dropna().drop_duplicates().tolist(), start=1
         )
@@ -68,19 +56,17 @@ def mask_raw_demand(raw_demand: pd.DataFrame) -> pd.DataFrame:
     for col in ("Monthly Demand", "Daily Demand"):
         numeric_values = pd.to_numeric(df[col], errors="coerce")
         numeric_mask = numeric_values.notna()
-        df.loc[numeric_mask, col] = (
-            numeric_values.loc[numeric_mask] / _DEMAND_MASK_SCALE_FACTOR
-        )
+        df.loc[numeric_mask, col] = numeric_values.loc[numeric_mask] / scale_factor
 
     logger.info(
         "Masked raw demand data: %d SKU(s) anonymized and demand columns scaled by %s.",
         len(sku_lookup),
-        int(_DEMAND_MASK_SCALE_FACTOR),
+        scale_factor,
     )
     return df
 
 
-def load_and_clean_demand(raw_demand: pd.DataFrame) -> pd.DataFrame:
+def load_and_clean_demand(raw_demand: pd.DataFrame, parameters: dict) -> pd.DataFrame:
     """Validate, rename, and type-cast the raw daily demand CSV.
 
     Validates the expected column contract, renames headers to snake_case, parses dates
@@ -89,8 +75,9 @@ def load_and_clean_demand(raw_demand: pd.DataFrame) -> pd.DataFrame:
 
     Args:
         raw_demand: Raw demand DataFrame loaded by the Kedro catalog. Must contain the
-            columns: ``SKU``, ``Year``, ``Month``, ``Month Name``, ``Date``,
-            ``Monthly Demand``, ``Daily Demand``.
+            columns listed in ``data_ingestion.raw_data.demand_expected_columns``.
+        parameters: ``data_ingestion`` parameter block from ``data_ingestion.yml``.
+            Reads ``raw_data.demand_expected_columns`` and ``raw_data.demand_rename_map``.
 
     Returns:
         Cleaned demand DataFrame with snake_case column names, parsed ``date``
@@ -100,14 +87,18 @@ def load_and_clean_demand(raw_demand: pd.DataFrame) -> pd.DataFrame:
     Raises:
         ValueError: If any expected raw column is absent from ``raw_demand``.
     """
+    raw_data_cfg = parameters.get("raw_data", {})
+    expected_columns = frozenset(raw_data_cfg.get("demand_expected_columns", []))
+    rename_map: dict = raw_data_cfg.get("demand_rename_map", {})
+
     # Fail early on schema drift.
-    missing = _DEMAND_RAW_COLUMNS - set(raw_demand.columns)
+    missing = expected_columns - set(raw_demand.columns)
     if missing:
         raise ValueError(
             f"Missing required columns in raw demand data: {sorted(missing)}"
         )
 
-    df = raw_demand.rename(columns=_DEMAND_RENAME).copy()
+    df = raw_demand.rename(columns=rename_map).copy()
 
     # Strip whitespace before type casting; SKU names often carry invisible spaces from Excel.
     for col in df.select_dtypes(include="object").columns:
@@ -200,7 +191,7 @@ def load_and_clean_demand(raw_demand: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def load_and_clean_exogenous(raw_exogenous: pd.DataFrame) -> pd.DataFrame:
+def load_and_clean_exogenous(raw_exogenous: pd.DataFrame, parameters: dict) -> pd.DataFrame:
     """Validate, parse, and normalise the raw exogenous variables CSV.
 
     Strips trailing whitespace from column names (the source file contains a trailing
@@ -210,8 +201,10 @@ def load_and_clean_exogenous(raw_exogenous: pd.DataFrame) -> pd.DataFrame:
 
     Args:
         raw_exogenous: Raw exogenous DataFrame loaded by the Kedro catalog. Must contain
-            ``Date``, ``pfizer_limited``, ``surgifoam_limited``, and ``rebate_target``
+            the columns listed in ``data_ingestion.raw_data.exogenous_expected_columns``
             after column-name whitespace is stripped.
+        parameters: ``data_ingestion`` parameter block from ``data_ingestion.yml``.
+            Reads ``raw_data.exogenous_expected_columns``.
 
     Returns:
         Cleaned exogenous DataFrame with a ``month_start_date`` column (first day of
@@ -220,11 +213,15 @@ def load_and_clean_exogenous(raw_exogenous: pd.DataFrame) -> pd.DataFrame:
     Raises:
         ValueError: If any required column is absent after whitespace stripping.
     """
+    expected_columns = frozenset(
+        parameters.get("raw_data", {}).get("exogenous_expected_columns", [])
+    )
+
     df = raw_exogenous.copy()
     # Strip before validation so "surgifoam_limited " matches the expected name.
     df.columns = [col.strip() for col in df.columns]
 
-    missing = _EXOGENOUS_STRIPPED_COLUMNS - set(df.columns)
+    missing = expected_columns - set(df.columns)
     if missing:
         raise ValueError(
             f"Missing required columns in raw exogenous data: {sorted(missing)}"
@@ -235,7 +232,8 @@ def load_and_clean_exogenous(raw_exogenous: pd.DataFrame) -> pd.DataFrame:
     # Explicit format avoids ambiguous parsing of "YYYY-MM" strings.
     df["date"] = pd.to_datetime(df["date"], format="%Y-%m")
 
-    for col in ["pfizer_limited", "surgifoam_limited", "rebate_target", "expected_market_share"]:
+    numeric_cols = [c for c in expected_columns if c != "Date"]
+    for col in numeric_cols:
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
     null_cols = df.isnull().sum()
@@ -433,5 +431,11 @@ def build_exogenous_monthly(exogenous_cleaned: pd.DataFrame) -> pd.DataFrame:
         df = df.drop_duplicates(subset=["month_start_date"], keep="first")
 
     # Drop raw `date`; month_start_date is the canonical key for downstream joins.
-    cols = ["month_start_date", "pfizer_limited", "surgifoam_limited", "rebate_target", "expected_market_share"]
+    cols = [
+        "month_start_date",
+        "pfizer_limited",
+        "surgifoam_limited",
+        "rebate_target",
+        "expected_market_share",
+    ]
     return df[cols].sort_values("month_start_date").reset_index(drop=True)

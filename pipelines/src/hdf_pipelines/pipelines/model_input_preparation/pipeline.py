@@ -1,20 +1,23 @@
 """Monthly model-input preparation pipeline.
 
 Flow:
-  1. build_monthly_modeling_data       → monthly_modeling_data  (generic, month_start_date/monthly_demand)
-  2. split_monthly_modeling_data       → monthly_train/validation/test/full_train  (generic)
-  3. build_monthly_split_metadata      → monthly_split_metadata  (generic)
-  4. adapt_monthly_data_for_prophet    → monthly_prophet_modeling_data/train/validation/test/full_train
+  1. build_monthly_modeling_data            → monthly_modeling_data  (generic, month_start_date/monthly_demand)
+  2. split_monthly_modeling_data            → monthly_train/validation/test/full_train  (generic)
+  3. build_monthly_split_metadata           → monthly_split_metadata  (generic)
+  4. adapt_monthly_data_for_prophet         → monthly_prophet_modeling_data/train/validation/test/full_train
   5. build_monthly_prophet_future_regressors → monthly_prophet_future_3m/6m/12m
   6. build_monthly_prophet_split_metadata   → monthly_prophet_split_metadata
-  7. adapt_monthly_data_for_sarimax    → monthly_sarimax_train/validation/test/full_train/split_metadata
+  7. adapt_monthly_data_for_sarimax         → monthly_sarimax_train/validation/test/full_train/split_metadata
+  8. build_monthly_generic_future_frames    → monthly_future_3m/6m/12m  (canonical inference inputs)
 """
 
 from kedro.pipeline import Pipeline, node, pipeline
 
 from .nodes import (
+    adapt_monthly_data_for_catboost,
     adapt_monthly_data_for_prophet,
     adapt_monthly_data_for_sarimax,
+    build_monthly_generic_future_frames,
     build_monthly_modeling_data,
     build_monthly_prophet_future_regressors,
     build_monthly_prophet_split_metadata,
@@ -146,6 +149,43 @@ def create_pipeline(**kwargs) -> Pipeline:
                     "monthly_sarimax_split_metadata",
                 ],
                 name="adapt_monthly_data_for_sarimax",
+            ),
+            # ── Step 8: Generic future frames (canonical champion inference inputs) ──
+            node(
+                func=build_monthly_generic_future_frames,
+                inputs=[
+                    "monthly_modeling_data",
+                    "monthly_calendar_features",
+                    "monthly_exogenous_features",
+                    "params:model_input_preparation",
+                    "params:feature_engineering_monthly",
+                ],
+                outputs=[
+                    "monthly_future_3m",
+                    "monthly_future_6m",
+                    "monthly_future_12m",
+                ],
+                name="build_monthly_generic_future_frames",
+            ),
+            # ── Step 9: CatBoost adapter ──────────────────────────────────────
+            node(
+                func=adapt_monthly_data_for_catboost,
+                inputs=[
+                    "monthly_train",
+                    "monthly_validation",
+                    "monthly_test",
+                    "monthly_full_train",
+                    "monthly_split_metadata",
+                    "params:model_input_preparation",
+                ],
+                outputs=[
+                    "monthly_catboost_train",
+                    "monthly_catboost_validation",
+                    "monthly_catboost_test",
+                    "monthly_catboost_full_train",
+                    "monthly_catboost_split_metadata",
+                ],
+                name="adapt_monthly_data_for_catboost",
             ),
         ]
     )

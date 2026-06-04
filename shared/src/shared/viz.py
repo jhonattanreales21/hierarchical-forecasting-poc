@@ -28,8 +28,15 @@ def plot_forecast(
     title: str = "Monthly Demand Forecast",
     champion_id: Optional[str] = None,
     test_mape: Optional[float] = None,
+    show_future_intervals: bool = True,
+    show_test_intervals: bool = True,
 ) -> go.Figure:
     """Render actuals, test-period forecast, and future forecast with prediction intervals.
+
+    Interval bands are model-family aware: pass ``show_future_intervals=False``
+    (and/or ``show_test_intervals=False``) for champions that do not produce
+    prediction intervals, so the chart shows point forecasts only without
+    implying spurious uncertainty bounds.
 
     Args:
         actuals: DataFrame with columns ``ds`` (datetime) and ``y`` (float).
@@ -41,6 +48,8 @@ def plot_forecast(
         title: Chart title displayed at the top.
         champion_id: Optional champion model identifier shown in the subtitle.
         test_mape: Optional test-set MAPE displayed in the subtitle.
+        show_future_intervals: When True, draw the future prediction-interval band.
+        show_test_intervals: When True, draw the test-period interval band.
 
     Returns:
         A Plotly Figure ready to be rendered via ``st.plotly_chart``.
@@ -61,18 +70,20 @@ def plot_forecast(
 
     # --- Test period ---
     if not test_forecast.empty:
-        fig.add_trace(
-            go.Scatter(
-                x=list(test_forecast["ds"]) + list(test_forecast["ds"])[::-1],
-                y=list(test_forecast["yhat_upper"])
-                + list(test_forecast["yhat_lower"])[::-1],
-                fill="toself",
-                fillcolor=_COLOR_TEST_CI,
-                line=dict(color="rgba(255,255,255,0)"),
-                name="Test CI (80%)",
-                hoverinfo="skip",
+        _has_test_bounds = {"yhat_lower", "yhat_upper"}.issubset(test_forecast.columns)
+        if show_test_intervals and _has_test_bounds:
+            fig.add_trace(
+                go.Scatter(
+                    x=list(test_forecast["ds"]) + list(test_forecast["ds"])[::-1],
+                    y=list(test_forecast["yhat_upper"])
+                    + list(test_forecast["yhat_lower"])[::-1],
+                    fill="toself",
+                    fillcolor=_COLOR_TEST_CI,
+                    line=dict(color="rgba(255,255,255,0)"),
+                    name="Test interval",
+                    hoverinfo="skip",
+                )
             )
-        )
         fig.add_trace(
             go.Scatter(
                 x=test_forecast["ds"],
@@ -105,18 +116,22 @@ def plot_forecast(
 
     # --- Future forecast ---
     if not future_forecast.empty:
-        fig.add_trace(
-            go.Scatter(
-                x=list(future_forecast["ds"]) + list(future_forecast["ds"])[::-1],
-                y=list(future_forecast["yhat_upper"])
-                + list(future_forecast["yhat_lower"])[::-1],
-                fill="toself",
-                fillcolor=_COLOR_FUTURE_CI,
-                line=dict(color="rgba(255,255,255,0)"),
-                name="Forecast CI (80%)",
-                hoverinfo="skip",
-            )
+        _has_future_bounds = {"yhat_lower", "yhat_upper"}.issubset(
+            future_forecast.columns
         )
+        if show_future_intervals and _has_future_bounds:
+            fig.add_trace(
+                go.Scatter(
+                    x=list(future_forecast["ds"]) + list(future_forecast["ds"])[::-1],
+                    y=list(future_forecast["yhat_upper"])
+                    + list(future_forecast["yhat_lower"])[::-1],
+                    fill="toself",
+                    fillcolor=_COLOR_FUTURE_CI,
+                    line=dict(color="rgba(255,255,255,0)"),
+                    name="Forecast interval",
+                    hoverinfo="skip",
+                )
+            )
         fig.add_trace(
             go.Scatter(
                 x=future_forecast["ds"],

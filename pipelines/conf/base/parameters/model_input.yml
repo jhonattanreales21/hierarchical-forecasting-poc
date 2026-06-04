@@ -18,17 +18,19 @@ model_input_preparation:
       - "pfizer_limited"
       - "surgifoam_limited"
       - "rebate_target"
-      - "expected_market_share"
+      # - "expected_market_share"
       - "pfizer_limited_lag_1"
       - "surgifoam_limited_lag_1"
       - "rebate_target_lag_1"
-      - "expected_market_share_lag_1"
+      # - "expected_market_share_lag_1"
       - "pfizer_limited_lag_2"
       - "surgifoam_limited_lag_2"
       - "rebate_target_lag_2"
-      - "pfizer_limited_lag_3"
-      - "surgifoam_limited_lag_3"
-      - "rebate_target_lag_3"
+      # - "expected_market_share_lag_2"
+      # - "pfizer_limited_lag_3"
+      # - "surgifoam_limited_lag_3"
+      # - "rebate_target_lag_3"
+      # - "expected_market_share_lag_3"
       - "market_share_stress"
       - "market_share_stress_lag_1"
       - "market_share_uplift"
@@ -40,8 +42,16 @@ model_input_preparation:
 
     split:
       mode: "months"
-      validation_months: 3
-      test_months: 3
+      validation_months: 4
+      test_months: 4
+      # Date-based split mode is also supported. Switch mode to "date" and use:
+      # mode: "date"
+      # train_end_date: "2024-12-01"
+      # validation_end_date: "2025-06-01"
+      # test_end_date: "2026-03-01"
+
+    supported_future_horizons: [3, 6, 12]
+    min_working_weekday_count_for_flag: 5
 
   monthly_prophet:
     date_column: "month_start_date"
@@ -65,17 +75,19 @@ model_input_preparation:
       - "pfizer_limited"
       - "surgifoam_limited"
       - "rebate_target"
-      - "expected_market_share"
+      # - "expected_market_share"
       - "pfizer_limited_lag_1"
       - "surgifoam_limited_lag_1"
       - "rebate_target_lag_1"
-      - "expected_market_share_lag_1"
+      # - "expected_market_share_lag_1"
       - "pfizer_limited_lag_2"
       - "surgifoam_limited_lag_2"
       - "rebate_target_lag_2"
-      - "pfizer_limited_lag_3"
-      - "surgifoam_limited_lag_3"
-      - "rebate_target_lag_3"
+      # - "pfizer_limited_lag_3"
+      # - "surgifoam_limited_lag_3"
+      # - "rebate_target_lag_3"
+      # - "expected_market_share_lag_2"
+      # - "expected_market_share_lag_3"
       - "market_share_stress"
       - "market_share_stress_lag_1"
       - "market_share_uplift"
@@ -87,16 +99,41 @@ model_input_preparation:
 
     split:
       mode: "months"
-      validation_months: 3
-      test_months: 3
-      # Date-based split mode is also supported. Switch mode to "date" and use:
-      # mode: "date"
-      # train_end_date: "2024-12-01"
-      # validation_end_date: "2025-06-01"
-      # test_end_date: "2026-03-01"
+      validation_months: 4
+      test_months: 4
 
     future:
       horizons_months: [3, 6, 12]
+
+  monthly_catboost:
+    enabled: true
+    date_column: "month_start_date"
+    target_column: "monthly_demand"
+    sku_column: "sku"
+
+    # CatBoost-specific exogenous regressors. When non-empty, only these columns
+    # are kept from the shared monthly split. When empty, all shared active_regressors are used.
+    active_regressors: []
+
+    # Target-derived lag features — computed on full history before re-splitting.
+    target_lags: [1, 2, 3, 6]
+
+    # Rolling window features on the once-shifted demand series (leakage-safe).
+    rolling_windows: [3, 6, 9]
+    include_rolling_std: true
+    include_rolling_min_max: true
+
+    # Trend difference and percent-change features (also once-shifted).
+    trend_diffs: [1, 12]
+    trend_pct_changes: [1, 12]
+
+    # Drop leading train rows where target lag features are null (lag warmup period).
+    drop_rows_with_null_target_features: true
+
+    # Missingness flags for exogenous columns with known data quality issues.
+    # Set to true and list columns to enable.
+    include_missingness_flags: false
+    missingness_flag_columns: []
 
   monthly_sarimax:
     enabled: true
@@ -104,7 +141,27 @@ model_input_preparation:
     target_column: "monthly_demand"
     sku_column: "sku"
     frequency: "MS"
-    exogenous_columns: []
+    exogenous_columns:
+      - pfizer_limited
+      - pfizer_limited_lag_1
+      - pfizer_limited_lag_2
+      # - pfizer_limited_lag_3
+      - surgifoam_limited
+      - surgifoam_limited_lag_1
+      - surgifoam_limited_lag_2
+      # - surgifoam_limited_lag_3
+      - rebate_target
+      - rebate_target_lag_1
+      - rebate_target_lag_2
+      # - rebate_target_lag_3
+      # - expected_market_share
+      # - expected_market_share_lag_1
+      # - expected_market_share_lag_2
+      # - expected_market_share_lag_3
+      - market_share_stress
+      - market_share_stress_lag_1
+      - market_share_uplift
+      - market_share_uplift_lag_1
     allow_empty_exog: true
     require_regular_frequency: true
     sort_by_date: true

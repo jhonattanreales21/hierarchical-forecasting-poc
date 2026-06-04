@@ -10,11 +10,17 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+from utils.champion import (
+    standardize_champion_metadata,
+    standardize_forecast_columns,
+)
 from utils.paths import (
     ACTUALS,
+    RAW_EXOGENOUS,
     CHAMPION_META,
+    FAMILY_CHAMPION_SUMMARY,
     INFERENCE_META,
-    SELECTION_FORECAST,
+    LEGACY_TEST_FORECAST,
     SELECTION_SUMMARY,
     TEST_METRICS,
     forecast_parquet,
@@ -66,16 +72,46 @@ def load_monthly_modeling_data() -> pd.DataFrame:
 
 
 @st.cache_data
-def load_champion_test_forecast() -> pd.DataFrame:
-    """Load the full champion test forecast with ds parsed as datetime.
+def load_monthly_modeling_data_full() -> pd.DataFrame:
+    """Load monthly modeling data with all available feature columns."""
+    if not ACTUALS.exists():
+        return pd.DataFrame()
+    df = pd.read_parquet(ACTUALS)
+    if "ds" in df.columns:
+        df["ds"] = pd.to_datetime(df["ds"])
+        df = df.sort_values("ds")
+    return df.reset_index(drop=True)
+
+
+@st.cache_data
+def load_raw_exogenous_data() -> pd.DataFrame:
+    """Load raw monthly exogenous variables if available."""
+    if not RAW_EXOGENOUS.exists():
+        return pd.DataFrame()
+    df = pd.read_csv(RAW_EXOGENOUS)
+    df.columns = [str(col).strip() for col in df.columns]
+    if "Date" in df.columns:
+        df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+    return df.reset_index(drop=True)
+
+
+@st.cache_data
+def load_legacy_test_forecast() -> pd.DataFrame:
+    """Load the legacy Prophet test-period backtest forecast, if present.
+
+    This is a model-specific (Prophet) artifact retained only as a historical
+    test-window overlay. It must not be used to infer the current production
+    champion family.
 
     Returns:
-        DataFrame with all candidates, sorted by ds.
+        DataFrame with all candidates, sorted by ds, or empty if missing.
     """
-    if not SELECTION_FORECAST.exists():
+    if not LEGACY_TEST_FORECAST.exists():
         return pd.DataFrame()
-    df = pd.read_parquet(SELECTION_FORECAST)
-    df["ds"] = pd.to_datetime(df["ds"])
+    df = pd.read_parquet(LEGACY_TEST_FORECAST)
+    df = standardize_forecast_columns(df)
+    if "ds" not in df.columns:
+        return df
     return df.sort_values("ds").reset_index(drop=True)
 
 
@@ -93,7 +129,9 @@ def load_monthly_forecast(horizon_months: int) -> pd.DataFrame:
     if not path.exists():
         return pd.DataFrame()
     df = pd.read_parquet(path)
-    df["ds"] = pd.to_datetime(df["ds"])
+    df = standardize_forecast_columns(df)
+    if "ds" not in df.columns:
+        return df
     return df.sort_values("ds").reset_index(drop=True)
 
 
@@ -121,13 +159,25 @@ def load_test_metrics() -> pd.DataFrame:
     return pd.read_parquet(TEST_METRICS)
 
 
+@st.cache_data
+def load_family_champion_summary() -> pd.DataFrame:
+    """Load the per-family champion summary (best candidate per model family).
+
+    Returns:
+        DataFrame with one row per family, or empty DataFrame if missing.
+    """
+    if not FAMILY_CHAMPION_SUMMARY.exists():
+        return pd.DataFrame()
+    return pd.read_parquet(FAMILY_CHAMPION_SUMMARY)
+
+
 def load_champion_metadata() -> dict:
     """Load champion model metadata JSON.
 
     Returns:
         Dict with champion metadata, or empty dict if missing.
     """
-    return load_json(CHAMPION_META)
+    return standardize_champion_metadata(load_json(CHAMPION_META))
 
 
 def load_inference_metadata() -> dict:

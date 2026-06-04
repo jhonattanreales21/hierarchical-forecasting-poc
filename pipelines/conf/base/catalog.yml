@@ -108,6 +108,40 @@ monthly_split_metadata:
   type: json.JSONDataset
   filepath: data/05_model_input/monthly_split_metadata.json
 
+# 05_model_input — Generic monthly future feature frames (family-agnostic canonical inference inputs)
+monthly_future_3m:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/monthly_future_3m.parquet
+
+monthly_future_6m:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/monthly_future_6m.parquet
+
+monthly_future_12m:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/monthly_future_12m.parquet
+
+# 05_model_input — CatBoost monthly model-ready datasets
+monthly_catboost_train:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/monthly_catboost_train.parquet
+
+monthly_catboost_validation:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/monthly_catboost_validation.parquet
+
+monthly_catboost_test:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/monthly_catboost_test.parquet
+
+monthly_catboost_full_train:
+  type: pandas.ParquetDataset
+  filepath: data/05_model_input/monthly_catboost_full_train.parquet
+
+monthly_catboost_split_metadata:
+  type: json.JSONDataset
+  filepath: data/05_model_input/monthly_catboost_split_metadata.json
+
 # 05_model_input — SARIMAX monthly model-ready datasets
 monthly_sarimax_train:
   type: pandas.ParquetDataset
@@ -227,6 +261,27 @@ monthly_sarimax_candidate_models:
 monthly_sarimax_training_metadata:
   type: json.JSONDataset
   filepath: data/06_models/tuning/monthly_sarimax_training_metadata.json
+
+# 06_models — Monthly CatBoost training and tuning artifacts
+monthly_catboost_tuning_results:
+  type: pandas.ParquetDataset
+  filepath: data/06_models/tuning/monthly_catboost_tuning_results.parquet
+
+monthly_catboost_validation_metrics:
+  type: pandas.ParquetDataset
+  filepath: data/06_models/tuning/monthly_catboost_validation_metrics.parquet
+
+monthly_catboost_prechampion_configs:
+  type: json.JSONDataset
+  filepath: data/06_models/tuning/monthly_catboost_prechampion_configs.json
+
+monthly_catboost_candidate_models:
+  type: pickle.PickleDataset
+  filepath: data/06_models/tuning/monthly_catboost_candidate_models.pkl
+
+monthly_catboost_training_metadata:
+  type: json.JSONDataset
+  filepath: data/06_models/tuning/monthly_catboost_training_metadata.json
 
 # 06_models — candidate models per granularity × family
 candidate_monthly_prophet:

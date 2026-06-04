@@ -12,9 +12,12 @@ model_selection:
     active_families:
       - prophet
       - sarimax
+      - catboost
     primary_metric: wape
     direction: minimize
     tie_breakers:
+      - test_m3_wape
+      - test_m2_wape
       - mase
       - rmse
       - abs_bias
@@ -72,3 +75,33 @@ model_selection:
     date_column: "month_start_date"
     target_column: "monthly_demand"
     model_family: sarimax
+
+    ljung_box:
+      enabled: true
+      lags: 10
+      pvalue_threshold: 0.05
+
+    operational_lead_time:
+      enabled: true
+      lead_times:
+        - 2
+        - 3
+
+  # --- CatBoost adapter settings for multi-family selection ---
+  # Column names default to the CatBoost split metadata when omitted. CatBoost
+  # candidates are refit on train+validation and scored on the precomputed test
+  # feature matrix (leakage-safe: the test split never enters fitting).
+  monthly_catboost:
+    enabled: true
+    date_column: "month_start_date"
+    target_column: "monthly_demand"
+    model_family: catboost
+
+    # Rolling-origin M-2/M-3 WAPE (operational lead-time). For CatBoost this is
+    # computed recursively (predicted demand feeds later lag features), so the
+    # lead-time metric matches production inference behaviour.
+    operational_lead_time:
+      enabled: true
+      lead_times:
+        - 2
+        - 3

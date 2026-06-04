@@ -1,26 +1,32 @@
-import pandas as pd
 import streamlit as st
 
 from ui.components import render_page_header, render_warning_banner
 from ui.page_blocks.evaluation_blocks import (
-    render_candidate_comparison,
+    render_candidate_test_metrics_table,
     render_evaluation_summary,
-    render_test_metrics_table,
+    render_family_champion_comparison,
+    render_production_selection_summary,
     render_validation_notes,
 )
 from ui.styles import apply_global_styles
+from utils.champion import extract_champion_identity
 from utils.data_loaders import (
     load_champion_metadata,
+    load_family_champion_summary,
+    load_inference_metadata,
     load_model_selection_summary,
     load_test_metrics,
 )
-from utils.paths import CHAMPION_META, SELECTION_SUMMARY, TEST_METRICS
+from utils.paths import CHAMPION_META
 
 apply_global_styles()
 
 render_page_header(
     title="Evaluation Report",
-    subtitle="Champion model selection rationale and held-out test performance.",
+    subtitle=(
+        "Champion selection rationale and held-out test performance across "
+        "Prophet, SARIMAX, and CatBoost."
+    ),
     eyebrow="Model Evaluation",
 )
 
@@ -28,25 +34,29 @@ if not CHAMPION_META.exists():
     render_warning_banner(
         title="No evaluation data found",
         message=(
-            "Run the full Kedro pipeline first "
-            "(`uv run kedro run --pipeline model_selection`)."
+            "Run the monthly model competition first "
+            "(`uv run kedro run --pipeline monthly_model_selection`)."
         ),
     )
     st.stop()
 
 meta = load_champion_metadata()
-test_m: dict = meta.get("test_metrics", {})
-val_m: dict = meta.get("validation_metrics", {})
-business_flag: bool = meta.get("business_success_flag", False)
+inference_meta = load_inference_metadata()
+selection_summary = load_model_selection_summary()
+identity = extract_champion_identity(meta, inference_meta, selection_summary)
 
-render_evaluation_summary(meta, test_m, val_m, business_flag)
+wape = identity.get("test_metrics", {}).get("wape")
+business_flag = wape is not None and wape <= 0.15
 
-sel_df = (
-    load_model_selection_summary() if SELECTION_SUMMARY.exists() else pd.DataFrame()
+render_evaluation_summary(identity, business_flag)
+
+render_production_selection_summary(selection_summary)
+
+render_family_champion_comparison(
+    load_family_champion_summary(),
+    production_family=identity.get("model_family"),
 )
-render_candidate_comparison(sel_df)
 
-tm_df = load_test_metrics() if TEST_METRICS.exists() else pd.DataFrame()
-render_test_metrics_table(tm_df)
+render_candidate_test_metrics_table(load_test_metrics())
 
 render_validation_notes(meta)

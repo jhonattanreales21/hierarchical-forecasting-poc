@@ -18,19 +18,19 @@ def create_pipeline(**kwargs) -> Pipeline:
         [
             node(
                 func=mask_raw_demand,
-                inputs="raw_daily_demand",
+                inputs=["raw_daily_demand", "params:data_ingestion"],
                 outputs="raw_daily_demand_masked",
                 name="mask_raw_demand",
             ),
             node(
                 func=load_and_clean_demand,
-                inputs="raw_daily_demand_masked",
+                inputs=["raw_daily_demand_masked", "params:data_ingestion"],
                 outputs="demand_cleaned",
                 name="load_and_clean_demand",
             ),
             node(
                 func=load_and_clean_exogenous,
-                inputs="raw_exogenous_variables",
+                inputs=["raw_exogenous_variables", "params:data_ingestion"],
                 outputs="exogenous_cleaned",
                 name="load_and_clean_exogenous",
             ),

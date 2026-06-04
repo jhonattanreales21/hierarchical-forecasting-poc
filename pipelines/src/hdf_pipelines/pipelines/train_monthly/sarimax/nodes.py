@@ -1,18 +1,28 @@
-"""Monthly SARIMAX training nodes: controlled grid search, validation, and artifact emission."""
+"""Monthly SARIMAX training nodes: Optuna TPE search, validation, and artifact emission."""
 
-import itertools
 import logging
 import time
+import warnings as _warnings
 from datetime import UTC, datetime
 from typing import Any
 
 import numpy as np
+import optuna
 import pandas as pd
 from shared.metrics import mase as _shared_mase
 from shared.metrics import wape as _shared_wape
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 
+from hdf_pipelines.utils.optuna_helpers import (
+    create_optuna_study,
+    suggest_trial_params,
+    validate_optuna_search_space,
+)
+
 logger = logging.getLogger(__name__)
+
+# Silence Optuna's per-trial verbose logging — SARIMAX already emits its own.
+optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 
 # ── Public node ───────────────────────────────────────────────────────────────
@@ -26,10 +36,10 @@ def train_and_evaluate_monthly_sarimax_candidates(
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict, dict, dict, dict]:
     """Train, validate, rank, and emit monthly SARIMAX candidate artifacts.
 
-    Runs a deterministic grid search over the configured SARIMAX parameter space.
-    Each configuration is fit on the training split and evaluated on the validation
-    split. Successful candidates are ranked by the configured objective metric and
-    the top-N are persisted as pre-champion artifacts.
+    Runs an Optuna TPE study over the configured SARIMAX search space. Each trial
+    is fit on the training split and evaluated on the validation split. Successful
+    candidates are ranked by the configured objective metric and the top-N are
+    persisted as pre-champion artifacts.
 
     Args:
         monthly_sarimax_train: SARIMAX-ready training DataFrame with date and target columns.
@@ -45,7 +55,7 @@ def train_and_evaluate_monthly_sarimax_candidates(
         2. ``validation_metrics`` — DataFrame, detailed per-candidate metrics.
         3. ``prechampion_configs`` — Dict with top-N pre-champion configurations.
         4. ``candidate_models`` — Dict mapping trial_id → fitted SARIMAX result (top-N).
-        5. ``training_metadata`` — Dict summarizing the grid search run.
+        5. ``training_metadata`` — Dict summarising the Optuna study run.
         6. ``candidate_monthly_sarimax`` — Rank-1 SARIMAX candidate dict.
 
     Raises:
@@ -64,6 +74,18 @@ def train_and_evaluate_monthly_sarimax_candidates(
     epsilon: float = float(metrics_cfg.get("epsilon", 1.0))
     tuning_cfg: dict = params.get("tuning", {})
     use_exog: bool = bool(tuning_cfg.get("use_exog", True))
+    max_failed_trials: int | None = (
+        int(params["max_failed_trials"])
+        if params.get("max_failed_trials") is not None
+        else None
+    )
+
+    # Optuna-specific config
+    max_trials: int = int(tuning_cfg.get("max_trials", 50))
+    sampler_cfg: dict = dict(tuning_cfg.get("sampler", {}))
+    search_space: dict = validate_optuna_search_space(dict(tuning_cfg.get("search_space", {})))
+    fixed_params: dict = dict(tuning_cfg.get("fixed_params", {}))
+    s: int = int(fixed_params.get("s", mase_seasonal_period))
 
     # ── validate inputs ───────────────────────────────────────────────────────
     _validate_sarimax_training_inputs(
@@ -90,34 +112,52 @@ def train_and_evaluate_monthly_sarimax_candidates(
     train_exog = _extract_exog(train_df, exog_cols) if use_exog else None
     val_exog = _extract_exog(val_df, exog_cols) if use_exog else None
 
-    forecast_steps = int(params.get("validation", {}).get("forecast_steps") or len(val_y))
+    forecast_steps: int = int(
+        params.get("validation", {}).get("forecast_steps") or len(val_y)
+    )
 
     logger.info(
         "SARIMAX training — train=%d rows  val=%d rows  exog_cols=%s  "
-        "objective=%s  direction=%s",
+        "objective=%s  direction=%s  max_trials=%d",
         len(train_y),
         len(val_y),
         exog_cols if use_exog else "(none)",
         objective_metric,
         objective_direction,
+        max_trials,
     )
 
-    # ── build parameter grid ──────────────────────────────────────────────────
-    param_grid = _build_param_grid(tuning_cfg)
-    logger.info("SARIMAX grid search: %d configurations to try.", len(param_grid))
-
-    # ── run grid search ───────────────────────────────────────────────────────
+    # ── Optuna study setup ────────────────────────────────────────────────────
+    study = create_optuna_study(objective_direction, sampler_cfg)
     trial_results: list[dict] = []
     fitted_models: dict[str, Any] = {}
+    n_failed_count: list[int] = [0]  # mutable container for callback closure
 
-    for idx, config in enumerate(param_grid):
-        trial_id = f"sarimax_trial_{idx + 1:03d}"
+    def _stop_on_max_failures(
+        _study: optuna.Study, trial: optuna.trial.FrozenTrial
+    ) -> None:
+        if trial.state == optuna.trial.TrialState.FAIL:
+            n_failed_count[0] += 1
+            if max_failed_trials is not None and n_failed_count[0] >= max_failed_trials:
+                logger.warning(
+                    "SARIMAX Optuna search: max_failed_trials=%d reached after %d "
+                    "total trial(s). Stopping search early.",
+                    max_failed_trials,
+                    trial.number + 1,
+                )
+                _study.stop()
+
+    # ── Optuna objective closure ──────────────────────────────────────────────
+    def objective(trial: optuna.Trial) -> float:  # noqa: PLR0912
+        trial_id = f"sarimax_trial_{trial.number + 1:03d}"
         t0 = time.perf_counter()
 
+        raw_params = suggest_trial_params(trial, search_space, fixed_params)
+        config = _build_sarimax_config_from_trial(raw_params, s)
+
         logger.info(
-            "[%d/%d] %s order=%s seasonal_order=%s trend=%s use_exog=%s",
-            idx + 1,
-            len(param_grid),
+            "[%d] %s order=%s seasonal_order=%s trend=%s use_exog=%s",
+            trial.number + 1,
             trial_id,
             config["order"],
             config["seasonal_order"],
@@ -135,17 +175,29 @@ def train_and_evaluate_monthly_sarimax_candidates(
                 enforce_stationarity=bool(config.get("enforce_stationarity", False)),
                 enforce_invertibility=bool(config.get("enforce_invertibility", False)),
             )
-            result = model.fit(disp=False)
+            with _warnings.catch_warnings(record=True) as _caught:
+                _warnings.simplefilter("always")
+                result = model.fit(disp=False)
+            fit_warnings_list = [str(w.message) for w in _caught]
 
             forecast_out = result.get_forecast(steps=forecast_steps, exog=val_exog)
             y_pred = np.asarray(forecast_out.predicted_mean, dtype=float)
 
-            # Align shapes: forecast may produce more steps than validation rows
             n_eval = min(len(y_pred), len(val_y))
+            y_pred_eval = y_pred[:n_eval]
+
+            if not np.isfinite(y_pred_eval).all():
+                n_nonfinite = int((~np.isfinite(y_pred_eval)).sum())
+                raise ValueError(
+                    f"Forecast produced {n_nonfinite} non-finite value(s); "
+                    "this configuration is recorded as a failed trial."
+                )
+
             metrics = _compute_validation_metrics(
-                val_y[:n_eval], y_pred[:n_eval], train_y, mase_seasonal_period, epsilon
+                val_y[:n_eval], y_pred_eval, train_y, mase_seasonal_period, epsilon
             )
             elapsed = time.perf_counter() - t0
+            objective_value = metrics[objective_metric]
 
             fitted_models[trial_id] = result
             trial_results.append(
@@ -161,7 +213,7 @@ def train_and_evaluate_monthly_sarimax_candidates(
                     "enforce_invertibility": config.get("enforce_invertibility", False),
                     "use_exog": use_exog,
                     "objective_metric": objective_metric,
-                    "objective_value": metrics[objective_metric],
+                    "objective_value": objective_value,
                     **metrics,
                     "n_train": len(train_y),
                     "n_validation": n_eval,
@@ -170,6 +222,7 @@ def train_and_evaluate_monthly_sarimax_candidates(
                     "validation_start": str(val_df[date_col].min().date()),
                     "validation_end": str(val_df[date_col].max().date()),
                     "fit_seconds": round(elapsed, 3),
+                    "fit_warnings": fit_warnings_list[:5],
                     "error_message": None,
                 }
             )
@@ -181,6 +234,7 @@ def train_and_evaluate_monthly_sarimax_candidates(
                 metrics["rmse"],
                 metrics["bias"],
             )
+            return float(objective_value)
 
         except Exception as exc:  # noqa: BLE001
             elapsed = time.perf_counter() - t0
@@ -213,27 +267,31 @@ def train_and_evaluate_monthly_sarimax_candidates(
                     "validation_start": str(val_df[date_col].min().date()),
                     "validation_end": str(val_df[date_col].max().date()),
                     "fit_seconds": round(elapsed, 3),
+                    "fit_warnings": [],
                     "error_message": f"{type(exc).__name__}: {exc}",
                 }
             )
+            raise  # Let Optuna record this as TrialState.FAIL
+
+    # ── run Optuna study ──────────────────────────────────────────────────────
+    callbacks = [_stop_on_max_failures]
+    study.optimize(objective, n_trials=max_trials, catch=(Exception,), callbacks=callbacks)
 
     # ── validate at least one success ─────────────────────────────────────────
     successful = [r for r in trial_results if r["status"] == "success"]
     failed = [r for r in trial_results if r["status"] == "failed"]
     if not successful:
-        summaries = [
-            f"{r['trial_id']}: {r['error_message']}" for r in failed
-        ]
+        summaries = [f"{r['trial_id']}: {r['error_message']}" for r in failed]
         raise RuntimeError(
-            "All SARIMAX trials failed during monthly training.\n"
-            + "\n".join(summaries)
+            "All SARIMAX trials failed during monthly training.\n" + "\n".join(summaries)
         )
 
     # ── rank and select pre-champions ─────────────────────────────────────────
-    tuning_df = _rank_candidates(pd.DataFrame(trial_results), objective_metric, objective_direction)
+    tuning_df = _rank_candidates(
+        pd.DataFrame(trial_results), objective_metric, objective_direction
+    )
 
     ranked_mask = tuning_df["rank"].notna()
-    # Cast rank to float for sorting safety (nullable int may have object dtype after concat)
     prechampion_ids: list[str] = (
         tuning_df[ranked_mask]
         .assign(_rank_float=tuning_df.loc[ranked_mask, "rank"].astype(float))
@@ -267,7 +325,7 @@ def train_and_evaluate_monthly_sarimax_candidates(
 
     # ── build prechampion_configs artifact ────────────────────────────────────
     prechampion_configs = _build_prechampion_configs(
-        tuning_df, prechampion_ids, objective_metric, top_n, mase_seasonal_period
+        tuning_df, prechampion_ids, objective_metric, top_n, mase_seasonal_period, exog_cols
     )
 
     # ── persist top-N fitted models ───────────────────────────────────────────
@@ -286,6 +344,7 @@ def train_and_evaluate_monthly_sarimax_candidates(
                 "trend": row["trend"],
                 "use_exog": row["use_exog"],
             },
+            "exogenous_columns": exog_cols if use_exog else [],
             "model": fitted_models[cid],
             "validation_metrics": {
                 "wape": _safe_float(row["wape"]),
@@ -298,9 +357,14 @@ def train_and_evaluate_monthly_sarimax_candidates(
 
     # ── build training metadata ───────────────────────────────────────────────
     run_ts = datetime.now(tz=UTC).isoformat()
-    best_row = tuning_df[tuning_df["rank"] == 1].iloc[0] if (tuning_df["rank"] == 1).any() else None
+    best_row = (
+        tuning_df[tuning_df["rank"] == 1].iloc[0]
+        if (tuning_df["rank"] == 1).any()
+        else None
+    )
     training_metadata = _build_training_metadata(
         trial_results=trial_results,
+        study=study,
         best_row=best_row,
         objective_metric=objective_metric,
         objective_direction=objective_direction,
@@ -313,6 +377,7 @@ def train_and_evaluate_monthly_sarimax_candidates(
         train_df=train_df,
         val_df=val_df,
         run_ts=run_ts,
+        prechampion_ids=prechampion_ids,
     )
 
     # ── build rank-1 candidate artifact ──────────────────────────────────────
@@ -332,6 +397,7 @@ def train_and_evaluate_monthly_sarimax_candidates(
             "trend": rank1_row["trend"],
             "use_exog": rank1_row["use_exog"],
         },
+        "exogenous_columns": exog_cols if use_exog else [],
         "model": fitted_models[rank1_id],
         "validation_metrics": {
             "wape": _safe_float(rank1_row["wape"]),
@@ -399,38 +465,29 @@ def _extract_exog(df: pd.DataFrame, exog_cols: list[str]) -> np.ndarray | None:
     return df[exog_cols].values.astype(float)
 
 
-def _build_param_grid(tuning_cfg: dict) -> list[dict]:
-    """Build the deterministic SARIMAX configuration grid from tuning config."""
-    order_grid = [list(o) for o in tuning_cfg.get("order_grid", [[1, 1, 1]])]
-    seasonal_order_grid = [
-        list(so) for so in tuning_cfg.get("seasonal_order_grid", [[0, 1, 1, 12]])
-    ]
-    trend_options: list = tuning_cfg.get("trend_options", [None])
-    enforce_stationarity_options: list = tuning_cfg.get(
-        "enforce_stationarity_options", [False]
-    )
-    enforce_invertibility_options: list = tuning_cfg.get(
-        "enforce_invertibility_options", [False]
-    )
+def _build_sarimax_config_from_trial(params: dict, s: int) -> dict:
+    """Assemble a SARIMAX config dict from flat Optuna trial params.
 
-    grid = []
-    for order, seasonal_order, trend, enforce_stat, enforce_inv in itertools.product(
-        order_grid,
-        seasonal_order_grid,
-        trend_options,
-        enforce_stationarity_options,
-        enforce_invertibility_options,
-    ):
-        grid.append(
-            {
-                "order": order,
-                "seasonal_order": seasonal_order,
-                "trend": trend,
-                "enforce_stationarity": enforce_stat,
-                "enforce_invertibility": enforce_inv,
-            }
-        )
-    return grid
+    Maps the string sentinel ``"none"`` back to Python ``None`` for the trend
+    argument, since Optuna cannot serialise ``None`` in categorical search spaces.
+    """
+    p = int(params["p"])
+    d = int(params["d"])
+    q = int(params["q"])
+    big_p = int(params["P"])
+    big_d = int(params["D"])
+    big_q = int(params["Q"])
+    trend_raw = params.get("trend", "none")
+    trend = None if str(trend_raw).lower() == "none" else str(trend_raw)
+    enforce_stationarity = bool(params.get("enforce_stationarity", False))
+    enforce_invertibility = bool(params.get("enforce_invertibility", False))
+    return {
+        "order": [p, d, q],
+        "seasonal_order": [big_p, big_d, big_q, s],
+        "trend": trend,
+        "enforce_stationarity": enforce_stationarity,
+        "enforce_invertibility": enforce_invertibility,
+    }
 
 
 def _compute_validation_metrics(
@@ -483,12 +540,13 @@ def _rank_candidates(
     return pd.concat([success_df, failed_df], ignore_index=True)
 
 
-def _build_prechampion_configs(
+def _build_prechampion_configs(  # noqa: PLR0913
     ranked_df: pd.DataFrame,
     prechampion_ids: list[str],
     objective_metric: str,
     top_n: int,
     seasonal_period: int,
+    exog_cols: list[str],
 ) -> dict:
     """Build the prechampion_configs JSON artifact."""
     candidates = []
@@ -497,6 +555,7 @@ def _build_prechampion_configs(
         if row.empty:
             continue
         r = row.iloc[0]
+        use_exog_entry = bool(r["use_exog"])
         candidates.append(
             {
                 "trial_id": trial_id,
@@ -504,7 +563,8 @@ def _build_prechampion_configs(
                 "order": r["order"],
                 "seasonal_order": r["seasonal_order"],
                 "trend": r["trend"],
-                "use_exog": bool(r["use_exog"]),
+                "use_exog": use_exog_entry,
+                "exogenous_columns": exog_cols if use_exog_entry else [],
                 "metrics": {
                     "wape": _safe_float(r["wape"]),
                     "mase": _safe_float(r["mase"]),
@@ -528,6 +588,7 @@ def _build_prechampion_configs(
 
 def _build_training_metadata(  # noqa: PLR0913
     trial_results: list[dict],
+    study: optuna.Study,
     best_row: "pd.Series | None",
     objective_metric: str,
     objective_direction: str,
@@ -540,6 +601,7 @@ def _build_training_metadata(  # noqa: PLR0913
     train_df: pd.DataFrame,
     val_df: pd.DataFrame,
     run_ts: str,
+    prechampion_ids: list[str] | None = None,
 ) -> dict:
     """Build the training_metadata JSON artifact."""
     successful = [r for r in trial_results if r["status"] == "success"]
@@ -547,6 +609,13 @@ def _build_training_metadata(  # noqa: PLR0913
 
     best_trial_id = str(best_row["trial_id"]) if best_row is not None else None
     best_val = _safe_float(best_row[objective_metric]) if best_row is not None else None
+
+    n_completed = len(
+        [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]
+    )
+    n_pruned = len(
+        [t for t in study.trials if t.state == optuna.trial.TrialState.PRUNED]
+    )
 
     warnings_list: list[str] = []
     if len(successful) < top_n:
@@ -556,14 +625,19 @@ def _build_training_metadata(  # noqa: PLR0913
 
     return {
         "model_family": "sarimax",
+        "model_class": "statsmodels.tsa.statespace.sarimax.SARIMAX",
         "granularity": "monthly",
         "training_stage": "validation",
         "run_timestamp": run_ts,
+        "optimizer": "optuna",
+        "study_direction": objective_direction,
         "objective_metric": objective_metric,
         "objective_direction": objective_direction,
         "top_n_prechampions": top_n,
-        "n_trials_configured": len(trial_results),
+        "n_trials_configured": len(study.trials),
         "n_trials_attempted": len(trial_results),
+        "n_trials_completed": n_completed,
+        "n_trials_pruned": n_pruned,
         "n_trials_successful": len(successful),
         "n_trials_failed": len(failed),
         "best_trial_id": best_trial_id,
@@ -572,6 +646,8 @@ def _build_training_metadata(  # noqa: PLR0913
         "seasonal_period": mase_seasonal_period,
         "uses_exogenous_features": use_exog,
         "exogenous_columns": exog_cols,
+        "exogenous_column_order": exog_cols,
+        "selected_prechampion_ids": list(prechampion_ids) if prechampion_ids else [],
         "target_column": target_col,
         "date_column": date_col,
         "train_start": str(train_df[date_col].min().date()),

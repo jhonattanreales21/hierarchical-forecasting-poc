@@ -21,9 +21,6 @@ from .adapters import SUPPORTED_MONTHLY_FAMILIES, dispatch_monthly_prediction
 
 logger = logging.getLogger(__name__)
 
-# Horizons (in months) produced by monthly inference.
-_SUPPORTED_HORIZONS: tuple[int, ...] = (3, 6, 12)
-
 # Champion metadata fields required before dispatch can proceed.
 _REQUIRED_METADATA_KEYS: tuple[str, ...] = ("model_family", "champion_id")
 
@@ -59,6 +56,8 @@ def generate_monthly_champion_forecasts(  # noqa: PLR0913
     monthly_future_6m: pd.DataFrame,
     monthly_future_12m: pd.DataFrame,
     params: dict,
+    monthly_catboost_full_train: pd.DataFrame | None = None,
+    monthly_catboost_split_metadata: dict | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, dict]:
     """Generate official monthly forecasts from the selected production champion.
 
@@ -69,18 +68,26 @@ def generate_monthly_champion_forecasts(  # noqa: PLR0913
     metadata artifact.
 
     The dispatch is driven by metadata, not by the Python type of the model object,
-    so Prophet and SARIMAX champions flow through the same node.
+    so Prophet, SARIMAX, and CatBoost champions flow through the same node.
 
     Args:
         champion_monthly_model: Production champion artifact. Prophet champions are
             the fitted model; SARIMAX champions are the candidate entry dict that
-            carries the fitted results under ``"model"``.
+            carries the fitted results under ``"model"``; CatBoost champions are the
+            candidate entry dict carrying the fitted ``CatBoostRegressor`` under
+            ``"model"`` and ``"feature_columns"``.
         champion_monthly_metadata: Generic champion metadata from model selection.
             Must contain ``model_family`` and ``champion_id``.
         monthly_future_3m: Future feature frame for the 3-month horizon.
         monthly_future_6m: Future feature frame for the 6-month horizon.
         monthly_future_12m: Future feature frame for the 12-month horizon.
         params: Contents of ``forecast_inference.monthly`` from the parameter file.
+        monthly_catboost_full_train: CatBoost-ready historical DataFrame used to
+            seed the recursive demand buffer. Required when the champion family is
+            ``catboost``; ignored for other families.
+        monthly_catboost_split_metadata: Split metadata from the CatBoost adapter
+            (``adapt_monthly_data_for_catboost``). Required when the champion family
+            is ``catboost``; ignored for other families.
 
     Returns:
         Five-element tuple ``(forecast_3m, forecast_6m, forecast_12m,
@@ -110,11 +117,6 @@ def generate_monthly_champion_forecasts(  # noqa: PLR0913
         run_id,
     )
 
-    # The canonical generic future frames are not built yet, so monthly inference
-    # temporarily consumes the Prophet future frames. The family adapters extract
-    # the date index (and any exogenous columns) from these frames.
-    # TODO(model_input): emit granularity-generic monthly_future_{3,6,12}m frames
-    #   and route them here instead of the Prophet-specific frames.
     horizon_futures: dict[int, tuple[pd.DataFrame, str]] = {
         3: (monthly_future_3m, "monthly_future_3m"),
         6: (monthly_future_6m, "monthly_future_6m"),
@@ -133,6 +135,8 @@ def generate_monthly_champion_forecasts(  # noqa: PLR0913
             future_df=future_df,
             params=params,
             horizon=horizon,
+            history_df=monthly_catboost_full_train,
+            catboost_split_metadata=monthly_catboost_split_metadata,
         )
         standardized = _standardize_forecast_schema(
             core_df=core,
@@ -428,15 +432,18 @@ def _build_inference_metadata(  # noqa: PLR0913
     ]
     interval_method = interval_methods[0] if interval_methods else None
 
-    notes: list[str] = [
-        "Monthly inference temporarily consumes Prophet future frames as the "
-        "compatibility source; generic monthly_future_*m frames are the intended "
-        "canonical input.",
-    ]
+    notes: list[str] = []
     if model_family == "sarimax":
         notes.append(
             "SARIMAX forecasts are generated from the champion fitted results object; "
             "a full-history refit is recommended before production deployment."
+        )
+    if model_family == "catboost":
+        notes.append(
+            "CatBoost forecasts are generated via recursive inference: target-derived "
+            "lag and rolling features are recomputed step-by-step from observed demand "
+            "plus prior predictions. Prediction intervals are not produced; "
+            "forecast_lower and forecast_upper are null."
         )
 
     return {
@@ -445,7 +452,7 @@ def _build_inference_metadata(  # noqa: PLR0913
         "champion_id": str(metadata.get("champion_id", "")),
         "run_id": run_id,
         "forecast_generated_at": created_at,
-        "supported_horizons": list(_SUPPORTED_HORIZONS),
+        "supported_horizons": list(params.get("supported_horizons", [3, 6, 12])),
         "default_horizon": default_horizon,
         "output_schema_version": str(
             params.get("output_schema_version", "monthly_forecast_v1")
