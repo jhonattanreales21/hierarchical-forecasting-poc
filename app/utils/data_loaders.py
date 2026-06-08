@@ -14,15 +14,20 @@ from utils.champion import (
     standardize_champion_metadata,
     standardize_forecast_columns,
 )
+from utils.descriptive import normalize_demand_frame, normalize_exogenous_frame
 from utils.paths import (
     ACTUALS,
-    RAW_EXOGENOUS,
     CHAMPION_META,
+    DEMAND_DAILY,
+    DEMAND_MONTHLY,
+    DEMAND_WEEKLY,
+    EXOGENOUS_MONTHLY,
     EXPLAINABILITY_META,
     FAMILY_CHAMPION_IMPORTANCE,
     FAMILY_CHAMPION_SUMMARY,
     INFERENCE_META,
     LEGACY_TEST_FORECAST,
+    RAW_EXOGENOUS,
     SELECTION_SUMMARY,
     TEST_METRICS,
     forecast_parquet,
@@ -95,6 +100,38 @@ def load_raw_exogenous_data() -> pd.DataFrame:
     if "Date" in df.columns:
         df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
     return df.reset_index(drop=True)
+
+
+@st.cache_data
+def load_demand_daily() -> pd.DataFrame:
+    """Load canonical daily demand for descriptive analysis."""
+    if not DEMAND_DAILY.exists():
+        return pd.DataFrame(columns=["date", "sku", "demand", "granularity"])
+    return normalize_demand_frame(pd.read_parquet(DEMAND_DAILY), "daily")
+
+
+@st.cache_data
+def load_demand_weekly() -> pd.DataFrame:
+    """Load canonical weekly demand for descriptive analysis."""
+    if not DEMAND_WEEKLY.exists():
+        return pd.DataFrame(columns=["date", "sku", "demand", "granularity"])
+    return normalize_demand_frame(pd.read_parquet(DEMAND_WEEKLY), "weekly")
+
+
+@st.cache_data
+def load_demand_monthly_primary() -> pd.DataFrame:
+    """Load canonical monthly demand for descriptive analysis."""
+    if not DEMAND_MONTHLY.exists():
+        return pd.DataFrame(columns=["date", "sku", "demand", "granularity"])
+    return normalize_demand_frame(pd.read_parquet(DEMAND_MONTHLY), "monthly")
+
+
+@st.cache_data
+def load_exogenous_monthly_primary() -> pd.DataFrame:
+    """Load canonical monthly exogenous variables for descriptive analysis."""
+    if not EXOGENOUS_MONTHLY.exists():
+        return pd.DataFrame()
+    return normalize_exogenous_frame(pd.read_parquet(EXOGENOUS_MONTHLY))
 
 
 @st.cache_data

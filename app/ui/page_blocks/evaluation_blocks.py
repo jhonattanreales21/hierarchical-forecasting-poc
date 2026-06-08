@@ -383,8 +383,9 @@ def render_champion_explainability(
 
     if importance_df is None or importance_df.empty or "family" not in importance_df.columns:
         st.info(
-            "Driver-importance artifact not available. Run "
-            f"`{_MONTHLY_SELECTION_CMD}` to generate it."
+            "Driver-importance artifact not available "
+            "(`monthly_family_champion_importance.parquet`). Run "
+            f"`{_MONTHLY_SELECTION_CMD}` to generate SHAP/contribution/coefficient data."
         )
         return
 
@@ -397,6 +398,34 @@ def render_champion_explainability(
     default_index = next(
         (i for i, f in enumerate(families) if str(f).lower() == production_family), 0
     )
+
+    available_methods = (
+        importance_df[["family", "importance_type"]]
+        .drop_duplicates()
+        .sort_values("family")
+        .reset_index(drop=True)
+    )
+    cols = st.columns(3)
+    with cols[0]:
+        render_kpi_card(
+            label="Families with drivers",
+            value=str(len(families)),
+        )
+    with cols[1]:
+        render_kpi_card(
+            label="Driver rows",
+            value=str(len(importance_df)),
+        )
+    with cols[2]:
+        current_method = available_methods.loc[
+            available_methods["family"].astype(str).str.lower() == production_family,
+            "importance_type",
+        ]
+        render_kpi_card(
+            label="Production method",
+            value=current_method.iloc[0] if not current_method.empty else "N/A",
+        )
+
     selected_family = st.radio(
         "Family champion",
         options=families,
@@ -443,6 +472,8 @@ def render_champion_explainability(
         x_axis_title=labels["axis"],
     )
     st.plotly_chart(fig, use_container_width=True)
+    if "computed_at" in subset.columns:
+        st.caption(f"Importance artifact computed at: {subset['computed_at'].iloc[0]}")
     st.caption(
         f"Method: {labels['method']}. ★ marks the production champion family. "
         "Importance magnitudes are only comparable within a single family."

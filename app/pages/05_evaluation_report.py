@@ -9,6 +9,7 @@ from ui.page_blocks.evaluation_blocks import (
     render_production_selection_summary,
     render_validation_notes,
 )
+from ui.page_blocks.upload_blocks import render_sidebar_upload_panel
 from ui.styles import apply_global_styles
 from utils.champion import extract_champion_identity
 from utils.data_loaders import (
@@ -22,6 +23,7 @@ from utils.data_loaders import (
 from utils.paths import CHAMPION_META
 
 apply_global_styles()
+render_sidebar_upload_panel(key_prefix="evaluation_sidebar")
 
 render_page_header(
     title="Evaluation Report",

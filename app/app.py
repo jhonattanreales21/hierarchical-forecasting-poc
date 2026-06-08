@@ -3,6 +3,7 @@ from html import escape
 import streamlit as st
 
 from ui.components import render_hero, render_section_header
+from ui.page_blocks.upload_blocks import render_sidebar_upload_panel, render_upload_panel
 from ui.styles import apply_global_styles
 
 st.set_page_config(
@@ -12,13 +13,14 @@ st.set_page_config(
 )
 
 apply_global_styles()
+render_sidebar_upload_panel(key_prefix="home_sidebar")
 
 render_hero(
     title="Demand Forecast PoC",
     subtitle=(
-        "Temporal hierarchical forecasting for a critical SKU. "
-        "Explore the monthly forecast, model evaluation, project status, "
-        "and future business assistant capabilities from the sidebar."
+        "A working demand-planning cockpit for inspecting historical demand, "
+        "reviewing the monthly forecast, checking model evidence, and preparing "
+        "future RAG inputs."
     ),
     eyebrow="Hierarchical Demand Forecasting",
 )
@@ -26,11 +28,10 @@ render_hero(
 st.markdown(
     """
     <p class="app-muted-text">
-    This PoC demonstrates a complete forecasting system — from raw demand data and exogenous
-    variables through a Kedro ML pipeline to evaluated forecasts served through this Streamlit
-    application. The <strong>monthly layer is the primary, business-facing layer</strong>: it
-    displays the current production champion selected from a time-aware competition among
-    Prophet, SARIMAX, and CatBoost. Weekly and reconciliation layers are planned enhancements.
+    This application keeps the monthly planning layer as the primary business view while
+    making the workflow more practical: start by reviewing historical demand and external
+    variables, then move into forecast outputs, evaluation evidence, and assistant-supported
+    interpretation.
     </p>
     """,
     unsafe_allow_html=True,
@@ -43,21 +44,21 @@ render_section_header(
 
 _SECTIONS = [
     (
+        "Descriptive Analysis",
+        "Active",
+        "Review original demand and external-variable timelines before forecasting.",
+        "success",
+    ),
+    (
         "Monthly Forecast",
         "Active",
-        "Forward-looking monthly demand forecast from the current production champion.",
+        "Review generated monthly forecast horizons, intervals, and forecast provenance.",
         "success",
     ),
     (
         "Evaluation Report",
         "Active",
         "Champion selection rationale and held-out test performance across model families.",
-        "success",
-    ),
-    (
-        "Project Overview",
-        "Active",
-        "Live champion status, pipeline artifact health, and PoC scope summary.",
         "success",
     ),
     (
@@ -81,3 +82,5 @@ for i, (name, status, desc, badge_status) in enumerate(_SECTIONS):
             """,
             unsafe_allow_html=True,
         )
+
+render_upload_panel(key_prefix="home_full", compact=False)

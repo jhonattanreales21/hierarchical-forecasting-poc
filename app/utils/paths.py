@@ -70,6 +70,12 @@ EXPLAINABILITY_META = (
 ACTUALS = DATA_ROOT / "05_model_input" / "monthly_prophet_modeling_data.parquet"
 RAW_EXOGENOUS = DATA_ROOT / "01_raw" / "exogenous_variables.csv"
 
+# Primary descriptive-analysis artifacts (03_primary/)
+DEMAND_DAILY = DATA_ROOT / "03_primary" / "demand_daily.parquet"
+DEMAND_WEEKLY = DATA_ROOT / "03_primary" / "demand_weekly.parquet"
+DEMAND_MONTHLY = DATA_ROOT / "03_primary" / "demand_monthly.parquet"
+EXOGENOUS_MONTHLY = DATA_ROOT / "03_primary" / "exogenous_monthly.parquet"
+
 # Inference outputs (07_model_output/)
 INFERENCE_META = _first_existing(
     DATA_ROOT / "07_model_output" / "monthly_inference_metadata.json",
@@ -81,6 +87,8 @@ FORECAST_LATEST = _first_existing(
 )
 ASSISTANT_VECTORSTORE = APP_CACHE_ROOT / "forecast_assistant_vectorstore"
 ASSISTANT_UPLOADS = APP_CACHE_ROOT / "forecast_assistant_uploads"
+USER_UPLOADS_ROOT = APP_CACHE_ROOT / "user_uploads"
+USER_UPLOAD_MANIFEST = USER_UPLOADS_ROOT / "manifest.json"
 
 
 def forecast_parquet(horizon_months: int) -> Path:
