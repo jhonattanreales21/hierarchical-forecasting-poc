@@ -29,6 +29,14 @@ model_selection:
     # history (train + validation + test) before production inference.
     refit_champion:
       enabled: true
+    # Family-champion explainability for the app's Evaluation Report.
+    explainability:
+      enabled: true
+      top_n_features: 15        # display hint; the artifact stores all features
+      shap:
+        max_samples: null       # null = explain every full-history row
+      prophet:
+        include_components: true
     output:
       produce_generic_champion: true
       preserve_legacy_prophet_champion: true

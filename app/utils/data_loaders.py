@@ -18,6 +18,8 @@ from utils.paths import (
     ACTUALS,
     RAW_EXOGENOUS,
     CHAMPION_META,
+    EXPLAINABILITY_META,
+    FAMILY_CHAMPION_IMPORTANCE,
     FAMILY_CHAMPION_SUMMARY,
     INFERENCE_META,
     LEGACY_TEST_FORECAST,
@@ -171,6 +173,22 @@ def load_family_champion_summary() -> pd.DataFrame:
     return pd.read_parquet(FAMILY_CHAMPION_SUMMARY)
 
 
+@st.cache_data
+def load_family_champion_importance() -> pd.DataFrame:
+    """Load the unified family-champion driver-importance table.
+
+    One row per (family, feature) with ``importance``, ``importance_type``, and ``rank``.
+    SHAP mean(|value|) for CatBoost; native contribution/coefficient drivers for the
+    other families.
+
+    Returns:
+        Long-form DataFrame, or empty DataFrame if the artifact is missing.
+    """
+    if not FAMILY_CHAMPION_IMPORTANCE.exists():
+        return pd.DataFrame()
+    return pd.read_parquet(FAMILY_CHAMPION_IMPORTANCE)
+
+
 def load_champion_metadata() -> dict:
     """Load champion model metadata JSON.
 
@@ -178,6 +196,15 @@ def load_champion_metadata() -> dict:
         Dict with champion metadata, or empty dict if missing.
     """
     return standardize_champion_metadata(load_json(CHAMPION_META))
+
+
+def load_explainability_metadata() -> dict:
+    """Load family-champion explainability metadata JSON.
+
+    Returns:
+        Dict with per-family explainability method/provenance, or empty dict if missing.
+    """
+    return load_json(EXPLAINABILITY_META)
 
 
 def load_inference_metadata() -> dict:

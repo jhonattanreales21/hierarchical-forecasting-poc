@@ -54,6 +54,18 @@ LEGACY_TEST_FORECAST = (
     / "monthly_prophet_champion_test_forecast.parquet"
 )
 
+# Explainability artifacts (08_reporting + 06_models/explainability/)
+# Unified family-champion driver-importance table (SHAP for CatBoost; native for others).
+FAMILY_CHAMPION_IMPORTANCE = (
+    DATA_ROOT / "08_reporting" / "monthly_family_champion_importance.parquet"
+)
+EXPLAINABILITY_META = (
+    DATA_ROOT
+    / "06_models"
+    / "explainability"
+    / "monthly_family_champion_explainability_metadata.json"
+)
+
 # Model input (05_model_input/)
 ACTUALS = DATA_ROOT / "05_model_input" / "monthly_prophet_modeling_data.parquet"
 RAW_EXOGENOUS = DATA_ROOT / "01_raw" / "exogenous_variables.csv"

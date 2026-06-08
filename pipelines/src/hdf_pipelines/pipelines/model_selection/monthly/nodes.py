@@ -26,6 +26,14 @@ from shared.metrics import wape as _shared_wape
 from statsmodels.stats.diagnostic import acorr_ljungbox
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 
+from .explainability import (
+    IMPORTANCE_COLUMNS,
+    assemble_family_importance_table,
+    compute_catboost_shap_importance,
+    compute_prophet_regressor_importance,
+    compute_sarimax_coefficient_importance,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -639,6 +647,217 @@ def build_monthly_champion_artifacts(  # noqa: PLR0913
         refit_info["n_obs"],
     )
     return champion_model, metadata
+
+
+# ── Node 6 ────────────────────────────────────────────────────────────────────
+
+
+def generate_monthly_family_champion_explanations(  # noqa: PLR0913, PLR0912, PLR0915
+    monthly_family_champion_summary: pd.DataFrame,
+    monthly_prophet_candidate_models: dict,
+    monthly_sarimax_candidate_models: dict,
+    monthly_catboost_candidate_models: dict,
+    monthly_prophet_full_train: pd.DataFrame,
+    monthly_sarimax_full_train: pd.DataFrame,
+    monthly_catboost_full_train: pd.DataFrame,
+    monthly_sarimax_training_metadata: dict,
+    monthly_catboost_split_metadata: dict,
+    params_monthly: dict,
+) -> tuple[pd.DataFrame, Any, pd.DataFrame, dict]:
+    """Generate driver-importance explanations for every monthly family champion.
+
+    For each family champion (Prophet, SARIMAX, CatBoost), the winning configuration is
+    refit on full history (the same Champion Protocol stage-5 refit used for the
+    production champion, via :func:`_build_production_champion_model`) so the explanation
+    reflects the production-representative model. Importance is then computed with the
+    method appropriate to each family — SHAP (``TreeExplainer``) for CatBoost, centered
+    component contributions for Prophet, and absolute exogenous coefficients for SARIMAX
+    (see ``explainability.py``).
+
+    Explainability is auxiliary: a failure for one family is logged and skipped rather
+    than breaking model selection, so the node always returns materialisable artifacts.
+
+    Args:
+        monthly_family_champion_summary: Family champions table (``family``,
+            ``family_champion_id``) from :func:`select_monthly_family_champions`.
+        monthly_prophet_candidate_models: Dict ``candidate_id -> Prophet model``.
+        monthly_sarimax_candidate_models: Dict ``trial_id -> SARIMAX candidate entry``.
+        monthly_catboost_candidate_models: Dict ``candidate_id -> CatBoost candidate entry``.
+        monthly_prophet_full_train: Prophet-format full history (``ds``, ``y``, regressors).
+        monthly_sarimax_full_train: SARIMAX-format full history (date, target, exog).
+        monthly_catboost_full_train: CatBoost-format full history (features + target).
+        monthly_sarimax_training_metadata: SARIMAX metadata (``exogenous_columns``).
+        monthly_catboost_split_metadata: CatBoost split metadata (feature/date columns).
+        params_monthly: Contents of ``model_selection.monthly`` (reads ``explainability``).
+
+    Returns:
+        Four-element tuple:
+
+        1. ``monthly_family_champion_importance`` — long-form importance table across
+           families (:data:`explainability.IMPORTANCE_COLUMNS`).
+        2. ``monthly_catboost_shap_explainer`` — the fitted ``shap.TreeExplainer`` for the
+           CatBoost champion (``None`` when CatBoost is not a champion / SHAP failed).
+        3. ``monthly_catboost_shap_values`` — per-observation SHAP values (date + one
+           column per feature); empty DataFrame when unavailable.
+        4. ``monthly_family_champion_explainability_metadata`` — per-family method,
+           champion id, and provenance.
+    """
+    computed_at = datetime.now(tz=UTC).isoformat()
+    explain_cfg = dict(params_monthly.get("explainability", {}) or {})
+    enabled = bool(explain_cfg.get("enabled", True))
+
+    empty_importance = pd.DataFrame(columns=IMPORTANCE_COLUMNS)
+    empty_shap = pd.DataFrame()
+    metadata: dict = {
+        "computed_at": computed_at,
+        "granularity": "monthly",
+        "enabled": enabled,
+        "top_n_features": int(explain_cfg.get("top_n_features", 15)),
+        "families": {},
+        "n_families_explained": 0,
+    }
+
+    summary_empty = (
+        monthly_family_champion_summary is None or monthly_family_champion_summary.empty
+    )
+    if not enabled or summary_empty:
+        logger.info(
+            "Family-champion explainability skipped (enabled=%s, summary_empty=%s).",
+            enabled,
+            summary_empty,
+        )
+        return empty_importance, None, empty_shap, metadata
+
+    include_components = bool(
+        explain_cfg.get("prophet", {}).get("include_components", True)
+    )
+
+    per_family: dict[str, dict] = {}
+    families_meta: dict[str, dict] = {}
+    catboost_explainer: Any = None
+    catboost_shap_values: pd.DataFrame = empty_shap
+
+    for _, row in monthly_family_champion_summary.iterrows():
+        family = str(row["family"])
+        champion_id = str(row["family_champion_id"])
+        try:
+            candidate_model = _resolve_champion_model(
+                production_family=family,
+                production_candidate_id=champion_id,
+                prophet_candidate_models=monthly_prophet_candidate_models,
+                sarimax_candidate_models=monthly_sarimax_candidate_models,
+                catboost_candidate_models=monthly_catboost_candidate_models or {},
+            )
+            champion_model, contract, _refit_info = _build_production_champion_model(
+                production_family=family,
+                candidate_model=candidate_model,
+                prophet_full_train=monthly_prophet_full_train,
+                sarimax_full_train=monthly_sarimax_full_train,
+                sarimax_training_metadata=monthly_sarimax_training_metadata,
+                params_monthly=params_monthly,
+                catboost_full_train=monthly_catboost_full_train,
+                catboost_split_metadata=monthly_catboost_split_metadata or {},
+            )
+
+            if family == "catboost":
+                feature_columns = list(champion_model.get("feature_columns", []))
+                model_obj = champion_model.get("model")
+                missing = [
+                    c for c in feature_columns if c not in monthly_catboost_full_train.columns
+                ]
+                if model_obj is None or not feature_columns or missing:
+                    raise ValueError(
+                        f"CatBoost SHAP unavailable (model={model_obj is not None}, "
+                        f"n_features={len(feature_columns)}, missing={missing})."
+                    )
+                x_df = (
+                    monthly_catboost_full_train[feature_columns]
+                    .astype(float)
+                    .reset_index(drop=True)
+                )
+                importance_df, shap_values_df, catboost_explainer, base_value = (
+                    compute_catboost_shap_importance(model_obj, x_df, feature_columns)
+                )
+                date_col = str(
+                    monthly_catboost_split_metadata.get("date_column", "month_start_date")
+                )
+                if date_col in monthly_catboost_full_train.columns:
+                    shap_values_df.insert(
+                        0,
+                        date_col,
+                        pd.to_datetime(
+                            monthly_catboost_full_train[date_col]
+                        ).reset_index(drop=True),
+                    )
+                catboost_shap_values = shap_values_df
+                per_family[family] = {"champion_id": champion_id, "importance": importance_df}
+                families_meta[family] = {
+                    "champion_id": champion_id,
+                    "method": "shap_tree_explainer",
+                    "base_value": base_value,
+                    "n_obs": int(len(x_df)),
+                    "n_features": len(feature_columns),
+                    "feature_columns": feature_columns,
+                }
+
+            elif family == "prophet":
+                active_regressors = list(contract.get("active_regressors", []))
+                importance_df = compute_prophet_regressor_importance(
+                    champion_model,
+                    monthly_prophet_full_train,
+                    active_regressors,
+                    include_components=include_components,
+                )
+                per_family[family] = {"champion_id": champion_id, "importance": importance_df}
+                families_meta[family] = {
+                    "champion_id": champion_id,
+                    "method": "prophet_component_contribution",
+                    "n_regressors": len(active_regressors),
+                    "include_components": include_components,
+                }
+
+            elif family == "sarimax":
+                results = (
+                    champion_model.get("model")
+                    if isinstance(champion_model, dict)
+                    else None
+                )
+                used_exog = list(contract.get("active_regressors", []))
+                if results is None:
+                    raise ValueError("SARIMAX results object unavailable.")
+                importance_df = compute_sarimax_coefficient_importance(results, used_exog)
+                per_family[family] = {"champion_id": champion_id, "importance": importance_df}
+                families_meta[family] = {
+                    "champion_id": champion_id,
+                    "method": "sarimax_coefficients",
+                    "n_exog": len(used_exog),
+                    "has_exog": bool(used_exog),
+                }
+            else:
+                logger.warning("Unknown family '%s' in explainability; skipping.", family)
+        except Exception as exc:  # explainability is auxiliary — never break selection
+            logger.warning(
+                "Explainability failed for family '%s' (champion=%s): %s",
+                family,
+                champion_id,
+                exc,
+            )
+            families_meta[family] = {
+                "champion_id": champion_id,
+                "method": None,
+                "error": str(exc),
+            }
+
+    importance_table = assemble_family_importance_table(per_family, computed_at)
+    metadata["families"] = families_meta
+    metadata["n_families_explained"] = len(per_family)
+    logger.info(
+        "Family-champion explainability built for %d/%d families: %s",
+        len(per_family),
+        len(monthly_family_champion_summary),
+        list(per_family.keys()),
+    )
+    return importance_table, catboost_explainer, catboost_shap_values, metadata
 
 
 # ── Private helpers ───────────────────────────────────────────────────────────

@@ -333,6 +333,25 @@ champion_monthly_metadata:
   type: json.JSONDataset
   filepath: data/06_models/champions/champion_monthly_metadata.json
 
+# 06_models — Monthly family-champion explainability (SHAP + native drivers)
+# Unified driver-importance table (app-facing) lives under 08_reporting; the raw
+# SHAP explainer and per-observation SHAP values are model artifacts under 06_models.
+monthly_family_champion_importance:
+  type: pandas.ParquetDataset
+  filepath: data/08_reporting/monthly_family_champion_importance.parquet
+
+monthly_catboost_shap_explainer:
+  type: pickle.PickleDataset
+  filepath: data/06_models/explainability/monthly_catboost_shap_explainer.pkl
+
+monthly_catboost_shap_values:
+  type: pandas.ParquetDataset
+  filepath: data/06_models/explainability/monthly_catboost_shap_values.parquet
+
+monthly_family_champion_explainability_metadata:
+  type: json.JSONDataset
+  filepath: data/06_models/explainability/monthly_family_champion_explainability_metadata.json
+
 # Tuning and validation results
 tuning_results_monthly:
   type: pandas.ParquetDataset

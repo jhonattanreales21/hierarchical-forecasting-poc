@@ -198,3 +198,69 @@ def plot_forecast(
     )
 
     return fig
+
+
+def plot_feature_importance_bar(
+    importance: pd.DataFrame,
+    title: str = "Champion Feature Importance",
+    top_n: int = 15,
+    importance_col: str = "importance",
+    feature_col: str = "feature",
+    subtitle: Optional[str] = None,
+    x_axis_title: str = "Importance",
+) -> go.Figure:
+    """Render a horizontal bar chart of feature/driver importance for a champion model.
+
+    Family-agnostic: the importance values may be SHAP mean(|value|) (CatBoost), centered
+    component contributions (Prophet), or absolute coefficients (SARIMAX). The caller sets
+    ``x_axis_title``/``subtitle`` so the axis labelling stays honest about the statistic.
+
+    Args:
+        importance: DataFrame with at least ``feature_col`` and ``importance_col``.
+        title: Chart title.
+        top_n: Keep only the ``top_n`` most important features.
+        importance_col: Name of the importance value column.
+        feature_col: Name of the feature label column.
+        subtitle: Optional subtitle shown under the title (e.g. champion id + method).
+        x_axis_title: Label for the value axis (statistic-specific).
+
+    Returns:
+        A Plotly Figure ready to be rendered via ``st.plotly_chart``.
+    """
+    fig = go.Figure()
+
+    if importance is not None and not importance.empty:
+        ranked = (
+            importance.sort_values(importance_col, ascending=False)
+            .head(top_n)
+            # Plotly draws the first row at the bottom; reverse so the largest is on top.
+            .iloc[::-1]
+        )
+        fig.add_trace(
+            go.Bar(
+                x=ranked[importance_col],
+                y=ranked[feature_col].astype(str),
+                orientation="h",
+                marker=dict(color=_COLOR_ACTUALS),
+                hovertemplate="%{y}: %{x:.4g}<extra></extra>",
+            )
+        )
+
+    fig.update_layout(
+        title=dict(
+            text=f"{title}<br><sup>{subtitle}</sup>" if subtitle else title,
+            font=dict(size=16, color="#001F5B"),
+        ),
+        xaxis_title=x_axis_title,
+        yaxis_title="",
+        xaxis=dict(showgrid=True, gridcolor="#F3F4F6"),
+        yaxis=dict(showgrid=False, automargin=True),
+        template="plotly_white",
+        height=max(320, 28 * min(len(importance) if importance is not None else 0, top_n) + 120),
+        margin=dict(t=80, b=40, l=20, r=20),
+        plot_bgcolor="#FFFFFF",
+        paper_bgcolor="#FFFFFF",
+        showlegend=False,
+    )
+
+    return fig

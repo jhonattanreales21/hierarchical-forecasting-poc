@@ -46,7 +46,7 @@ train_monthly:
       objective:
         metric: "wape"
         direction: "minimize"
-      max_trials: 80
+      max_trials: 100
       top_n_prechampions: 10
       sampler:
         name: "tpe"
@@ -123,7 +123,7 @@ train_monthly:
     prechampion_count: 10
     mase_seasonal_period: 12
     epsilon: 1.0
-    max_trials: 80
+    max_trials: 100
     max_failed_trials: 25
     sampler:
       name: "tpe"
