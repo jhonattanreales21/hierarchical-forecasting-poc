@@ -11,7 +11,6 @@ from ui.page_blocks.monthly_blocks import (
     render_monthly_provenance,
     render_monthly_section_gap,
 )
-from ui.page_blocks.upload_blocks import render_sidebar_upload_panel
 from ui.styles import apply_global_styles
 from utils.champion import extract_champion_identity, family_label, forecast_has_intervals
 from utils.data_loaders import (
@@ -25,7 +24,6 @@ from utils.data_loaders import (
 from utils.paths import CHAMPION_META
 
 apply_global_styles()
-render_sidebar_upload_panel(key_prefix="monthly_sidebar")
 render_monthly_page_header()
 
 # ---------------------------------------------------------------------------

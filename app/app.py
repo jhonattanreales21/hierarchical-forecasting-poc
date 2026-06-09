@@ -3,7 +3,6 @@ from html import escape
 import streamlit as st
 
 from ui.components import render_hero, render_section_header
-from ui.page_blocks.upload_blocks import render_sidebar_upload_panel, render_upload_panel
 from ui.styles import apply_global_styles
 
 st.set_page_config(
@@ -13,7 +12,6 @@ st.set_page_config(
 )
 
 apply_global_styles()
-render_sidebar_upload_panel(key_prefix="home_sidebar")
 
 render_hero(
     title="Demand Forecast PoC",
@@ -43,6 +41,12 @@ render_section_header(
 )
 
 _SECTIONS = [
+    (
+        "Data Upload",
+        "Active",
+        "Upload and validate demand, exogenous, and assistant-knowledge inputs.",
+        "success",
+    ),
     (
         "Descriptive Analysis",
         "Active",
@@ -82,5 +86,3 @@ for i, (name, status, desc, badge_status) in enumerate(_SECTIONS):
             """,
             unsafe_allow_html=True,
         )
-
-render_upload_panel(key_prefix="home_full", compact=False)

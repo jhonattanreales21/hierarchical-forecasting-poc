@@ -10,15 +10,19 @@ from typing import Literal
 
 from utils.paths import USER_UPLOAD_MANIFEST, USER_UPLOADS_ROOT
 
-UploadCategory = Literal["queries", "exogenous_variables", "rag_documents"]
+UploadCategory = Literal[
+    "demand", "queries", "exogenous_variables", "rag_documents"
+]
 
 ALLOWED_UPLOAD_SUFFIXES: dict[UploadCategory, set[str]] = {
+    "demand": {".csv"},
     "queries": {".csv", ".xlsx"},
-    "exogenous_variables": {".csv", ".xlsx"},
+    "exogenous_variables": {".csv"},
     "rag_documents": {".pdf", ".md", ".markdown", ".txt", ".docx"},
 }
 
 UPLOAD_CATEGORY_LABELS: dict[UploadCategory, str] = {
+    "demand": "Demand",
     "queries": "Queries",
     "exogenous_variables": "External Variables",
     "rag_documents": "RAG Documents",

@@ -9,7 +9,7 @@ from shared.forecast_assistant import (
     rename_business_columns,
     transform_scenario_rows,
 )
-from shared.rag import FaissVectorStore, build_chunks_from_path, save_uploaded_file
+from shared.rag import FaissVectorStore, build_chunks_from_path
 from shared.viz import plot_forecast
 from ui.components import render_empty_state, render_page_header, render_section_header
 from ui.styles import apply_global_styles
@@ -74,20 +74,11 @@ latest_rag_source = _latest_rag_source()
 with st.sidebar:
     render_section_header(
         "Assistant Knowledge",
-        description="Upload a business-history document to ground historical explanations.",
+        description=(
+            "Documents uploaded on the Data Upload page ground historical "
+            "explanations. Build the index from the latest uploaded document below."
+        ),
     )
-    uploaded = st.file_uploader(
-        "RAG document",
-        type=["pdf", "docx", "md", "markdown", "txt"],
-        help="PDF is supported; Markdown, TXT, and DOCX are also accepted.",
-    )
-    if uploaded and st.button("Build RAG index", width="stretch"):
-        with st.spinner("Building local RAG index..."):
-            saved_path = save_uploaded_file(uploaded, ASSISTANT_UPLOADS, uploaded.name)
-            chunks = build_chunks_from_path(saved_path)
-            count = vectorstore.build(chunks, source_path=saved_path)
-        st.success(f"Indexed {count} chunks from {uploaded.name}.")
-        latest_rag_source = saved_path
 
     latest_rag_source = _latest_rag_source()
     if latest_rag_source:

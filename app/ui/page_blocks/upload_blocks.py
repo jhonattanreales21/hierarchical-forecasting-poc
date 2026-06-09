@@ -1,12 +1,23 @@
-"""Reusable upload UI blocks for future RAG and pipeline inputs."""
+"""Data Upload page blocks: demand/exogenous CSV intake and assistant documents."""
 
 from __future__ import annotations
 
-import streamlit as st
+import io
 
-from ui.components import render_section_header
+import pandas as pd
+import streamlit as st
+from streamlit.runtime.uploaded_file_manager import UploadedFile
+
+from shared.rag import save_uploaded_file
+from shared.upload_validation import summarize_csv, summarize_document
+from ui.components import (
+    render_kpi_card,
+    render_section_header,
+    render_success_banner,
+    render_warning_banner,
+)
+from utils.paths import ASSISTANT_UPLOADS
 from utils.uploads import (
-    ALLOWED_UPLOAD_SUFFIXES,
     UPLOAD_CATEGORY_LABELS,
     UploadCategory,
     latest_uploads,
@@ -14,84 +25,178 @@ from utils.uploads import (
     save_upload_bytes,
 )
 
-_CATEGORY_OPTIONS: list[UploadCategory] = [
-    "queries",
-    "exogenous_variables",
-    "rag_documents",
-]
+_DOC_TYPES = ["pdf", "docx", "md", "markdown", "txt"]
 
 
-def _allowed_type_list(category: UploadCategory) -> list[str]:
-    """Return Streamlit file types without leading dots."""
-    return sorted(suffix.lstrip(".") for suffix in ALLOWED_UPLOAD_SUFFIXES[category])
+def _format_bytes(num_bytes: int) -> str:
+    """Return a human-readable file size (e.g. ``1.2 MB``)."""
+    size = float(num_bytes)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} GB"
 
 
-def render_upload_panel(key_prefix: str, compact: bool = False) -> None:
-    """Render first-pass file upload controls without triggering downstream work."""
-    title = "File Intake" if compact else "Upload Inputs For Future Workflows"
-    description = (
-        "Save query files, external-variable files, or RAG documents for a later "
-        "pipeline/RAG task. This panel only stores files and records metadata."
+def _read_uploaded_csv(file) -> pd.DataFrame:
+    """Parse an uploaded CSV file object into a DataFrame."""
+    return pd.read_csv(io.BytesIO(file.getvalue()))
+
+
+def _render_csv_summary(label: str, summary: dict) -> None:
+    """Render a CSV validation summary as KPI cards plus a date-range caption."""
+    render_section_header(label)
+    cols = st.columns(3)
+    with cols[0]:
+        render_kpi_card("Rows", f"{summary['n_rows']:,}")
+    with cols[1]:
+        render_kpi_card("Columns", str(summary["n_columns"]))
+    with cols[2]:
+        render_kpi_card("Granularity", str(summary["granularity"]).title())
+
+    if summary["date_column"] and summary["date_min"]:
+        st.caption(
+            f"Date column: `{summary['date_column']}` · "
+            f"Range: {summary['date_min']} → {summary['date_max']}"
+        )
+    else:
+        render_warning_banner(
+            "No date column was detected, so granularity could not be inferred.",
+            title="Missing date column",
+        )
+
+
+def _process_csv_pair(demand_file, exogenous_file) -> None:
+    """Validate, summarize, and persist the demand + exogenous CSV pair."""
+    pairs: list[tuple[str, UploadedFile, UploadCategory]] = [
+        ("Demand Summary", demand_file, "demand"),
+        ("Exogenous Summary", exogenous_file, "exogenous_variables"),
+    ]
+    for label, file, category in pairs:
+        try:
+            summary = summarize_csv(_read_uploaded_csv(file))
+        except (ValueError, pd.errors.ParserError) as exc:
+            render_warning_banner(
+                f"Could not read `{file.name}`: {exc}", title="Invalid CSV"
+            )
+            continue
+
+        try:
+            save_upload_bytes(
+                content=file.getvalue(), filename=file.name, category=category
+            )
+        except ValueError as exc:
+            render_warning_banner(str(exc), title="Upload rejected")
+            continue
+
+        _render_csv_summary(label, summary)
+
+    render_success_banner(
+        "Demand and exogenous files were saved. No pipeline or training was triggered.",
+        title="Saved",
     )
-    render_section_header(title, description=None if compact else description)
 
-    category = st.selectbox(
-        "Upload category",
-        options=_CATEGORY_OPTIONS,
-        format_func=lambda value: UPLOAD_CATEGORY_LABELS[value],
-        key=f"{key_prefix}_upload_category",
-    )
-    allowed_types = _allowed_type_list(category)
-    uploaded_files = st.file_uploader(
-        "Files",
-        type=allowed_types,
-        accept_multiple_files=True,
-        key=f"{key_prefix}_uploads",
-        help="Files are saved locally to app/.cache/user_uploads and added to a manifest.",
-    )
 
-    if st.button(
-        "Save uploads",
-        key=f"{key_prefix}_save_uploads",
-        width="stretch",
-        type="primary" if not compact else "secondary",
-    ):
-        if not uploaded_files:
-            st.warning("Select at least one file to save.")
+def _process_document(document_file) -> None:
+    """Persist an assistant knowledge document and render its summary."""
+    saved_path = save_uploaded_file(
+        document_file, ASSISTANT_UPLOADS, document_file.name
+    )
+    summary = summarize_document(saved_path)
+
+    render_section_header("Document Summary")
+    cols = st.columns(2)
+    with cols[0]:
+        render_kpi_card("Size", _format_bytes(summary["size_bytes"]))
+    with cols[1]:
+        if summary["kind"] == "pdf":
+            render_kpi_card("Pages", str(summary["n_pages"]))
         else:
-            saved = []
-            for uploaded in uploaded_files:
-                try:
-                    saved.append(
-                        save_upload_bytes(
-                            content=uploaded.getvalue(),
-                            filename=uploaded.name,
-                            category=category,
-                        )
-                    )
-                except ValueError as exc:
-                    st.error(str(exc))
-            if saved:
-                st.success(f"Saved {len(saved)} file(s). No pipeline or RAG index was run.")
+            render_kpi_card("Words", f"{summary['n_words']:,}")
 
-    records = latest_uploads(read_upload_manifest(), limit=3 if compact else 6)
-    if records:
-        st.caption("Latest saved uploads")
-        display = [
-            {
-                "Category": UPLOAD_CATEGORY_LABELS.get(record["category"], record["category"]),
-                "File": record["filename"],
-                "Status": record["status"],
-                "Uploaded": record["uploaded_at"],
-            }
-            for record in records
-        ]
-        st.dataframe(display, width="stretch", hide_index=True)
-    elif not compact:
-        st.info("No files have been saved through this intake panel yet.")
+    st.caption(f"Saved document: `{summary['filename']}`")
+    render_success_banner(
+        "Document saved. Build the RAG index from the Business Assistant page to use it.",
+        title="Saved",
+    )
 
 
-def render_sidebar_upload_panel(key_prefix: str) -> None:
-    """Render the compact upload panel inside the Streamlit sidebar."""
-    with st.sidebar:
-        render_upload_panel(key_prefix=key_prefix, compact=True)
+def _render_latest_uploads() -> None:
+    """Render a compact table of the most recent manifest uploads."""
+    records = latest_uploads(read_upload_manifest(), limit=6)
+    if not records:
+        return
+    st.caption("Latest saved uploads")
+    display = [
+        {
+            "Category": UPLOAD_CATEGORY_LABELS.get(
+                record["category"], record["category"]
+            ),
+            "File": record["filename"],
+            "Status": record["status"],
+            "Uploaded": record["uploaded_at"],
+        }
+        for record in records
+    ]
+    st.dataframe(display, width="stretch", hide_index=True)
+
+
+def render_data_upload_page() -> None:
+    """Render the three-uploader Data Upload workflow.
+
+    Demand and exogenous CSV files share a single submit button that activates only
+    when both are present; the assistant knowledge document has an independent submit
+    button. Submitting validates and stores files and shows a summary — it does not
+    trigger any pipeline or model training.
+    """
+    render_section_header(
+        "Demand & Exogenous Data",
+        description=(
+            "Upload demand and exogenous-variable CSV files. Both are required "
+            "before the data can be submitted."
+        ),
+    )
+    cols = st.columns(2)
+    with cols[0]:
+        demand_file = st.file_uploader(
+            "Demand data (CSV)", type=["csv"], key="upload_demand"
+        )
+    with cols[1]:
+        exogenous_file = st.file_uploader(
+            "Exogenous variables (CSV)", type=["csv"], key="upload_exogenous"
+        )
+
+    both_ready = demand_file is not None and exogenous_file is not None
+    if not both_ready:
+        st.caption("Load both demand and exogenous CSV files to enable submission.")
+    if st.button(
+        "Submit data",
+        type="primary",
+        width="stretch",
+        disabled=not both_ready,
+        key="submit_data",
+    ):
+        _process_csv_pair(demand_file, exogenous_file)
+
+    render_section_header(
+        "Assistant Knowledge Document",
+        description=(
+            "Upload a business-history document (PDF, Word, or Markdown) for the "
+            "Business Assistant. The RAG index is built later from the assistant page."
+        ),
+    )
+    document_file = st.file_uploader(
+        "Knowledge document",
+        type=_DOC_TYPES,
+        key="upload_document",
+        help="PDF, DOCX, MD/Markdown, and TXT are accepted.",
+    )
+    if st.button(
+        "Submit document",
+        width="stretch",
+        disabled=document_file is None,
+        key="submit_document",
+    ):
+        _process_document(document_file)
+
+    _render_latest_uploads()
