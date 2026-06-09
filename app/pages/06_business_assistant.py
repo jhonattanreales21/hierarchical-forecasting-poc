@@ -81,7 +81,7 @@ with st.sidebar:
         type=["pdf", "docx", "md", "markdown", "txt"],
         help="PDF is supported; Markdown, TXT, and DOCX are also accepted.",
     )
-    if uploaded and st.button("Build RAG index", use_container_width=True):
+    if uploaded and st.button("Build RAG index", width="stretch"):
         with st.spinner("Building local RAG index..."):
             saved_path = save_uploaded_file(uploaded, ASSISTANT_UPLOADS, uploaded.name)
             chunks = build_chunks_from_path(saved_path)
@@ -94,7 +94,7 @@ with st.sidebar:
         source_label = latest_rag_source.name
         if vectorstore.is_stale_for(latest_rag_source):
             st.warning(f"Latest RAG source is not indexed yet: {source_label}")
-            if st.button("Build latest RAG source", use_container_width=True):
+            if st.button("Build latest RAG source", width="stretch"):
                 with st.spinner(f"Indexing {source_label}..."):
                     chunks = build_chunks_from_path(latest_rag_source)
                     count = vectorstore.build(chunks, source_path=latest_rag_source)
@@ -171,7 +171,7 @@ with left_col:
         for trace in fig.data:
             if trace.name == "Forecast (future)":
                 trace.line.dash = "dash"
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
     scenario_rows = transform_scenario_rows(future_fc)
     if not scenario_rows.empty:
@@ -179,7 +179,7 @@ with left_col:
             "Scenario Variables",
             description="Business-readable assumptions sent to the assistant.",
         )
-        st.dataframe(scenario_rows, use_container_width=True, hide_index=True)
+        st.dataframe(scenario_rows, width="stretch", hide_index=True)
 
 with right_col:
     render_section_header(
@@ -191,7 +191,7 @@ with right_col:
         value="Why does the forecast change in June 2026?",
         height=110,
     )
-    ask = st.button("Ask", type="primary", use_container_width=True)
+    ask = st.button("Ask", type="primary", width="stretch")
 
     if not vectorstore.exists():
         st.info("RAG index not built. Answers can use forecast and data artifacts, but historical business-document evidence is unavailable.")
@@ -218,13 +218,13 @@ with right_col:
                 st.write("Forecast output")
                 st.dataframe(
                     rename_business_columns(future_fc.head(12)),
-                    use_container_width=True,
+                    width="stretch",
                     hide_index=True,
                 )
                 st.write("Historical context")
                 st.dataframe(
                     pd.DataFrame(context["historical_demand_exogenous_rows"]),
-                    use_container_width=True,
+                    width="stretch",
                     hide_index=True,
                 )
                 st.write("Retrieved RAG chunks")

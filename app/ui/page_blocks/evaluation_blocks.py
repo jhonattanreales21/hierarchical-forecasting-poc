@@ -215,7 +215,7 @@ def render_family_champion_comparison(
             "bias": "Bias",
         }
     )
-    st.dataframe(display, use_container_width=True, hide_index=True)
+    st.dataframe(display, width="stretch", hide_index=True)
     st.caption("★ = current production champion family. Ranked by test WAPE (lower is better).")
 
 
@@ -321,7 +321,7 @@ def render_candidate_test_metrics_table(tm_df: pd.DataFrame) -> None:
             "test_m3_wape": "M+3 WAPE",
         }
     )
-    st.dataframe(display, use_container_width=True, hide_index=True)
+    st.dataframe(display, width="stretch", hide_index=True)
     st.caption("Ranked by test WAPE. MASE < 1 beats the seasonal naïve baseline.")
 
 
@@ -343,7 +343,7 @@ def render_validation_notes(meta: dict) -> None:
             params_df = pd.DataFrame(
                 [{"Parameter": k, "Value": str(v)} for k, v in params.items()]
             )
-            st.dataframe(params_df, use_container_width=True, hide_index=True)
+            st.dataframe(params_df, width="stretch", hide_index=True)
 
         active_regressors = meta.get("active_regressors", [])
         if active_regressors:
@@ -471,7 +471,7 @@ def render_champion_explainability(
         subtitle=labels["method"],
         x_axis_title=labels["axis"],
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
     if "computed_at" in subset.columns:
         st.caption(f"Importance artifact computed at: {subset['computed_at'].iloc[0]}")
     st.caption(
@@ -493,4 +493,4 @@ def render_champion_explainability(
                     "pvalue": "p-value",
                 }
             )
-            st.dataframe(detail, use_container_width=True, hide_index=True)
+            st.dataframe(detail, width="stretch", hide_index=True)

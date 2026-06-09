@@ -257,7 +257,7 @@ def render_forecast_chart_panel(
             """,
             unsafe_allow_html=True,
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
         st.markdown(
             f"""
             <div class="monthly-chart-panel-meta">
@@ -326,7 +326,7 @@ def render_future_forecast_table(
         if col in display.columns:
             display[col] = display[col].apply(lambda v: f"{v:,.0f}")
 
-    st.dataframe(display, use_container_width=True, hide_index=True)
+    st.dataframe(display, width="stretch", hide_index=True)
 
     csv_data = future_fc.to_csv(index=False)
     st.download_button(

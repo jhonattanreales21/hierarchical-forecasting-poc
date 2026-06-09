@@ -31,7 +31,7 @@ def render_artifact_status(artifact_checks: list[tuple[str, Path]]) -> None:
             for name, path in artifact_checks
         ]
     )
-    st.dataframe(art_df, use_container_width=True, hide_index=True)
+    st.dataframe(art_df, width="stretch", hide_index=True)
 
 
 def render_temporal_hierarchy_overview() -> None:

@@ -63,7 +63,7 @@ def render_disabled_chat_mockup() -> None:
             label_visibility="collapsed",
         )
     with button_col:
-        st.button("Send", disabled=True, use_container_width=True)
+        st.button("Send", disabled=True, width="stretch")
     st.caption(
         "Prompting is disabled on purpose. This page is a visual scaffold for a future RAG assistant."
     )

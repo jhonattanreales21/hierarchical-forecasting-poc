@@ -53,7 +53,7 @@ def render_upload_panel(key_prefix: str, compact: bool = False) -> None:
     if st.button(
         "Save uploads",
         key=f"{key_prefix}_save_uploads",
-        use_container_width=True,
+        width="stretch",
         type="primary" if not compact else "secondary",
     ):
         if not uploaded_files:
@@ -86,7 +86,7 @@ def render_upload_panel(key_prefix: str, compact: bool = False) -> None:
             }
             for record in records
         ]
-        st.dataframe(display, use_container_width=True, hide_index=True)
+        st.dataframe(display, width="stretch", hide_index=True)
     elif not compact:
         st.info("No files have been saved through this intake panel yet.")
 

@@ -170,7 +170,7 @@ def render_demand_timeline(df: pd.DataFrame, granularity: Granularity, sku: str)
         yaxis_title="Demand units",
         hovermode="x unified",
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 
 def render_exogenous_timeline(
@@ -222,7 +222,7 @@ def render_exogenous_timeline(
         hovermode="x unified",
         legend={"orientation": "h", "y": -0.25},
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 
 def render_demand_table(df: pd.DataFrame, granularity: Granularity) -> None:
@@ -245,7 +245,7 @@ def render_demand_table(df: pd.DataFrame, granularity: Granularity) -> None:
             "granularity": "Granularity",
         }
     )
-    st.dataframe(display, use_container_width=True, hide_index=True)
+    st.dataframe(display, width="stretch", hide_index=True)
     st.download_button(
         label="Download filtered demand CSV",
         data=df.to_csv(index=False),
