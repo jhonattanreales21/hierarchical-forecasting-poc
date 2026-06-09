@@ -6,6 +6,7 @@ script (02_Monthly_Forecast.py) handles all data loading and orchestration.
 """
 
 from html import escape
+from typing import Any
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -14,7 +15,6 @@ import streamlit as st
 from ui.components import (
     render_empty_state,
     render_hero,
-    render_info_banner,
     render_kpi_card,
     render_section_header,
     render_warning_banner,
@@ -42,12 +42,13 @@ def _detect_available_horizons() -> list[int]:
 def render_monthly_page_header() -> None:
     """Render the hero banner for the Monthly Forecast page."""
     render_hero(
-        title="Monthly Forecast — Primary Decision Layer",
+        title="Monthly Forecast",
         subtitle=(
-            "Review generated forecast horizons, prediction intervals when available, "
-            "and the provenance of the current monthly planning output."
+            "Explore forecasts across "
+            "horizons, review prediction intervals where available, and trace the "
+            "provenance behind every figure."
         ),
-        eyebrow="Hierarchical Demand Forecasting · Monthly Layer",
+        eyebrow="Demand Forecasting Platform",
     )
 
 
@@ -56,12 +57,11 @@ def render_monthly_section_gap() -> None:
     st.markdown('<div class="monthly-section-gap"></div>', unsafe_allow_html=True)
 
 
-def render_monthly_kpi_summary(identity: dict, horizon_months: int) -> None:
+def render_monthly_kpi_summary(identity: dict) -> None:
     """Render a row of KPI cards summarising the production champion and forecast.
 
     Args:
         identity: Normalized champion identity from ``extract_champion_identity``.
-        horizon_months: Currently selected forecast horizon in months.
     """
     render_section_header("Production Champion Summary")
 
@@ -72,13 +72,11 @@ def render_monthly_kpi_summary(identity: dict, horizon_months: int) -> None:
     business_flag = wape is not None and wape <= 0.15
     family = family_label(identity.get("model_family"))
     champion_id = identity.get("champion_id")
-    generated_at = identity.get("forecast_generated_at")
-    last_run = format_date(generated_at) if generated_at else "Not available"
 
     wape_status = "success" if (wape is not None and wape < 0.15) else "warning"
     precision_status = "success" if business_flag else "warning"
 
-    cols = st.columns(5)
+    cols = st.columns(4)
     with cols[0]:
         render_kpi_card(
             label="Champion Family",
@@ -87,9 +85,9 @@ def render_monthly_kpi_summary(identity: dict, horizon_months: int) -> None:
         )
     with cols[1]:
         render_kpi_card(
-            label="Test WAPE",
+            label="Test WMAPE",
             value=format_percentage(wape) if wape is not None else "N/A",
-            help_text="Weighted Absolute % Error on test set (primary metric)",
+            help_text="Weighted Mean Absolute % Error on test set (primary metric)",
             status=wape_status,
         )
     with cols[2]:
@@ -106,14 +104,8 @@ def render_monthly_kpi_summary(identity: dict, horizon_months: int) -> None:
         render_kpi_card(
             label="Forecast Precision",
             value=format_percentage(precision) if precision is not None else "N/A",
-            help_text="1 − WAPE; business target ≥ 85%",
+            help_text="1 − WMAPE; business target ≥ 85%",
             status=precision_status,
-        )
-    with cols[4]:
-        render_kpi_card(
-            label="Selected Horizon",
-            value=f"{horizon_months} months",
-            help_text=f"Last forecast run: {last_run}",
         )
 
 
@@ -250,8 +242,8 @@ def render_forecast_chart_panel(
                 <div class="monthly-chart-panel-label">Primary View</div>
                 <div class="monthly-chart-panel-title">Demand Forecast Chart</div>
                 <p class="monthly-chart-panel-copy">
-                    Monthly actuals, held-out test backtesting, and the selected
-                    {horizon_months}-month forward forecast {escape(interval_copy)}.
+                    Historical monthly demand and the {horizon_months}-month forecast
+                    ahead {escape(interval_copy)}.
                 </p>
             </div>
             """,
@@ -337,47 +329,130 @@ def render_future_forecast_table(
     )
 
 
-def render_monthly_provenance(identity: dict) -> None:
-    """Render a light freshness/provenance caption for the current forecast run.
+_METRIC_DISPLAY_SPECS: tuple[tuple[str, str, str], ...] = (
+    ("wape", "WMAPE", "percentage"),
+    ("mase", "MASE", "decimal"),
+    ("rmse", "RMSE", "units"),
+    ("bias", "Bias", "percentage"),
+)
+
+
+def _format_metric_value(value: Any, kind: str) -> str:
+    """Format a champion metric for display according to its kind."""
+    if kind == "percentage":
+        return format_percentage(value)
+    if kind == "units":
+        return format_metric(value, decimals=1, suffix=" units")
+    return format_metric(value, decimals=3)
+
+
+def _format_hyperparameter_value(value: Any) -> str:
+    """Format a hyperparameter value compactly for the details table.
+
+    Floats are rounded to 4 significant figures; booleans and other types are
+    rendered as plain strings. ``None`` becomes an em dash.
+    """
+    if value is None:
+        return "—"
+    if isinstance(value, bool):
+        return str(value)
+    if isinstance(value, float):
+        return f"{value:.4g}"
+    return str(value)
+
+
+def render_champion_model_details(identity: dict) -> None:
+    """Render a collapsible panel with the champion's hyperparameters and metrics.
+
+    Surfaces the held-out test metrics, the family-specific hyperparameters, and
+    the active exogenous regressors behind the current production champion. All
+    values are read from the normalized identity, so the panel stays
+    model-family-agnostic.
 
     Args:
         identity: Normalized champion identity from ``extract_champion_identity``.
     """
-    generated_at = identity.get("forecast_generated_at")
-    run_id = identity.get("run_id")
-    interval_method = identity.get("interval_method")
-    parts: list[str] = []
-    if generated_at:
-        parts.append(f"Generated: {format_date(generated_at)}")
-    if run_id:
-        parts.append(f"Run: {run_id}")
-    if identity.get("training_cutoff"):
-        parts.append(f"Training cutoff: {format_date(identity['training_cutoff'])}")
-    if identity.get("has_prediction_interval") and interval_method:
-        parts.append(f"Interval method: {interval_method}")
-    if parts:
-        st.caption("  ·  ".join(parts))
+    family = family_label(identity.get("model_family"))
+    champion_id = identity.get("champion_id")
+    metrics = identity.get("test_metrics", {}) or {}
+    hyperparameters = identity.get("hyperparameters", {}) or {}
+    active_regressors = identity.get("active_regressors", []) or []
+
+    selection_metric = identity.get("selection_metric")
+    selection_value = identity.get("selection_metric_value")
+
+    title = f"Champion model details — {family}"
+    if champion_id:
+        title += f" ({champion_id})"
+
+    with st.expander(title, expanded=False):
+        if selection_metric:
+            selected_metric_label = str(selection_metric).upper()
+            value_text = (
+                format_percentage(selection_value)
+                if selection_value is not None
+                else "N/A"
+            )
+            st.caption(
+                f"Selected as production champion on {selected_metric_label} "
+                f"({value_text} on the held-out test set)."
+            )
+
+        col_metrics, col_params = st.columns(2)
+
+        with col_metrics:
+            st.markdown("**Key test metrics**")
+            metric_rows = [
+                {"Metric": label, "Value": _format_metric_value(metrics.get(key), kind)}
+                for key, label, kind in _METRIC_DISPLAY_SPECS
+                if metrics.get(key) is not None
+            ]
+            if metric_rows:
+                st.dataframe(
+                    pd.DataFrame(metric_rows),
+                    width="stretch",
+                    hide_index=True,
+                )
+            else:
+                st.caption("No test metrics recorded for this champion.")
+
+        with col_params:
+            st.markdown("**Model hyperparameters**")
+            if hyperparameters:
+                param_rows = [
+                    {"Parameter": key, "Value": _format_hyperparameter_value(value)}
+                    for key, value in hyperparameters.items()
+                ]
+                st.dataframe(
+                    pd.DataFrame(param_rows),
+                    width="stretch",
+                    hide_index=True,
+                )
+            else:
+                st.caption("Hyperparameters are not recorded for this champion.")
+
+        if active_regressors:
+            st.markdown(f"**Active exogenous regressors** ({len(active_regressors)})")
+            st.caption(", ".join(str(r) for r in active_regressors))
 
 
 def render_monthly_data_status() -> None:
-    """Render a data availability note showing which forecast horizons are available."""
+    """Warn when some forecast horizons are missing; stay silent otherwise.
+
+    The full-availability case is intentionally not surfaced — it adds no
+    actionable information for the user.
+    """
     available = _detect_available_horizons()
     missing = [h for h in _ALL_HORIZONS if h not in available]
 
-    if missing:
-        missing_str = ", ".join(f"{h}m" for h in missing)
-        render_warning_banner(
-            title="Some Forecast Horizons Unavailable",
-            message=(
-                f"The following horizons are not yet generated: {missing_str}. "
-                f"Run `{_REGEN_FORECAST_CMD}` to generate all horizons."
-            ),
-        )
-    else:
-        render_info_banner(
-            title="All Forecast Horizons Available",
-            message=(
-                "3-month, 6-month, and 12-month forecasts have all been generated "
-                "and are ready for display."
-            ),
-        )
+    if not missing:
+        return
+
+    missing_str = ", ".join(f"{h}m" for h in missing)
+    render_warning_banner(
+        title="Some Forecast Horizons Unavailable",
+        message=(
+            f"The following horizons are not yet generated: {missing_str}. "
+            f"Run `{_REGEN_FORECAST_CMD}` to generate all horizons."
+        ),
+    )

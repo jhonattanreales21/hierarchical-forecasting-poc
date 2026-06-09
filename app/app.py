@@ -14,22 +14,22 @@ st.set_page_config(
 apply_global_styles()
 
 render_hero(
-    title="Demand Forecast PoC",
+    title="Overview",
     subtitle=(
-        "A working demand-planning cockpit for inspecting historical demand, "
-        "reviewing the monthly forecast, checking model evidence, and preparing "
-        "future RAG inputs."
+        "A decision-support platform for demand planning: explore historical demand "
+        "trends, review the monthly forecast that guides planning decisions, and "
+        "understand the evidence behind each prediction."
     ),
-    eyebrow="Hierarchical Demand Forecasting",
+    eyebrow="Demand Forecasting Platform",
 )
 
 st.markdown(
     """
     <p class="app-muted-text">
-    This application keeps the monthly planning layer as the primary business view while
-    making the workflow more practical: start by reviewing historical demand and external
-    variables, then move into forecast outputs, evaluation evidence, and assistant-supported
-    interpretation.
+    Upload new demand, context, or knowledge documents to refresh the analysis, then start
+    with the demand and exogenous data, walk through the monthly forecast, check how the
+    models were validated, and ask the business assistant when you need a quick answer.
+    Explore the sections below to begin.
     </p>
     """,
     unsafe_allow_html=True,

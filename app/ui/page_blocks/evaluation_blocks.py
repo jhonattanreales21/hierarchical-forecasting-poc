@@ -90,16 +90,16 @@ def render_evaluation_summary(identity: dict, business_flag: bool) -> None:
         )
     with cols[1]:
         render_kpi_card(
-            label="Test WAPE",
+            label="Test WMAPE",
             value=format_percentage(wape) if wape is not None else "N/A",
             status="success" if (wape is not None and wape < 0.15) else "warning",
-            help_text="Primary metric: weighted absolute % error",
+            help_text="Primary metric: weighted mean absolute % error",
         )
     with cols[2]:
         render_kpi_card(
             label="Forecast Precision",
             value=format_percentage(precision) if precision is not None else "N/A",
-            help_text="1 − WAPE  ·  business target ≥ 85%",
+            help_text="1 − WMAPE  ·  business target ≥ 85%",
             status="success" if business_flag else "warning",
         )
     with cols[3]:
@@ -209,14 +209,14 @@ def render_family_champion_comparison(
             "champion": "Champion",
             "family": "Family",
             "family_champion_id": "Candidate",
-            "wape": "WAPE",
+            "wape": "WMAPE",
             "mase": "MASE",
             "rmse": "RMSE",
             "bias": "Bias",
         }
     )
     st.dataframe(display, width="stretch", hide_index=True)
-    st.caption("★ = current production champion family. Ranked by test WAPE (lower is better).")
+    st.caption("★ = current production champion family. Ranked by test WMAPE (lower is better).")
 
 
 def render_production_selection_summary(sel_df: pd.DataFrame) -> None:
@@ -313,16 +313,16 @@ def render_candidate_test_metrics_table(tm_df: pd.DataFrame) -> None:
             "candidate_rank": "Rank",
             "is_family_champion": "Family champ",
             "is_production_champion": "Prod champ",
-            "wape": "WAPE",
+            "wape": "WMAPE",
             "mase": "MASE",
             "rmse": "RMSE",
             "bias": "Bias",
-            "test_m2_wape": "M+2 WAPE",
-            "test_m3_wape": "M+3 WAPE",
+            "test_m2_wape": "M+2 WMAPE",
+            "test_m3_wape": "M+3 WMAPE",
         }
     )
     st.dataframe(display, width="stretch", hide_index=True)
-    st.caption("Ranked by test WAPE. MASE < 1 beats the seasonal naïve baseline.")
+    st.caption("Ranked by test WMAPE. MASE < 1 beats the seasonal naïve baseline.")
 
 
 def render_validation_notes(meta: dict) -> None:

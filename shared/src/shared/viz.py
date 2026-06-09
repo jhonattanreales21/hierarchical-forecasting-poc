@@ -200,6 +200,69 @@ def plot_forecast(
     return fig
 
 
+def add_event_lines(
+    fig: go.Figure,
+    events: pd.DataFrame,
+    event_columns: dict[str, str],
+    date_col: str = "ds",
+    colors: Optional[list[str]] = None,
+) -> go.Figure:
+    """Overlay vertical reference lines on periods flagged by binary event columns.
+
+    For each entry in ``event_columns`` (mapping a flag column name to a human
+    label), a dashed vertical line is drawn at every period where the flag is
+    truthy (numeric value > 0). One invisible legend proxy per event type is added
+    so the line colors are explained in the legend without labelling each line.
+
+    Args:
+        fig: Target Plotly figure, e.g. one returned by ``plot_forecast``.
+        events: DataFrame with a datetime column and one or more binary flag columns.
+        event_columns: Ordered mapping of flag column name -> legend label.
+        date_col: Name of the datetime column in ``events``.
+        colors: Optional list of line colors, one per event type (cycled if shorter).
+
+    Returns:
+        The same figure with vertical event lines and legend proxies added.
+    """
+    if events is None or events.empty or date_col not in events.columns:
+        return fig
+
+    palette = colors or ["#F59E0B", "#7C3AED", "#0EA5E9", "#EF4444"]
+    dates = pd.to_datetime(events[date_col], errors="coerce")
+
+    for idx, (column, label) in enumerate(event_columns.items()):
+        if column not in events.columns:
+            continue
+        color = palette[idx % len(palette)]
+        flags = pd.to_numeric(events[column], errors="coerce").fillna(0) > 0
+        flagged_dates = dates[flags].dropna().drop_duplicates()
+        if flagged_dates.empty:
+            continue
+        for ts in flagged_dates:
+            ts_str = ts.strftime("%Y-%m-%d")
+            fig.add_shape(
+                type="line",
+                x0=ts_str,
+                x1=ts_str,
+                y0=0,
+                y1=1,
+                yref="paper",
+                line=dict(color=color, width=1.5, dash="dot"),
+                opacity=0.65,
+            )
+        # Legend proxy: invisible trace so the color is explained in the legend.
+        fig.add_trace(
+            go.Scatter(
+                x=[None],
+                y=[None],
+                mode="lines",
+                line=dict(color=color, width=2, dash="dot"),
+                name=label,
+            )
+        )
+    return fig
+
+
 def plot_feature_importance_bar(
     importance: pd.DataFrame,
     title: str = "Champion Feature Importance",
