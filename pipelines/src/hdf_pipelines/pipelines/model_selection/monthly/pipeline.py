@@ -36,6 +36,10 @@ Outputs (to catalog):
     monthly_model_selection_summary
     champion_monthly_model
     champion_monthly_metadata
+    monthly_family_champion_importance
+    monthly_catboost_shap_explainer
+    monthly_catboost_shap_values
+    monthly_family_champion_explainability_metadata
 """
 
 from kedro.pipeline import Pipeline, node, pipeline
@@ -44,6 +48,7 @@ from .nodes import (
     annotate_monthly_candidate_champion_flags,
     build_monthly_champion_artifacts,
     evaluate_monthly_family_candidates_on_test,
+    generate_monthly_family_champion_explanations,
     select_monthly_family_champions,
     select_monthly_production_champion,
 )
@@ -128,6 +133,28 @@ def create_pipeline(**kwargs) -> Pipeline:
                 ],
                 outputs=["champion_monthly_model", "champion_monthly_metadata"],
                 name="build_monthly_champion_artifacts",
+            ),
+            node(
+                func=generate_monthly_family_champion_explanations,
+                inputs=[
+                    "monthly_family_champion_summary",
+                    "monthly_prophet_candidate_models",
+                    "monthly_sarimax_candidate_models",
+                    "monthly_catboost_candidate_models",
+                    "monthly_prophet_full_train",
+                    "monthly_sarimax_full_train",
+                    "monthly_catboost_full_train",
+                    "monthly_sarimax_training_metadata",
+                    "monthly_catboost_split_metadata",
+                    "params:model_selection.monthly",
+                ],
+                outputs=[
+                    "monthly_family_champion_importance",
+                    "monthly_catboost_shap_explainer",
+                    "monthly_catboost_shap_values",
+                    "monthly_family_champion_explainability_metadata",
+                ],
+                name="generate_monthly_family_champion_explanations",
             ),
         ]
     )

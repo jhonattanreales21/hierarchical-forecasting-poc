@@ -18,8 +18,11 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pandas as pd
 import pytest
+from prophet import Prophet
 
 from hdf_pipelines.pipelines.model_selection.monthly.nodes import (
+    _extract_prophet_regressor_prior_scales,
+    _refit_prophet_on_frame,
     _score_catboost_candidates,
     _score_prophet_candidates,
     _score_sarimax_candidates,
@@ -1821,3 +1824,54 @@ def test_rolling_origin_disabled_by_default_for_prophet_and_catboost():
             require_all=True,
         )
     assert "test_m2_wape" not in catboost_rows[0]
+
+
+# ── Test 9: refit and metadata preserve per-regressor prior scales ────────────
+
+
+def _fit_prophet_with_regressor(prior_scale: float, name: str = "reg_a") -> Any:
+    """Fit a minimal real Prophet model with one tuned-prior-scale regressor."""
+    df = pd.DataFrame(
+        {
+            "ds": pd.date_range("2021-01-01", periods=24, freq="MS"),
+            "y": np.linspace(8.0, 12.0, 24),
+            name: np.linspace(0.0, 1.0, 24),
+        }
+    )
+    model = Prophet(
+        yearly_seasonality=False,
+        weekly_seasonality=False,
+        daily_seasonality=False,
+    )
+    model.add_regressor(name, prior_scale=prior_scale, mode="additive")
+    model.fit(df)
+    return model
+
+
+def test_refit_prophet_preserves_per_regressor_prior_scale():
+    """Regression: the champion refit must carry tuned per-regressor prior scales.
+
+    Without passing prior_scale to add_regressor(), Prophet silently defaults each
+    regressor to the global holidays_prior_scale (10.0), discarding the tuned value.
+    """
+    candidate = _fit_prophet_with_regressor(prior_scale=7.5)
+    fit_df = pd.DataFrame(
+        {
+            "ds": pd.date_range("2021-01-01", periods=24, freq="MS"),
+            "y": np.linspace(8.0, 12.0, 24),
+            "reg_a": np.linspace(0.0, 1.0, 24),
+        }
+    )
+
+    refit = _refit_prophet_on_frame(candidate, fit_df, ["reg_a"])
+
+    assert refit.extra_regressors["reg_a"]["prior_scale"] == pytest.approx(7.5)
+
+
+def test_extract_prophet_regressor_prior_scales_surfaces_tuned_values():
+    """The metadata extractor must surface per-regressor prior scales for the app."""
+    model = _fit_prophet_with_regressor(prior_scale=3.0)
+
+    assert _extract_prophet_regressor_prior_scales(model) == pytest.approx(
+        {"reg_a": 3.0}
+    )

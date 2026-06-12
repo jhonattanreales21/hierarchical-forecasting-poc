@@ -8,6 +8,7 @@ champion.
 
 import pandas as pd
 import streamlit as st
+from shared.viz import plot_feature_importance_bar
 
 from ui.components import (
     render_kpi_card,
@@ -19,6 +20,23 @@ from utils.champion import family_label
 from utils.formatting import format_date, format_metric, format_optional, format_percentage
 
 _MONTHLY_SELECTION_CMD = "uv run kedro run --pipeline monthly_model_selection"
+
+# How each family's driver-importance statistic should be labelled in the UI. The
+# values are NOT comparable across families, so the axis label states the statistic.
+_IMPORTANCE_TYPE_LABELS: dict[str, dict[str, str]] = {
+    "mean_abs_shap": {
+        "axis": "Mean |SHAP value|",
+        "method": "SHAP values (TreeExplainer) on the full-history refit",
+    },
+    "mean_abs_contribution": {
+        "axis": "Mean |centered contribution|",
+        "method": "Prophet component & regressor contributions",
+    },
+    "abs_coefficient": {
+        "axis": "|Coefficient|",
+        "method": "SARIMAX exogenous coefficients",
+    },
+}
 
 
 def render_evaluation_summary(identity: dict, business_flag: bool) -> None:
@@ -72,16 +90,16 @@ def render_evaluation_summary(identity: dict, business_flag: bool) -> None:
         )
     with cols[1]:
         render_kpi_card(
-            label="Test WAPE",
+            label="Test WMAPE",
             value=format_percentage(wape) if wape is not None else "N/A",
             status="success" if (wape is not None and wape < 0.15) else "warning",
-            help_text="Primary metric: weighted absolute % error",
+            help_text="Primary metric: weighted mean absolute % error",
         )
     with cols[2]:
         render_kpi_card(
             label="Forecast Precision",
             value=format_percentage(precision) if precision is not None else "N/A",
-            help_text="1 − WAPE  ·  business target ≥ 85%",
+            help_text="1 − WMAPE  ·  business target ≥ 85%",
             status="success" if business_flag else "warning",
         )
     with cols[3]:
@@ -191,14 +209,14 @@ def render_family_champion_comparison(
             "champion": "Champion",
             "family": "Family",
             "family_champion_id": "Candidate",
-            "wape": "WAPE",
+            "wape": "WMAPE",
             "mase": "MASE",
             "rmse": "RMSE",
             "bias": "Bias",
         }
     )
-    st.dataframe(display, use_container_width=True, hide_index=True)
-    st.caption("★ = current production champion family. Ranked by test WAPE (lower is better).")
+    st.dataframe(display, width="stretch", hide_index=True)
+    st.caption("★ = current production champion family. Ranked by test WMAPE (lower is better).")
 
 
 def render_production_selection_summary(sel_df: pd.DataFrame) -> None:
@@ -295,16 +313,16 @@ def render_candidate_test_metrics_table(tm_df: pd.DataFrame) -> None:
             "candidate_rank": "Rank",
             "is_family_champion": "Family champ",
             "is_production_champion": "Prod champ",
-            "wape": "WAPE",
+            "wape": "WMAPE",
             "mase": "MASE",
             "rmse": "RMSE",
             "bias": "Bias",
-            "test_m2_wape": "M+2 WAPE",
-            "test_m3_wape": "M+3 WAPE",
+            "test_m2_wape": "M+2 WMAPE",
+            "test_m3_wape": "M+3 WMAPE",
         }
     )
-    st.dataframe(display, use_container_width=True, hide_index=True)
-    st.caption("Ranked by test WAPE. MASE < 1 beats the seasonal naïve baseline.")
+    st.dataframe(display, width="stretch", hide_index=True)
+    st.caption("Ranked by test WMAPE. MASE < 1 beats the seasonal naïve baseline.")
 
 
 def render_validation_notes(meta: dict) -> None:
@@ -325,7 +343,7 @@ def render_validation_notes(meta: dict) -> None:
             params_df = pd.DataFrame(
                 [{"Parameter": k, "Value": str(v)} for k, v in params.items()]
             )
-            st.dataframe(params_df, use_container_width=True, hide_index=True)
+            st.dataframe(params_df, width="stretch", hide_index=True)
 
         active_regressors = meta.get("active_regressors", [])
         if active_regressors:
@@ -333,3 +351,146 @@ def render_validation_notes(meta: dict) -> None:
                 f"Active regressors ({len(active_regressors)}): "
                 f"{', '.join(active_regressors)}"
             )
+
+
+def render_champion_explainability(
+    importance_df: pd.DataFrame,
+    identity: dict,
+) -> None:
+    """Render the per-family champion driver-importance explanation.
+
+    Lets the user pick a family champion and shows its top demand drivers as a single
+    importance bar. The statistic differs per family (SHAP for CatBoost, contributions
+    for Prophet, coefficients for SARIMAX), so the axis label and a caption state which
+    method produced the values and warn that magnitudes are not comparable across
+    families.
+
+    Args:
+        importance_df: Long-form importance table (``family``, ``feature``,
+            ``importance``, ``importance_type``, ``champion_id``, ``rank``). Empty
+            triggers a guidance note.
+        identity: Normalized champion identity; its ``model_family`` sets the default
+            selected family.
+    """
+    render_section_header(
+        "Champion Explainability — Demand Drivers",
+        description=(
+            "What drives each family champion's prediction. CatBoost uses SHAP "
+            "(TreeExplainer); Prophet uses component/regressor contributions; SARIMAX "
+            "uses exogenous coefficients. Values are not comparable across families."
+        ),
+    )
+
+    if importance_df is None or importance_df.empty or "family" not in importance_df.columns:
+        st.info(
+            "Driver-importance artifact not available "
+            "(`monthly_family_champion_importance.parquet`). Run "
+            f"`{_MONTHLY_SELECTION_CMD}` to generate SHAP/contribution/coefficient data."
+        )
+        return
+
+    families = list(importance_df["family"].dropna().unique())
+    if not families:
+        st.info("No family-champion drivers were produced.")
+        return
+
+    production_family = str(identity.get("model_family") or "").lower()
+    default_index = next(
+        (i for i, f in enumerate(families) if str(f).lower() == production_family), 0
+    )
+
+    available_methods = (
+        importance_df[["family", "importance_type"]]
+        .drop_duplicates()
+        .sort_values("family")
+        .reset_index(drop=True)
+    )
+    cols = st.columns(3)
+    with cols[0]:
+        render_kpi_card(
+            label="Families with drivers",
+            value=str(len(families)),
+        )
+    with cols[1]:
+        render_kpi_card(
+            label="Driver rows",
+            value=str(len(importance_df)),
+        )
+    with cols[2]:
+        current_method = available_methods.loc[
+            available_methods["family"].astype(str).str.lower() == production_family,
+            "importance_type",
+        ]
+        render_kpi_card(
+            label="Production method",
+            value=current_method.iloc[0] if not current_method.empty else "N/A",
+        )
+
+    selected_family = st.radio(
+        "Family champion",
+        options=families,
+        index=default_index,
+        format_func=family_label,
+        horizontal=True,
+        key="explainability_family",
+    )
+
+    subset = importance_df[importance_df["family"] == selected_family].copy()
+    if subset.empty:
+        st.info(f"No drivers available for the {family_label(selected_family)} champion.")
+        return
+
+    champion_id = (
+        str(subset["champion_id"].iloc[0]) if "champion_id" in subset.columns else None
+    )
+    importance_type = (
+        str(subset["importance_type"].iloc[0])
+        if "importance_type" in subset.columns
+        else ""
+    )
+    labels = _IMPORTANCE_TYPE_LABELS.get(
+        importance_type, {"axis": "Importance", "method": importance_type or "driver importance"}
+    )
+
+    max_features = int(len(subset))
+    top_n = max_features
+    if max_features > 3:
+        top_n = st.slider(
+            "Number of drivers to show",
+            min_value=3,
+            max_value=max_features,
+            value=min(15, max_features),
+            key="explainability_top_n",
+        )
+
+    star = " ★" if str(selected_family).lower() == production_family else ""
+    fig = plot_feature_importance_bar(
+        subset,
+        title=f"{family_label(selected_family)} champion{star}: {format_optional(champion_id)}",
+        top_n=top_n,
+        subtitle=labels["method"],
+        x_axis_title=labels["axis"],
+    )
+    st.plotly_chart(fig, width="stretch")
+    if "computed_at" in subset.columns:
+        st.caption(f"Importance artifact computed at: {subset['computed_at'].iloc[0]}")
+    st.caption(
+        f"Method: {labels['method']}. ★ marks the production champion family. "
+        "Importance magnitudes are only comparable within a single family."
+    )
+
+    # SARIMAX coefficients carry sign + significance worth surfacing.
+    if importance_type == "abs_coefficient" and "coefficient" in subset.columns:
+        detail_cols = [
+            c for c in ["feature", "coefficient", "std_err", "pvalue"] if c in subset.columns
+        ]
+        with st.expander("Coefficient detail (sign & significance)"):
+            detail = subset.sort_values("importance", ascending=False)[detail_cols].rename(
+                columns={
+                    "feature": "Driver",
+                    "coefficient": "Coefficient",
+                    "std_err": "Std. error",
+                    "pvalue": "p-value",
+                }
+            )
+            st.dataframe(detail, width="stretch", hide_index=True)

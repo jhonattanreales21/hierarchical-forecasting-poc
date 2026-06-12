@@ -14,13 +14,20 @@ from utils.champion import (
     standardize_champion_metadata,
     standardize_forecast_columns,
 )
+from utils.descriptive import normalize_demand_frame, normalize_exogenous_frame
 from utils.paths import (
     ACTUALS,
-    RAW_EXOGENOUS,
     CHAMPION_META,
+    DEMAND_DAILY,
+    DEMAND_MONTHLY,
+    DEMAND_WEEKLY,
+    EXOGENOUS_MONTHLY,
+    EXPLAINABILITY_META,
+    FAMILY_CHAMPION_IMPORTANCE,
     FAMILY_CHAMPION_SUMMARY,
     INFERENCE_META,
     LEGACY_TEST_FORECAST,
+    RAW_EXOGENOUS,
     SELECTION_SUMMARY,
     TEST_METRICS,
     forecast_parquet,
@@ -93,6 +100,38 @@ def load_raw_exogenous_data() -> pd.DataFrame:
     if "Date" in df.columns:
         df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
     return df.reset_index(drop=True)
+
+
+@st.cache_data
+def load_demand_daily() -> pd.DataFrame:
+    """Load canonical daily demand for descriptive analysis."""
+    if not DEMAND_DAILY.exists():
+        return pd.DataFrame(columns=["date", "sku", "demand", "granularity"])
+    return normalize_demand_frame(pd.read_parquet(DEMAND_DAILY), "daily")
+
+
+@st.cache_data
+def load_demand_weekly() -> pd.DataFrame:
+    """Load canonical weekly demand for descriptive analysis."""
+    if not DEMAND_WEEKLY.exists():
+        return pd.DataFrame(columns=["date", "sku", "demand", "granularity"])
+    return normalize_demand_frame(pd.read_parquet(DEMAND_WEEKLY), "weekly")
+
+
+@st.cache_data
+def load_demand_monthly_primary() -> pd.DataFrame:
+    """Load canonical monthly demand for descriptive analysis."""
+    if not DEMAND_MONTHLY.exists():
+        return pd.DataFrame(columns=["date", "sku", "demand", "granularity"])
+    return normalize_demand_frame(pd.read_parquet(DEMAND_MONTHLY), "monthly")
+
+
+@st.cache_data
+def load_exogenous_monthly_primary() -> pd.DataFrame:
+    """Load canonical monthly exogenous variables for descriptive analysis."""
+    if not EXOGENOUS_MONTHLY.exists():
+        return pd.DataFrame()
+    return normalize_exogenous_frame(pd.read_parquet(EXOGENOUS_MONTHLY))
 
 
 @st.cache_data
@@ -171,6 +210,22 @@ def load_family_champion_summary() -> pd.DataFrame:
     return pd.read_parquet(FAMILY_CHAMPION_SUMMARY)
 
 
+@st.cache_data
+def load_family_champion_importance() -> pd.DataFrame:
+    """Load the unified family-champion driver-importance table.
+
+    One row per (family, feature) with ``importance``, ``importance_type``, and ``rank``.
+    SHAP mean(|value|) for CatBoost; native contribution/coefficient drivers for the
+    other families.
+
+    Returns:
+        Long-form DataFrame, or empty DataFrame if the artifact is missing.
+    """
+    if not FAMILY_CHAMPION_IMPORTANCE.exists():
+        return pd.DataFrame()
+    return pd.read_parquet(FAMILY_CHAMPION_IMPORTANCE)
+
+
 def load_champion_metadata() -> dict:
     """Load champion model metadata JSON.
 
@@ -178,6 +233,15 @@ def load_champion_metadata() -> dict:
         Dict with champion metadata, or empty dict if missing.
     """
     return standardize_champion_metadata(load_json(CHAMPION_META))
+
+
+def load_explainability_metadata() -> dict:
+    """Load family-champion explainability metadata JSON.
+
+    Returns:
+        Dict with per-family explainability method/provenance, or empty dict if missing.
+    """
+    return load_json(EXPLAINABILITY_META)
 
 
 def load_inference_metadata() -> dict:

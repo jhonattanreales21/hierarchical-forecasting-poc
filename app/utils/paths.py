@@ -54,9 +54,27 @@ LEGACY_TEST_FORECAST = (
     / "monthly_prophet_champion_test_forecast.parquet"
 )
 
+# Explainability artifacts (08_reporting + 06_models/explainability/)
+# Unified family-champion driver-importance table (SHAP for CatBoost; native for others).
+FAMILY_CHAMPION_IMPORTANCE = (
+    DATA_ROOT / "08_reporting" / "monthly_family_champion_importance.parquet"
+)
+EXPLAINABILITY_META = (
+    DATA_ROOT
+    / "06_models"
+    / "explainability"
+    / "monthly_family_champion_explainability_metadata.json"
+)
+
 # Model input (05_model_input/)
 ACTUALS = DATA_ROOT / "05_model_input" / "monthly_prophet_modeling_data.parquet"
 RAW_EXOGENOUS = DATA_ROOT / "01_raw" / "exogenous_variables.csv"
+
+# Primary descriptive-analysis artifacts (03_primary/)
+DEMAND_DAILY = DATA_ROOT / "03_primary" / "demand_daily.parquet"
+DEMAND_WEEKLY = DATA_ROOT / "03_primary" / "demand_weekly.parquet"
+DEMAND_MONTHLY = DATA_ROOT / "03_primary" / "demand_monthly.parquet"
+EXOGENOUS_MONTHLY = DATA_ROOT / "03_primary" / "exogenous_monthly.parquet"
 
 # Inference outputs (07_model_output/)
 INFERENCE_META = _first_existing(
@@ -69,6 +87,8 @@ FORECAST_LATEST = _first_existing(
 )
 ASSISTANT_VECTORSTORE = APP_CACHE_ROOT / "forecast_assistant_vectorstore"
 ASSISTANT_UPLOADS = APP_CACHE_ROOT / "forecast_assistant_uploads"
+USER_UPLOADS_ROOT = APP_CACHE_ROOT / "user_uploads"
+USER_UPLOAD_MANIFEST = USER_UPLOADS_ROOT / "manifest.json"
 
 
 def forecast_parquet(horizon_months: int) -> Path:

@@ -2,14 +2,13 @@ import streamlit as st
 
 from shared.viz import plot_forecast
 from ui.page_blocks.monthly_blocks import (
-    render_executive_forecast_summary,
+    render_champion_model_details,
     render_forecast_chart_panel,
     render_future_forecast_table,
     render_horizon_selector,
     render_monthly_data_status,
     render_monthly_kpi_summary,
     render_monthly_page_header,
-    render_monthly_provenance,
     render_monthly_section_gap,
 )
 from ui.styles import apply_global_styles
@@ -62,7 +61,7 @@ kpi_placeholder = st.container()
 horizon_months = render_horizon_selector()
 
 with kpi_placeholder:
-    render_monthly_kpi_summary(identity, horizon_months)
+    render_monthly_kpi_summary(identity)
 render_monthly_section_gap()
 
 # ---------------------------------------------------------------------------
@@ -104,19 +103,18 @@ fig = plot_forecast(
     show_future_intervals=has_intervals,
 )
 render_forecast_chart_panel(fig, identity, horizon_months, has_intervals)
-render_monthly_provenance(identity)
-render_monthly_section_gap()
-
-# ---------------------------------------------------------------------------
-# Executive interpretation
-# ---------------------------------------------------------------------------
-render_executive_forecast_summary(identity, horizon_months, future_fc)
 render_monthly_section_gap()
 
 # ---------------------------------------------------------------------------
 # Forecast table + download
 # ---------------------------------------------------------------------------
 render_future_forecast_table(future_fc, horizon_months, has_intervals)
+render_monthly_section_gap()
+
+# ---------------------------------------------------------------------------
+# Champion model details (hyperparameters + key metrics)
+# ---------------------------------------------------------------------------
+render_champion_model_details(identity)
 render_monthly_section_gap()
 
 # ---------------------------------------------------------------------------

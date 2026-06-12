@@ -73,6 +73,10 @@ mlartifacts/
 
 *.pkl
 *.pickle
+*.cbm
+
+# CatBoost training-log directory (written to the working dir on fit)
+catboost_info/
 
 ##########################
 # macOS

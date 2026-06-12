@@ -78,7 +78,7 @@ def standardize_champion_metadata(meta: dict) -> dict:
 
     Current metadata stores held-out metrics under ``metrics``; legacy metadata
     used ``test_metrics``. A model-family-agnostic ``forecast_precision``
-    (``1 - WAPE``) and a ``business_success_flag`` are derived when absent so the
+    (``1 - WMAPE``) and a ``business_success_flag`` are derived when absent so the
     app's precision KPIs work regardless of which family won.
 
     Args:
@@ -119,8 +119,9 @@ def extract_champion_identity(
     """Build a normalized, model-family-agnostic champion identity.
 
     Pulls champion family, id, selection metric, evaluation window, refit status,
-    run provenance, and interval availability from whichever artifact exposes
-    them, using defensive fallbacks rather than assuming one metadata shape.
+    run provenance, hyperparameters, active regressors, and interval availability
+    from whichever artifact exposes them, using defensive fallbacks rather than
+    assuming one metadata shape.
 
     Args:
         meta: Champion metadata dict (``champion_monthly_metadata.json``).
@@ -204,6 +205,12 @@ def extract_champion_identity(
         ),
         "test_period": test_period,
         "test_metrics": metrics,
+        "hyperparameters": meta.get("hyperparameters") or {},
+        "active_regressors": _first_not_none(
+            meta.get("active_regressors"),
+            contract.get("active_regressors"),
+        )
+        or [],
         "training_cutoff": meta.get("training_cutoff"),
         "refit": refit,
         "forecast_generated_at": forecast_generated_at,
