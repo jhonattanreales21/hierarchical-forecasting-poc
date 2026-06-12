@@ -229,6 +229,10 @@ monthly_catboost_tuning_results:
   type: pandas.ParquetDataset
   filepath: data/06_models/tuning/monthly_catboost_tuning_results.parquet
 
+monthly_catboost_rolling_origin_metrics:
+  type: pandas.ParquetDataset
+  filepath: data/06_models/tuning/monthly_catboost_rolling_origin_metrics.parquet
+
 monthly_catboost_prechampion_configs:
   type: json.JSONDataset
   filepath: data/06_models/tuning/monthly_catboost_prechampion_configs.json

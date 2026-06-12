@@ -14,13 +14,13 @@ Flow:
   7. build_monthly_prophet_split_metadata   → monthly_prophet_split_metadata
   8. adapt_monthly_data_for_sarimax         → monthly_sarimax_full_train/split_metadata
   9. build_monthly_generic_future_frames    → monthly_future_3m/6m/12m  (canonical inference inputs)
-
-CatBoost input preparation is reintroduced in Phase 2 (direct multi-horizon).
+ 10. adapt_monthly_data_for_catboost        → monthly_catboost_full_train/split_metadata  (direct E1)
 """
 
 from kedro.pipeline import Pipeline, node, pipeline
 
 from .nodes import (
+    adapt_monthly_data_for_catboost,
     adapt_monthly_data_for_prophet,
     adapt_monthly_data_for_sarimax,
     build_monthly_generic_future_frames,
@@ -162,6 +162,20 @@ def create_pipeline(**kwargs) -> Pipeline:
                     "monthly_future_12m",
                 ],
                 name="build_monthly_generic_future_frames",
+            ),
+            # ── Step 10: CatBoost adapter (direct multi-horizon E1) ───────────
+            node(
+                func=adapt_monthly_data_for_catboost,
+                inputs=[
+                    "monthly_full_train",
+                    "monthly_split_metadata",
+                    "params:model_input_preparation",
+                ],
+                outputs=[
+                    "monthly_catboost_full_train",
+                    "monthly_catboost_split_metadata",
+                ],
+                name="adapt_monthly_data_for_catboost",
             ),
         ]
     )

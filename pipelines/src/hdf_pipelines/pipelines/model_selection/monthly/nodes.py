@@ -208,7 +208,13 @@ def evaluate_monthly_family_candidates_on_test(  # noqa: PLR0913
 
 
 _ROLLING_ORIGIN_METRIC_KEYS: tuple[str, ...] = (
-    "wmape", "wmape_m1", "wmape_m2", "wmape_m3", "mase", "bias", "rmse",
+    "wmape",
+    "wmape_m1",
+    "wmape_m2",
+    "wmape_m3",
+    "mase",
+    "bias",
+    "rmse",
 )
 
 
@@ -216,6 +222,7 @@ def assemble_monthly_candidate_metrics(
     monthly_prophet_prechampion_configs: dict,
     monthly_sarimax_prechampion_configs: dict,
     params_monthly: dict,
+    monthly_catboost_prechampion_configs: dict | None = None,
 ) -> pd.DataFrame:
     """Assemble the cross-family candidate metrics table from rolling-origin pre-champions.
 
@@ -228,6 +235,8 @@ def assemble_monthly_candidate_metrics(
         monthly_prophet_prechampion_configs: Prophet ``prechampion_configs`` artifact.
         monthly_sarimax_prechampion_configs: SARIMAX ``prechampion_configs`` artifact.
         params_monthly: Contents of ``model_selection.monthly`` (reads ``active_families``).
+        monthly_catboost_prechampion_configs: CatBoost ``prechampion_configs`` artifact
+            (optional; required only when ``catboost`` is in ``active_families``).
 
     Returns:
         DataFrame with one row per candidate across active families.
@@ -241,11 +250,21 @@ def assemble_monthly_candidate_metrics(
     rows: list[dict] = []
     if "prophet" in active_families:
         rows.extend(
-            _candidate_rows(monthly_prophet_prechampion_configs, "prophet", "prechampions")
+            _candidate_rows(
+                monthly_prophet_prechampion_configs, "prophet", "prechampions"
+            )
         )
     if "sarimax" in active_families:
         rows.extend(
-            _candidate_rows(monthly_sarimax_prechampion_configs, "sarimax", "candidates")
+            _candidate_rows(
+                monthly_sarimax_prechampion_configs, "sarimax", "candidates"
+            )
+        )
+    if "catboost" in active_families:
+        rows.extend(
+            _candidate_rows(
+                monthly_catboost_prechampion_configs or {}, "catboost", "candidates"
+            )
         )
 
     if not rows:
@@ -255,7 +274,9 @@ def assemble_monthly_candidate_metrics(
     return pd.DataFrame(rows)
 
 
-def _candidate_rows(prechampion_configs: dict, family: str, list_key: str) -> list[dict]:
+def _candidate_rows(
+    prechampion_configs: dict, family: str, list_key: str
+) -> list[dict]:
     """Build candidate metric rows from a family's prechampion_configs artifact."""
     entries = list((prechampion_configs or {}).get(list_key, []))
     rows: list[dict] = []
@@ -269,7 +290,9 @@ def _candidate_rows(prechampion_configs: dict, family: str, list_key: str) -> li
             "candidate_rank": _safe_int(entry.get("rank")),
             "selection_stage": "rolling_origin",
             "ljung_box_pvalue": _safe_float(entry.get("ljung_box_pvalue")),
-            "autocorrelation_excluded": bool(entry.get("autocorrelation_excluded", False)),
+            "autocorrelation_excluded": bool(
+                entry.get("autocorrelation_excluded", False)
+            ),
             "ljung_box_cycle_index": _safe_int(entry.get("ljung_box_cycle_index")),
             "primary_metric": "wmape_m3",
             "primary_metric_value": _safe_float(metrics.get("wmape_m3")),
@@ -363,7 +386,9 @@ def select_monthly_family_champions(
         )
         logger.info(
             "Family champion (%s): %s  %s=%.4f",
-            family, best["candidate_id"], primary_metric,
+            family,
+            best["candidate_id"],
+            primary_metric,
             _safe_float(best.get(primary_metric)) or float("nan"),
         )
 
@@ -698,15 +723,24 @@ def build_monthly_champion_artifacts(  # noqa: PLR0913
         },
     }
 
-    # CatBoost inference needs the exact feature contract at the metadata top level,
-    # so the recursive adapter can resolve feature_columns without the model object.
+    # CatBoost direct multi-horizon inference needs the feature contract at the
+    # metadata top level so the inference adapter can dispatch correctly without
+    # introspecting the model object.
     if production_family == "catboost":
-        metadata["feature_columns"] = list(inference_contract.get("feature_columns", []))
+        metadata["feature_columns"] = list(
+            inference_contract.get("feature_columns", [])
+        )
         metadata["categorical_features"] = list(
             inference_contract.get("categorical_features", [])
         )
         metadata["target_column"] = inference_contract.get("target_column")
         metadata["date_column"] = inference_contract.get("date_column")
+        metadata["strategy"] = inference_contract.get(
+            "strategy", "direct_multi_horizon"
+        )
+        metadata["max_forecast_horizon"] = inference_contract.get(
+            "max_forecast_horizon", 3
+        )
         metadata["requires_exogenous_future"] = True
 
     logger.info(
@@ -835,7 +869,9 @@ def generate_monthly_family_champion_explanations(  # noqa: PLR0913, PLR0912, PL
                 feature_columns = list(champion_model.get("feature_columns", []))
                 model_obj = champion_model.get("model")
                 missing = [
-                    c for c in feature_columns if c not in monthly_catboost_full_train.columns
+                    c
+                    for c in feature_columns
+                    if c not in monthly_catboost_full_train.columns
                 ]
                 if model_obj is None or not feature_columns or missing:
                     raise ValueError(
@@ -851,7 +887,9 @@ def generate_monthly_family_champion_explanations(  # noqa: PLR0913, PLR0912, PL
                     compute_catboost_shap_importance(model_obj, x_df, feature_columns)
                 )
                 date_col = str(
-                    monthly_catboost_split_metadata.get("date_column", "month_start_date")
+                    monthly_catboost_split_metadata.get(
+                        "date_column", "month_start_date"
+                    )
                 )
                 if date_col in monthly_catboost_full_train.columns:
                     shap_values_df.insert(
@@ -862,7 +900,10 @@ def generate_monthly_family_champion_explanations(  # noqa: PLR0913, PLR0912, PL
                         ).reset_index(drop=True),
                     )
                 catboost_shap_values = shap_values_df
-                per_family[family] = {"champion_id": champion_id, "importance": importance_df}
+                per_family[family] = {
+                    "champion_id": champion_id,
+                    "importance": importance_df,
+                }
                 families_meta[family] = {
                     "champion_id": champion_id,
                     "method": "shap_tree_explainer",
@@ -880,7 +921,10 @@ def generate_monthly_family_champion_explanations(  # noqa: PLR0913, PLR0912, PL
                     active_regressors,
                     include_components=include_components,
                 )
-                per_family[family] = {"champion_id": champion_id, "importance": importance_df}
+                per_family[family] = {
+                    "champion_id": champion_id,
+                    "importance": importance_df,
+                }
                 families_meta[family] = {
                     "champion_id": champion_id,
                     "method": "prophet_component_contribution",
@@ -897,8 +941,13 @@ def generate_monthly_family_champion_explanations(  # noqa: PLR0913, PLR0912, PL
                 used_exog = list(contract.get("active_regressors", []))
                 if results is None:
                     raise ValueError("SARIMAX results object unavailable.")
-                importance_df = compute_sarimax_coefficient_importance(results, used_exog)
-                per_family[family] = {"champion_id": champion_id, "importance": importance_df}
+                importance_df = compute_sarimax_coefficient_importance(
+                    results, used_exog
+                )
+                per_family[family] = {
+                    "champion_id": champion_id,
+                    "importance": importance_df,
+                }
                 families_meta[family] = {
                     "champion_id": champion_id,
                     "method": "sarimax_coefficients",
@@ -906,7 +955,9 @@ def generate_monthly_family_champion_explanations(  # noqa: PLR0913, PLR0912, PL
                     "has_exog": bool(used_exog),
                 }
             else:
-                logger.warning("Unknown family '%s' in explainability; skipping.", family)
+                logger.warning(
+                    "Unknown family '%s' in explainability; skipping.", family
+                )
         except Exception as exc:  # explainability is auxiliary — never break selection
             logger.warning(
                 "Explainability failed for family '%s' (champion=%s): %s",
@@ -1186,25 +1237,32 @@ def _score_sarimax_candidates(  # noqa: PLR0912, PLR0913, PLR0915
 
         entry = candidate_models[trial_id]
         # Prefer candidate-level exogenous_columns (emitted by hardened training).
-        candidate_exog: list[str] = list(entry.get("exogenous_columns") or exog_cols_default)
+        candidate_exog: list[str] = list(
+            entry.get("exogenous_columns") or exog_cols_default
+        )
         config = entry.get("config", {})
         use_exog: bool = bool(config.get("use_exog", False))
 
         try:
             # Resolve exog columns present in both fit_df and test_df for consistency.
             available_exog = [
-                c for c in candidate_exog if c in fit_df.columns and c in test_df.columns
+                c
+                for c in candidate_exog
+                if c in fit_df.columns and c in test_df.columns
             ]
             if use_exog and candidate_exog:
                 missing_exog = [
-                    c for c in candidate_exog
+                    c
+                    for c in candidate_exog
                     if c not in fit_df.columns or c not in test_df.columns
                 ]
                 if missing_exog:
                     logger.warning(
                         "SARIMAX candidate '%s': exogenous columns %s not found in "
                         "fit or test DataFrames. Proceeding with: %s",
-                        trial_id, missing_exog, available_exog,
+                        trial_id,
+                        missing_exog,
+                        available_exog,
                     )
             fit_exog = (
                 fit_df[available_exog].values.astype(float)
@@ -1241,13 +1299,16 @@ def _score_sarimax_candidates(  # noqa: PLR0912, PLR0913, PLR0915
                             "SARIMAX candidate '%s': Ljung-Box p-value=%.4f < "
                             "threshold=%.3f — marked for exclusion from champion "
                             "selection.",
-                            trial_id, lb_pvalue, lb_threshold,
+                            trial_id,
+                            lb_pvalue,
+                            lb_threshold,
                         )
                 except Exception as lb_exc:  # noqa: BLE001
                     logger.warning(
                         "SARIMAX candidate '%s': Ljung-Box test failed (%s) — "
                         "skipping autocorrelation filter.",
-                        trial_id, lb_exc,
+                        trial_id,
+                        lb_exc,
                     )
 
             forecast_out = result.get_forecast(steps=n_test, exog=test_exog)
@@ -1276,7 +1337,8 @@ def _score_sarimax_candidates(  # noqa: PLR0912, PLR0913, PLR0915
                     logger.warning(
                         "SARIMAX candidate '%s': rolling-origin metrics failed "
                         "(%s) — skipping.",
-                        trial_id, ro_exc,
+                        trial_id,
+                        ro_exc,
                     )
 
             rows.append(
@@ -1437,7 +1499,8 @@ def _score_catboost_candidates(  # noqa: PLR0912, PLR0913, PLR0915
         try:
             # Resolve features present in both the fit window and the test split.
             available = [
-                c for c in feature_columns
+                c
+                for c in feature_columns
                 if c in fit_df.columns and c in test_df.columns
             ]
             if not available:
@@ -1450,7 +1513,9 @@ def _score_catboost_candidates(  # noqa: PLR0912, PLR0913, PLR0915
                 logger.warning(
                     "CatBoost candidate '%s': feature columns %s missing from fit or "
                     "test frame. Proceeding with %d available column(s).",
-                    candidate_id, missing, len(available),
+                    candidate_id,
+                    missing,
+                    len(available),
                 )
 
             x_fit = fit_df[available].to_numpy(dtype=float)
@@ -1563,10 +1628,14 @@ def _resolve_catboost_recursive_settings(split_metadata: dict) -> dict:
         ``include_min_max``, ``trend_diffs``, and ``trend_pct_changes``.
     """
     lag_settings = dict(split_metadata.get("lag_settings") or {})
-    target_lags = sorted(int(x) for x in lag_settings.get("target_lags", [1, 2, 3, 6, 12]))
+    target_lags = sorted(
+        int(x) for x in lag_settings.get("target_lags", [1, 2, 3, 6, 12])
+    )
 
     rolling_settings = dict(split_metadata.get("rolling_settings") or {})
-    rolling_windows = sorted(int(x) for x in rolling_settings.get("windows", [3, 6, 12]))
+    rolling_windows = sorted(
+        int(x) for x in rolling_settings.get("windows", [3, 6, 12])
+    )
     include_std = bool(rolling_settings.get("include_std", True))
     include_min_max = bool(rolling_settings.get("include_min_max", True))
 
@@ -1634,12 +1703,16 @@ def _make_catboost_h_step(  # noqa: PLR0913
                 trend_pct_changes=recursive_settings["trend_pct_changes"],
             )
             feature_values = [
-                recursive_feats[col]
-                if col in recursive_feats
-                else (row[col] if col in row.index else np.nan)
+                (
+                    recursive_feats[col]
+                    if col in recursive_feats
+                    else (row[col] if col in row.index else np.nan)
+                )
                 for col in feature_columns
             ]
-            prediction = float(model.predict(np.array([feature_values], dtype=float))[0])
+            prediction = float(
+                model.predict(np.array([feature_values], dtype=float))[0]
+            )
             predictions.append(prediction)
             demand_buffer.append(prediction)
 
@@ -1772,8 +1845,12 @@ def _compute_sarimax_rolling_origin_metrics(  # noqa: PLR0913
                     order=tuple(config["order"]),
                     seasonal_order=tuple(config["seasonal_order"]),
                     trend=config.get("trend"),
-                    enforce_stationarity=bool(config.get("enforce_stationarity", False)),
-                    enforce_invertibility=bool(config.get("enforce_invertibility", False)),
+                    enforce_stationarity=bool(
+                        config.get("enforce_stationarity", False)
+                    ),
+                    enforce_invertibility=bool(
+                        config.get("enforce_invertibility", False)
+                    ),
                 )
                 with _warnings.catch_warnings(record=True):
                     _warnings.simplefilter("always")
@@ -1792,7 +1869,8 @@ def _compute_sarimax_rolling_origin_metrics(  # noqa: PLR0913
                 logger.warning(
                     "Rolling-origin SARIMAX: refit failed at test index=%d lead_time=%d "
                     "— skipping pair.",
-                    i, h,
+                    i,
+                    h,
                 )
                 continue
 
@@ -1858,7 +1936,9 @@ def _rolling_origin_wape(
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "Rolling-origin forecast failed at test index=%d lead_time=%d: %s",
-                    i, h, exc,
+                    i,
+                    h,
+                    exc,
                 )
                 continue
             actual_h = float(test_df.iloc[i][target_col])
@@ -2005,7 +2085,9 @@ def _build_production_champion_model(  # noqa: PLR0913
             champion_model = candidate_model
             used_exog = exog_cols if config.get("use_exog", False) else []
             refit_info = _refit_info(False, sarimax_full_train, date_col)
-        contract = _build_inference_contract("sarimax", used_exog, sarimax_config=config)
+        contract = _build_inference_contract(
+            "sarimax", used_exog, sarimax_config=config
+        )
         return champion_model, contract, refit_info
 
     if production_family == "catboost":
@@ -2028,32 +2110,28 @@ def _build_catboost_champion_model(
     catboost_split_metadata: dict,
     refit_enabled: bool,
 ) -> tuple[Any, dict, dict]:
-    """Refit a CatBoost champion on full history and build its inference contract.
+    """Refit a direct multi-horizon CatBoost champion on full history.
 
-    The CatBoost champion artifact is the candidate entry dict carrying the fitted
-    ``CatBoostRegressor`` under ``"model"`` plus the ordered ``"feature_columns"``.
-    On refit, a fresh model is fit on all available history (the candidate dict shape
-    is preserved so the inference adapter unwraps it uniformly). When refit is
-    disabled, the train-only candidate dict is returned unchanged.
+    The CatBoost champion artifact from the direct E1 training node carries three
+    fitted models (``model_h1``, ``model_h2``, ``model_h3``) and shared
+    ``feature_columns``. On refit, three fresh models are trained with the same
+    config on full history. The champion artifact preserves the three-model structure
+    so the inference adapter can apply each model independently (no recursion).
 
     Args:
-        candidate_model: CatBoost candidate entry dict (``config``, ``model``,
-            ``feature_columns``).
+        candidate_model: CatBoost candidate entry dict carrying ``config``,
+            ``feature_columns``, and optionally ``model_h1/h2/h3``.
         catboost_full_train: CatBoost-format full history (features + target).
-        catboost_split_metadata: CatBoost split metadata (feature/categorical/target/
-            date columns).
+        catboost_split_metadata: CatBoost split metadata (column names, direct_multi_horizon).
         refit_enabled: Whether to refit on full history (Champion Protocol stage 5).
 
     Returns:
         Tuple ``(champion_model, inference_contract, refit_info)``.
-
-    Raises:
-        ValueError: When the candidate artifact or feature contract is unresolvable.
     """
     if not isinstance(candidate_model, dict):
         raise ValueError(
-            "CatBoost champion artifact must be a candidate entry dict carrying "
-            f"'model' and 'feature_columns'; received {type(candidate_model)!r}."
+            "CatBoost champion artifact must be a candidate entry dict; "
+            f"received {type(candidate_model)!r}."
         )
 
     config = dict(candidate_model.get("config", {}))
@@ -2066,13 +2144,15 @@ def _build_catboost_champion_model(
     )
     target_col = str(catboost_split_metadata.get("target_column", "monthly_demand"))
     date_col = str(catboost_split_metadata.get("date_column", "month_start_date"))
+    sku_col = str(catboost_split_metadata.get("sku_column", "sku"))
+    horizons = list(
+        catboost_split_metadata.get("direct_multi_horizon", {}).get(
+            "horizons", [1, 2, 3]
+        )
+    )
 
     if not feature_columns:
-        raise ValueError(
-            "Cannot resolve CatBoost feature_columns for the champion. The candidate "
-            "entry must carry 'feature_columns' or the split metadata must provide "
-            "'all_feature_columns'."
-        )
+        raise ValueError("Cannot resolve CatBoost feature_columns for the champion.")
 
     if refit_enabled:
         if catboost_full_train is None or catboost_full_train.empty:
@@ -2080,13 +2160,14 @@ def _build_catboost_champion_model(
                 "CatBoost champion refit requested but monthly_catboost_full_train is "
                 "empty or was not provided to monthly model selection."
             )
-        champion_model = _refit_catboost_full_history(
+        champion_model = _refit_catboost_direct_full_history(
             config=config,
             full_train_df=catboost_full_train,
             feature_columns=feature_columns,
             target_col=target_col,
             date_col=date_col,
-            fitted_model=candidate_model.get("model"),
+            sku_col=sku_col,
+            horizons=horizons,
         )
         refit_info = _refit_info(True, catboost_full_train, date_col)
     else:
@@ -2104,36 +2185,29 @@ def _build_catboost_champion_model(
         catboost_categorical_features=categorical_features,
         catboost_target_column=target_col,
         catboost_date_column=date_col,
+        catboost_strategy="direct_multi_horizon",
+        catboost_max_horizon=max(horizons) if horizons else 3,
     )
     return champion_model, contract, refit_info
 
 
-def _refit_catboost_full_history(  # noqa: PLR0913
+def _refit_catboost_direct_full_history(
     config: dict,
     full_train_df: pd.DataFrame,
     feature_columns: list[str],
     target_col: str,
     date_col: str,
-    fitted_model: Any | None = None,
+    sku_col: str,
+    horizons: list[int],
 ) -> dict:
-    """Refit a CatBoost champion on full history using the candidate's config.
+    """Refit a direct multi-horizon CatBoost champion on full history.
 
-    Returns the refit in the candidate-dict shape so the inference adapter unwraps it
-    uniformly (``{"model_family", "granularity", "config", "model", "feature_columns",
-    "refit_scope"}``).
-
-    Args:
-        config: Hyperparameter dict from the candidate entry.
-        full_train_df: CatBoost-format full history (precomputed features + target).
-        feature_columns: Ordered feature columns used during training.
-        target_col: Target column name.
-        date_col: Date column name (used for sorting).
-        fitted_model: Train-only fitted model (used to cap the tree count at the
-            early-stopped best iteration). May be None.
-
-    Returns:
-        CatBoost champion entry dict carrying the refit model and feature columns.
+    Trains one CatBoostRegressor per horizon on (features_at_t, demand(t+h)) pairs.
+    Returns a champion artifact dict with keys ``model_h1``, ``model_h2``,
+    ``model_h3`` plus ``feature_columns`` and ``refit_scope``.
     """
+    from catboost import CatBoostRegressor
+
     df = full_train_df.copy()
     if date_col in df.columns:
         df[date_col] = pd.to_datetime(df[date_col])
@@ -2143,29 +2217,44 @@ def _refit_catboost_full_history(  # noqa: PLR0913
     missing = [c for c in feature_columns if c not in available]
     if missing:
         logger.warning(
-            "CatBoost full-history refit: feature columns %s not found in "
-            "full_train_df. Proceeding with %d available column(s).",
+            "CatBoost full-history direct refit: feature columns %s not found — proceeding with %d.",
             missing,
             len(available),
         )
     if not available:
         raise ValueError(
-            "No CatBoost feature columns present in full_train_df; cannot refit the "
-            "champion on full history."
+            "No CatBoost feature columns present in full_train_df; cannot refit champion."
         )
 
-    x_full = df[available].to_numpy(dtype=float)
-    y_full = df[target_col].to_numpy(dtype=float)
-    model = _refit_catboost_on_arrays(config, x_full, y_full, fitted_model)
+    fit_cfg = {k: v for k, v in config.items() if k != "random_seed"}
+    fit_cfg["random_seed"] = config.get("random_seed", 42)
 
-    return {
+    champion: dict = {
         "model_family": "catboost",
         "granularity": "monthly",
+        "strategy": "direct_multi_horizon",
         "config": config,
-        "model": model,
         "feature_columns": available,
         "refit_scope": "full_history",
     }
+    for h in horizons:
+        y_h = df.groupby(sku_col, sort=False)[target_col].transform(
+            lambda s, shift=h: s.shift(-shift)
+        )
+        valid_mask = y_h.notna()
+        X_full = df.loc[valid_mask, available].to_numpy(dtype=float)
+        y_full = y_h[valid_mask].to_numpy(dtype=float)
+
+        model_h = CatBoostRegressor(**fit_cfg, verbose=False, allow_writing_files=False)
+        model_h.fit(X_full, y_full, verbose=False)
+        champion[f"model_h{h}"] = model_h
+        logger.info(
+            "CatBoost direct full-history refit: model_h%d trained on %d pairs.",
+            h,
+            len(y_full),
+        )
+
+    return champion
 
 
 def _prophet_regressor_names(model: Any) -> list[str]:
@@ -2256,8 +2345,12 @@ def _make_prophet_h_step(
 def _extract_prophet_params(model: Any) -> dict:
     """Extract Prophet constructor hyperparameters from a fitted model (with defaults)."""
     return {
-        "changepoint_prior_scale": float(getattr(model, "changepoint_prior_scale", 0.05)),
-        "seasonality_prior_scale": float(getattr(model, "seasonality_prior_scale", 10.0)),
+        "changepoint_prior_scale": float(
+            getattr(model, "changepoint_prior_scale", 0.05)
+        ),
+        "seasonality_prior_scale": float(
+            getattr(model, "seasonality_prior_scale", 10.0)
+        ),
         "holidays_prior_scale": float(getattr(model, "holidays_prior_scale", 10.0)),
         "seasonality_mode": str(getattr(model, "seasonality_mode", "additive")),
         "yearly_seasonality": getattr(model, "yearly_seasonality", True),
@@ -2346,13 +2439,21 @@ def _refit_sarimax_full_history(
 
 def _refit_info(performed: bool, full_train_df: pd.DataFrame, date_col: str) -> dict:
     """Build the refit audit block for champion metadata."""
-    dates = pd.to_datetime(full_train_df[date_col]) if date_col in full_train_df.columns else None
+    dates = (
+        pd.to_datetime(full_train_df[date_col])
+        if date_col in full_train_df.columns
+        else None
+    )
     return {
         "performed": performed,
         "data_scope": "full_history",  # train + validation + test
         "n_obs": int(len(full_train_df)),
-        "start_date": str(dates.min().date()) if dates is not None and not dates.empty else None,
-        "end_date": str(dates.max().date()) if dates is not None and not dates.empty else None,
+        "start_date": (
+            str(dates.min().date()) if dates is not None and not dates.empty else None
+        ),
+        "end_date": (
+            str(dates.max().date()) if dates is not None and not dates.empty else None
+        ),
         "refit_at": datetime.now(tz=UTC).isoformat(),
         "note": (
             "Champion refit on all available history for production forecasting. "
@@ -2408,26 +2509,10 @@ def _build_inference_contract(  # noqa: PLR0913
     catboost_categorical_features: list[str] | None = None,
     catboost_target_column: str | None = None,
     catboost_date_column: str | None = None,
+    catboost_strategy: str | None = None,
+    catboost_max_horizon: int = 3,
 ) -> dict:
-    """Describe how the champion must be consumed at inference time.
-
-    The contract is self-describing so metadata-driven inference does not need to
-    introspect the model object. ``active_regressors`` reflects the exact features
-    the (refit) champion was fit with; column names follow each family's convention.
-
-    Args:
-        production_family: Elected production champion family.
-        active_regressors: Regressor/exogenous/feature column names the champion uses.
-        sarimax_config: SARIMAX order configuration, when applicable.
-        catboost_feature_columns: Ordered CatBoost feature columns, when applicable.
-        catboost_categorical_features: CatBoost categorical feature columns.
-        catboost_target_column: CatBoost target column name.
-        catboost_date_column: CatBoost date column name.
-
-    Returns:
-        Dict describing column conventions, active regressors, interval support, and
-        family-specific configuration (SARIMAX order or CatBoost feature contract).
-    """
+    """Describe how the champion must be consumed at inference time."""
     if production_family == "prophet":
         return {
             "model_family": "prophet",
@@ -2458,25 +2543,30 @@ def _build_inference_contract(  # noqa: PLR0913
                 "trend": config.get("trend"),
                 "use_exog": bool(config.get("use_exog", False)),
                 "enforce_stationarity": bool(config.get("enforce_stationarity", False)),
-                "enforce_invertibility": bool(config.get("enforce_invertibility", False)),
+                "enforce_invertibility": bool(
+                    config.get("enforce_invertibility", False)
+                ),
             },
         }
 
     if production_family == "catboost":
         feature_columns = list(catboost_feature_columns or active_regressors)
+        strategy = catboost_strategy or "direct_multi_horizon"
+        # CatBoost direct multi-horizon: max 3 months (protocol §8).
+        forecast_horizons = list(range(1, catboost_max_horizon + 1))
         return {
             "model_family": "catboost",
             "date_column": catboost_date_column or "month_start_date",
             "target_column": catboost_target_column or "monthly_demand",
             "sku_column": "sku",
-            # active_regressors mirrors the full feature set the champion was fit with.
             "active_regressors": list(feature_columns),
             "feature_columns": list(feature_columns),
             "categorical_features": list(catboost_categorical_features or []),
-            "forecast_horizons": [3, 6, 12],
+            "forecast_horizons": forecast_horizons,
+            "max_forecast_horizon": catboost_max_horizon,
             "has_prediction_intervals": False,
             "interval_method": None,
-            "recursive_inference": True,
+            "strategy": strategy,
             "sarimax_config": None,
         }
 

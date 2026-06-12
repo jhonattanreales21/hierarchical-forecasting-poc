@@ -131,9 +131,8 @@ train_monthly:
     primary_metric: "wmape_m3"
     selection_direction: "minimize"
     random_seed: ${random_seed}
-    early_stopping_rounds: 100
     prechampion_count: 10
-    mase_seasonal_period: 12
+    mase_seasonal_period: ${mase_seasonal_period}
     epsilon: 1.0
     max_trials: 100
     max_failed_trials: 25
@@ -143,6 +142,18 @@ train_monthly:
       n_startup_trials: 50
       multivariate: true
       gamma: 0.40
+    # Rolling-origin backtest run inside every Optuna trial (protocol §4, §7 direct E1).
+    rolling_origin:
+      horizon: ${forecast_horizon}
+      n_cycles: ${n_cycles}
+      window: ${rolling_window}
+      step_months: ${step_months}
+      min_train_periods: ${min_train_periods}
+      mase_seasonal_period: ${mase_seasonal_period}
+    pruning:
+      enabled: true
+      n_startup_trials: 10
+      n_warmup_cycles: 1
     search_space:
       depth:
         type: "int"

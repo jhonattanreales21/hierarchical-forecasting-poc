@@ -2,16 +2,20 @@
 
 Champions are selected directly from the pooled rolling-origin metrics
 produced by training — there is no separate held-out test stage (protocol §4, §11).
-Phase 1 compares Prophet and SARIMAX; CatBoost is reintroduced in Phase 2.
+Phase 1: Prophet and SARIMAX. Phase 2: CatBoost (direct multi-horizon E1) added.
 
 Inputs (from catalog):
     monthly_prophet_prechampion_configs
     monthly_sarimax_prechampion_configs
+    monthly_catboost_prechampion_configs      (Phase 2 addition)
     monthly_prophet_candidate_models
     monthly_sarimax_candidate_models
+    monthly_catboost_candidate_models         (Phase 2 addition)
     monthly_prophet_full_train
     monthly_sarimax_full_train
+    monthly_catboost_full_train               (Phase 2 addition)
     monthly_sarimax_training_metadata
+    monthly_catboost_split_metadata           (Phase 2 addition)
     params:model_selection.monthly
 
 Outputs (to catalog):
@@ -48,6 +52,7 @@ def create_pipeline(**kwargs) -> Pipeline:
                     "monthly_prophet_prechampion_configs",
                     "monthly_sarimax_prechampion_configs",
                     "params:model_selection.monthly",
+                    "monthly_catboost_prechampion_configs",
                 ],
                 outputs="monthly_candidate_metrics_unflagged",
                 name="assemble_monthly_candidate_metrics",
@@ -93,6 +98,9 @@ def create_pipeline(**kwargs) -> Pipeline:
                     "monthly_sarimax_full_train",
                     "monthly_sarimax_training_metadata",
                     "params:model_selection.monthly",
+                    "monthly_catboost_candidate_models",
+                    "monthly_catboost_full_train",
+                    "monthly_catboost_split_metadata",
                 ],
                 outputs=["champion_monthly_model", "champion_monthly_metadata"],
                 name="build_monthly_champion_artifacts",
@@ -107,6 +115,9 @@ def create_pipeline(**kwargs) -> Pipeline:
                     "monthly_sarimax_full_train",
                     "monthly_sarimax_training_metadata",
                     "params:model_selection.monthly",
+                    "monthly_catboost_candidate_models",
+                    "monthly_catboost_full_train",
+                    "monthly_catboost_split_metadata",
                 ],
                 outputs=[
                     "monthly_family_champion_importance",
