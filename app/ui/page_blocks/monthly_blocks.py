@@ -65,10 +65,10 @@ def render_monthly_kpi_summary(identity: dict) -> None:
     """
     render_section_header("Production Champion Summary")
 
-    test_metrics = identity.get("test_metrics", {})
-    wmape = test_metrics.get("wmape")
-    rmse = test_metrics.get("rmse")
-    precision = test_metrics.get("forecast_precision")
+    evaluation_metrics = identity.get("evaluation_metrics", {})
+    wmape = evaluation_metrics.get("wmape")
+    rmse = evaluation_metrics.get("rmse")
+    precision = evaluation_metrics.get("forecast_precision")
     business_flag = wmape is not None and wmape <= 0.15
     family = family_label(identity.get("model_family"))
     champion_id = identity.get("champion_id")
@@ -215,18 +215,13 @@ def render_forecast_chart_panel(
         has_intervals: Whether the current champion exposes prediction intervals.
     """
     refit = identity.get("refit", {}) or {}
-    test_period = identity.get("test_period", {}) or {}
     refit_start = format_date(refit.get("start_date", ""))
     refit_end = format_date(refit.get("end_date", ""))
-    test_start = format_date(test_period.get("start_date", ""))
-    test_end = format_date(test_period.get("end_date", ""))
 
     caption_parts: list[str] = []
     if refit_start != "N/A" and refit_end != "N/A":
         scope = refit.get("data_scope", "history").replace("_", " ")
         caption_parts.append(f"Refit ({scope}): {refit_start} → {refit_end}")
-    if test_start != "N/A" and test_end != "N/A":
-        caption_parts.append(f"Test: {test_start} → {test_end}")
     caption_parts.append(f"Horizon: {horizon_months} months forward")
 
     interval_copy = (
@@ -382,7 +377,7 @@ def render_champion_model_details(identity: dict) -> None:
     """
     family = family_label(identity.get("model_family"))
     champion_id = identity.get("champion_id")
-    metrics = identity.get("test_metrics", {}) or {}
+    metrics = identity.get("evaluation_metrics", {}) or {}
     hyperparameters = dict(identity.get("hyperparameters", {}) or {})
     # Per-regressor prior scales are nested; surface them in a dedicated table so
     # they do not clutter (or break) the scalar hyperparameter table.
@@ -425,7 +420,7 @@ def render_champion_model_details(identity: dict) -> None:
                     hide_index=True,
                 )
             else:
-                st.caption("No test metrics recorded for this champion.")
+                st.caption("No evaluation metrics recorded for this champion.")
 
         with col_params:
             st.markdown("**Model hyperparameters**")

@@ -35,8 +35,9 @@ forecast_inference:
       require_future_exogenous_if_trained_with_exog: true
       exogenous_columns: []
 
-    # CatBoost adapter: recursive multi-step inference from historical demand buffer.
-    # Prediction intervals are not produced (interval_method is null).
+    # CatBoost adapter: transitional Phase-1 support. A CatBoost champion is capped
+    # at 3 months; Phase 2 replaces the legacy recursive adapter with direct
+    # multi-horizon models. Prediction intervals are not produced.
     catboost:
       date_column: "month_start_date"
       target_column: "monthly_demand"

@@ -1,5 +1,5 @@
 model_selection:
-  primary_metric: "WAPE"
+  primary_metric: "WMAPE"
   secondary_metrics:
     - "MASE"
     - "RMSE"
@@ -49,10 +49,10 @@ model_selection:
     sku_column: "sku"
 
     selection:
-      primary_metric: "wape"
+      primary_metric: "wmape"
       tie_breakers:
-        - "test_m3_wape"
-        - "test_m2_wape"
+        - "wmape_m3"
+        - "wmape_m2"
         - "mase"
         - "rmse"
       missing_metric_policy: "skip_with_audit_note"
@@ -97,18 +97,17 @@ model_selection:
         - 3
 
   # --- CatBoost adapter settings for multi-family selection ---
-  # Column names default to the CatBoost split metadata when omitted. CatBoost
-  # candidates are refit on train+validation and scored on the precomputed test
-  # feature matrix (leakage-safe: the test split never enters fitting).
+  # Column names default to the CatBoost split metadata when omitted. CatBoost is
+  # disabled from the active Phase-1 selection route and re-enters in Phase 2 as
+  # direct multi-horizon models.
   monthly_catboost:
     enabled: true
     date_column: "month_start_date"
     target_column: "monthly_demand"
     model_family: catboost
 
-    # Rolling-origin M-2/M-3 WAPE (operational lead-time). For CatBoost this is
-    # computed recursively (predicted demand feeds later lag features), so the
-    # lead-time metric matches production inference behaviour.
+    # Rolling-origin M-2/M-3 WMAPE (operational lead-time). Phase 2 replaces the
+    # legacy recursive scorer with direct horizon-specific CatBoost models.
     operational_lead_time:
       enabled: true
       lead_times:

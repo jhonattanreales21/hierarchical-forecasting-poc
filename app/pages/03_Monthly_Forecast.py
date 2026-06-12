@@ -16,7 +16,6 @@ from utils.champion import extract_champion_identity, family_label, forecast_has
 from utils.data_loaders import (
     load_champion_metadata,
     load_inference_metadata,
-    load_legacy_test_forecast,
     load_model_selection_summary,
     load_monthly_forecast,
     load_monthly_modeling_data,
@@ -51,7 +50,6 @@ selection_summary = load_model_selection_summary()
 identity = extract_champion_identity(meta, inference_meta, selection_summary)
 
 champion_id: str = identity.get("champion_id") or ""
-test_metrics: dict = identity.get("test_metrics", {})
 
 # ---------------------------------------------------------------------------
 # Horizon selector — rendered here; KPI placeholder filled below
@@ -68,19 +66,6 @@ render_monthly_section_gap()
 # Load forecast data for selected horizon
 # ---------------------------------------------------------------------------
 actuals = load_monthly_modeling_data()
-
-# Legacy Prophet test-period backtest, shown only as a held-out overlay when the
-# current champion is the matching candidate. It never drives champion identity.
-raw_test_fc = load_legacy_test_forecast()
-test_fc = (
-    raw_test_fc[raw_test_fc["candidate_id"] == champion_id]
-    .copy()
-    .sort_values("ds")
-    .reset_index(drop=True)
-    if not raw_test_fc.empty and "candidate_id" in raw_test_fc.columns
-    else raw_test_fc.iloc[0:0]
-)
-
 future_fc = load_monthly_forecast(horizon_months)
 has_intervals = forecast_has_intervals(future_fc, identity)
 
@@ -95,11 +80,10 @@ chart_title = (
 )
 fig = plot_forecast(
     actuals=actuals,
-    test_forecast=test_fc,
+    test_forecast=actuals.iloc[0:0],
     future_forecast=future_fc,
     title=chart_title,
     champion_id=champion_id,
-    test_mape=test_metrics.get("mape"),
     show_future_intervals=has_intervals,
 )
 render_forecast_chart_panel(fig, identity, horizon_months, has_intervals)

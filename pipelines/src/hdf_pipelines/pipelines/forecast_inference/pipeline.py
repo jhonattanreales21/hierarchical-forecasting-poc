@@ -12,10 +12,11 @@ def create_pipeline(**kwargs) -> Pipeline:
     dispatches inference by ``champion_monthly_metadata["model_family"]``, producing
     a single standardized monthly forecast schema for every supported family.
 
-    CatBoost inference requires the historical demand buffer (``monthly_catboost_full_train``)
-    and split metadata (``monthly_catboost_split_metadata``) to seed recursive lag and
-    rolling features.  These inputs are loaded for every run but are silently ignored
-    when the champion family is Prophet or SARIMAX.
+    CatBoost uses transitional Phase-1 inputs
+    (``monthly_catboost_full_train`` and ``monthly_catboost_split_metadata``) and is
+    capped at 3 months until the Phase-2 direct multi-horizon rewrite lands. These
+    inputs are loaded for every run but are silently ignored when the champion
+    family is Prophet or SARIMAX.
 
     Inputs (from catalog):
         champion_monthly_model

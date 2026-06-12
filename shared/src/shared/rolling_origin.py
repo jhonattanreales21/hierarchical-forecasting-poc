@@ -197,15 +197,19 @@ def compute_cycle_metrics(
     # Per-horizon WMAPE with epsilon guard (single point per horizon).
     for h in range(1, len(y_true) + 1):
         num = float(abs_error[h - 1])
-        den = float(abs_true[h - 1]) + epsilon
+        raw_den = float(abs_true[h - 1])
+        den = raw_den + epsilon
         metrics[f"wmape_m{h}"] = num / den if den > 0 else float("nan")
         metrics[f"{_POOL_PREFIX}wmape_m{h}_num"] = num
-        metrics[f"{_POOL_PREFIX}wmape_m{h}_den"] = den
+        metrics[f"{_POOL_PREFIX}wmape_m{h}_den"] = raw_den
+        metrics[f"{_POOL_PREFIX}wmape_m{h}_epsilon"] = float(epsilon)
 
     # Normalised directional BIAS over the block (protocol §5).
-    denom_bias = float(np.sum(abs_true)) + epsilon
+    raw_bias_den = float(np.sum(abs_true))
+    denom_bias = raw_bias_den + epsilon
     metrics[f"{_POOL_PREFIX}bias_num"] = float(np.sum(error))
-    metrics[f"{_POOL_PREFIX}bias_den"] = denom_bias
+    metrics[f"{_POOL_PREFIX}bias_den"] = raw_bias_den
+    metrics[f"{_POOL_PREFIX}bias_epsilon"] = float(epsilon)
     metrics["bias"] = metrics[f"{_POOL_PREFIX}bias_num"] / denom_bias
 
     return metrics
@@ -256,6 +260,7 @@ def aggregate_rolling_origin_metrics(
     for key in _pooled_metric_keys(keys):
         num = _sum_component(per_cycle_records, f"{_POOL_PREFIX}{key}_num")
         den = _sum_component(per_cycle_records, f"{_POOL_PREFIX}{key}_den")
+        den += _epsilon_component(per_cycle_records, f"{_POOL_PREFIX}{key}_epsilon")
         aggregated[key] = float(num / den) if den and den > 0 else float("nan")
 
     aggregated["n_cycles"] = len(per_cycle_records)
@@ -285,6 +290,13 @@ def _sum_component(records: Sequence[dict[str, float]], key: str) -> float:
     values = np.array([rec.get(key, np.nan) for rec in records], dtype=float)
     finite = values[np.isfinite(values)]
     return float(np.sum(finite)) if finite.size else float("nan")
+
+
+def _epsilon_component(records: Sequence[dict[str, float]], key: str) -> float:
+    """Return the denominator guard to apply once to a pooled metric."""
+    values = np.array([rec.get(key, np.nan) for rec in records], dtype=float)
+    finite = values[np.isfinite(values)]
+    return float(finite[0]) if finite.size else 0.0
 
 
 def _public_metrics(record: dict[str, float]) -> dict[str, float]:

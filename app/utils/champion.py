@@ -7,8 +7,8 @@ the functions stay pure and unit-testable.
 
 The app reads several artifacts whose key names have drifted between the legacy
 Prophet-only contract and the current generic monthly contract. The helpers here
-extract a single normalized "champion identity" with defensive fallbacks rather
-than assuming one metadata shape.
+extract a single normalized "champion identity" with defensive fallbacks where
+they do not reintroduce deprecated metric names.
 """
 
 from typing import Any, Optional
@@ -85,21 +85,23 @@ def standardize_champion_metadata(meta: dict) -> dict:
         meta: Raw champion metadata dict (may be empty).
 
     Returns:
-        Metadata dict with ``test_metrics`` populated and derived business flags.
+        Metadata dict with ``evaluation_metrics`` populated and derived business flags.
     """
     if not meta:
         return meta
     out = dict(meta)
-    metrics = dict(out.get("test_metrics") or out.get("metrics") or {})
+    metrics = dict(
+        out.get("evaluation_metrics") or out.get("metrics") or out.get("test_metrics") or {}
+    )
 
-    wmape = _first_not_none(metrics.get("wmape"), metrics.get("wape"))
+    wmape = metrics.get("wmape")
     if "forecast_precision" not in metrics and wmape is not None:
         try:
             metrics["forecast_precision"] = 1.0 - float(wmape)
         except (TypeError, ValueError):
             pass
 
-    out["test_metrics"] = metrics
+    out["evaluation_metrics"] = metrics
 
     precision_threshold = out.get("business_success_precision_threshold", 0.85)
     out["business_success_precision_threshold"] = precision_threshold
@@ -118,7 +120,7 @@ def extract_champion_identity(
 ) -> dict:
     """Build a normalized, model-family-agnostic champion identity.
 
-    Pulls champion family, id, selection metric, evaluation window, refit status,
+    Pulls champion family, id, selection metric, evaluation mode, refit status,
     run provenance, hyperparameters, active regressors, and interval availability
     from whichever artifact exposes them, using defensive fallbacks rather than
     assuming one metadata shape.
@@ -134,7 +136,12 @@ def extract_champion_identity(
     meta = meta or {}
     inf = inference_meta or {}
     selection = meta.get("selection", {}) or {}
-    metrics = meta.get("test_metrics") or meta.get("metrics") or {}
+    metrics = (
+        meta.get("evaluation_metrics")
+        or meta.get("metrics")
+        or meta.get("test_metrics")
+        or {}
+    )
     contract = meta.get("inference_contract", {}) or {}
 
     model_family = _first_not_none(
@@ -160,7 +167,6 @@ def extract_champion_identity(
         _summary_value(selection_summary, "primary_metric_value"),
     )
 
-    test_period = meta.get("test_period") or meta.get("test_window") or {}
     refit = meta.get("refit", {}) or {}
 
     forecast_generated_at = _first_not_none(
@@ -203,9 +209,8 @@ def extract_champion_identity(
             meta.get("selected_at"),
             _summary_value(selection_summary, "selection_timestamp"),
         ),
-        "test_period": test_period,
         "evaluation": meta.get("evaluation", {}) or {},
-        "test_metrics": metrics,
+        "evaluation_metrics": metrics,
         "hyperparameters": meta.get("hyperparameters") or {},
         "active_regressors": _first_not_none(
             meta.get("active_regressors"),

@@ -128,7 +128,7 @@ train_monthly:
 
   catboost:
     enabled: true
-    primary_metric: "wape"
+    primary_metric: "wmape_m3"
     selection_direction: "minimize"
     random_seed: ${random_seed}
     early_stopping_rounds: 100
@@ -189,8 +189,8 @@ train_monthly:
     metrics:
       mase_seasonal_period: ${mase_seasonal_period}
       epsilon: 1.0
-    # Ljung-Box residual eligibility, applied inside the rolling-origin before
-    # ranking (protocol §3.9). Residuals come from the full-history (through L) fit.
+    # Ljung-Box residual eligibility, applied on the final rolling-origin cycle
+    # before ranking (protocol §3.9 and team Phase-1.6 decision).
     ljung_box:
       enabled: true
       lags: 10

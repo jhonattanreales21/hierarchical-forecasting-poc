@@ -36,9 +36,15 @@ def test_standardize_forecast_columns_renames_generic_schema():
 
 def test_standardize_champion_metadata_derives_precision_and_flag():
     meta = standardize_champion_metadata({"metrics": {"wmape": 0.10}})
-    assert meta["test_metrics"]["forecast_precision"] == 0.90
+    assert meta["evaluation_metrics"]["forecast_precision"] == 0.90
     assert meta["business_success_flag"] is True
     assert meta["business_success_precision_threshold"] == 0.85
+
+
+def test_standardize_champion_metadata_requires_wmape_key():
+    meta = standardize_champion_metadata({"metrics": {"wape": 0.10}})
+    assert "forecast_precision" not in meta["evaluation_metrics"]
+    assert "business_success_flag" not in meta
 
 
 def test_standardize_champion_metadata_flags_failure_above_threshold():
@@ -65,7 +71,6 @@ def test_extract_identity_prefers_generated_at_over_legacy_key():
         "champion_id": "prophet_candidate_079",
         "selection": {"primary_metric": "wmape", "selected_at": "2026-06-03T05:40:40Z"},
         "metrics": {"wmape": 0.095, "mase": 0.46, "rmse": 95.8, "bias": -0.095},
-        "test_period": {"start_date": "2026-02-01", "end_date": "2026-05-01"},
         "training_cutoff": "2026-05-01",
     }
     identity = extract_champion_identity(standardize_champion_metadata(meta), inf)
@@ -75,6 +80,7 @@ def test_extract_identity_prefers_generated_at_over_legacy_key():
     assert identity["selection_metric_value"] == 0.095
     assert identity["supported_horizons"] == [3, 6, 12]
     assert identity["has_prediction_interval"] is True
+    assert "test_period" not in identity
 
 
 def test_extract_identity_is_family_agnostic_for_catboost():
@@ -122,7 +128,7 @@ def test_extract_identity_falls_back_to_selection_summary():
 def test_extract_identity_handles_all_empty():
     identity = extract_champion_identity({}, {}, None)
     assert identity["model_family"] is None
-    assert identity["test_metrics"] == {}
+    assert identity["evaluation_metrics"] == {}
     assert identity["supported_horizons"] == []
 
 

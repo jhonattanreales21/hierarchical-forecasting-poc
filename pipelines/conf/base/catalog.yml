@@ -229,10 +229,6 @@ monthly_catboost_tuning_results:
   type: pandas.ParquetDataset
   filepath: data/06_models/tuning/monthly_catboost_tuning_results.parquet
 
-monthly_catboost_validation_metrics:
-  type: pandas.ParquetDataset
-  filepath: data/06_models/tuning/monthly_catboost_validation_metrics.parquet
-
 monthly_catboost_prechampion_configs:
   type: json.JSONDataset
   filepath: data/06_models/tuning/monthly_catboost_prechampion_configs.json
@@ -322,18 +318,10 @@ tuning_results_weekly:
   type: pandas.ParquetDataset
   filepath: data/06_models/tuning/weekly_tuning_results.parquet
 
-# 06_models — Monthly Prophet model-selection artifacts
-monthly_prophet_test_metrics:
-  type: pandas.ParquetDataset
-  filepath: data/06_models/selection/monthly_prophet_test_metrics.parquet
-
+# 06_models — Legacy Prophet-only model-selection artifacts
 monthly_prophet_model_selection_summary:
   type: pandas.ParquetDataset
   filepath: data/06_models/selection/monthly_prophet_model_selection_summary.parquet
-
-monthly_prophet_champion_test_forecast:
-  type: pandas.ParquetDataset
-  filepath: data/06_models/selection/monthly_prophet_champion_test_forecast.parquet
 
 monthly_prophet_champion_model:
   type: pickle.PickleDataset
@@ -397,10 +385,6 @@ evaluation_report:
 reconciliation_diagnostics:
   type: pandas.ParquetDataset
   filepath: data/08_reporting/reconciliation_diagnostics.parquet
-
-monthly_operational_test_forecasts:
-  type: pandas.ParquetDataset
-  filepath: data/08_reporting/monthly_operational_test_forecasts.parquet
 
 monthly_operational_lead_time_metrics:
   type: pandas.ParquetDataset

@@ -134,6 +134,29 @@ def test_aggregate_pools_wmape_bias_and_keeps_mase_average() -> None:
     assert "wmape_m3_std" in agg
 
 
+def test_aggregate_applies_epsilon_once_for_pooled_guarded_metrics() -> None:
+    y_train = np.arange(1.0, 40.0)
+    records = [
+        compute_cycle_metrics(
+            np.array([100.0, 100.0, 10.0]),
+            np.array([100.0, 100.0, 20.0]),
+            y_train,
+            epsilon=1.0,
+        ),
+        compute_cycle_metrics(
+            np.array([100.0, 100.0, 20.0]),
+            np.array([100.0, 100.0, 40.0]),
+            y_train,
+            epsilon=1.0,
+        ),
+    ]
+
+    agg = aggregate_rolling_origin_metrics(records)
+
+    assert agg["wmape_m3"] == pytest.approx(30.0 / (30.0 + 1.0))
+    assert agg["bias"] == pytest.approx(30.0 / (430.0 + 1.0))
+
+
 def test_run_rolling_origin_with_naive_forecaster() -> None:
     # Build a contiguous monthly series; forecaster returns last observed value.
     dates = _month_starts(39)

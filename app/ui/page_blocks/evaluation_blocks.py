@@ -46,10 +46,10 @@ def render_evaluation_summary(identity: dict, business_flag: bool) -> None:
         identity: Normalized champion identity from ``extract_champion_identity``.
         business_flag: Whether the business precision target was met.
     """
-    test_m = identity.get("test_metrics", {})
+    evaluation_metrics = identity.get("evaluation_metrics", {})
     champion_id = identity.get("champion_id")
     family = family_label(identity.get("model_family"))
-    precision = test_m.get("forecast_precision")
+    precision = evaluation_metrics.get("forecast_precision")
     precision_threshold = 0.85
 
     if business_flag:
@@ -74,10 +74,10 @@ def render_evaluation_summary(identity: dict, business_flag: bool) -> None:
         description="Rolling-origin performance of the model selected across all families.",
     )
 
-    wmape = test_m.get("wmape")
-    mase = test_m.get("mase")
-    rmse = test_m.get("rmse")
-    bias = test_m.get("bias")
+    wmape = evaluation_metrics.get("wmape")
+    mase = evaluation_metrics.get("mase")
+    rmse = evaluation_metrics.get("rmse")
+    bias = evaluation_metrics.get("bias")
     selection_metric = identity.get("selection_metric")
     selection_value = identity.get("selection_metric_value")
 
@@ -262,18 +262,18 @@ def render_production_selection_summary(sel_df: pd.DataFrame) -> None:
         st.caption(reason)
 
 
-def render_candidate_test_metrics_table(tm_df: pd.DataFrame) -> None:
+def render_candidate_metrics_table(metrics_df: pd.DataFrame) -> None:
     """Render the detailed per-candidate rolling-origin metrics table across families.
 
     Args:
-        tm_df: Per-candidate rolling-origin metrics DataFrame. Empty triggers a note.
+        metrics_df: Per-candidate rolling-origin metrics DataFrame. Empty triggers a note.
     """
     render_section_header(
         "Detailed Candidate Metrics",
         description="Full per-candidate evaluation results including horizon-specific error.",
     )
 
-    if tm_df is None or tm_df.empty:
+    if metrics_df is None or metrics_df.empty:
         st.info(f"Candidate metrics not available. Run `{_MONTHLY_SELECTION_CMD}`.")
         return
 
@@ -290,8 +290,8 @@ def render_candidate_test_metrics_table(tm_df: pd.DataFrame) -> None:
         "wmape_m2",
         "wmape_m3",
     ]
-    available = [c for c in display_cols if c in tm_df.columns]
-    display = tm_df[available].copy()
+    available = [c for c in display_cols if c in metrics_df.columns]
+    display = metrics_df[available].copy()
     if "wmape_m3" in display.columns:
         display = display.sort_values("wmape_m3").reset_index(drop=True)
 
