@@ -61,7 +61,7 @@ def build_rolling_origin_pruner(
 
     The objective reports the running cross-cycle objective after each cycle; the
     ``MedianPruner`` then prunes trials that are clearly worse than the running
-    median at the same cycle (protocol §9.2). ``n_warmup_cycles`` cycles run before
+    median at the same cycle. ``n_warmup_cycles`` cycles run before
     pruning is allowed so the first noisy cycles never trigger a prune.
 
     Args:

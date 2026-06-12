@@ -2,7 +2,7 @@
 
 Rolling-origin glue reused by the Prophet, SARIMAX, and CatBoost family tuners so
 that cycle generation, the persisted metric set, and Optuna pruning are defined
-once (protocol §4, §5).
+once.
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ def build_monthly_rolling_origin_cycles(
     (same pure function, same inputs).
 
     Args:
-        full_df: Full-history modeling frame (through ``L``).
+        full_df: Full-history modeling frame (full history).
         date_col: Month-start date column name.
         rolling_origin_cfg: ``tuning.rolling_origin`` block (horizon, n_cycles,
             window, step_months, min_train_periods).
@@ -84,7 +84,7 @@ def extract_rolling_origin_metric_set(
 
     Args:
         aggregated: Output of ``run_rolling_origin`` (means + ``{key}_std``).
-        horizon: Forecast horizon ``H`` (drives the per-horizon keys).
+        horizon: Forecast horizon (drives the per-horizon keys).
 
     Returns:
         Dict with ``wmape``, ``mase``, ``bias``, ``rmse``, ``wmape_m{h}`` and their

@@ -1,16 +1,16 @@
-"""Monthly CatBoost training nodes: rolling-origin Optuna search, direct multi-horizon E1.
+"""Monthly CatBoost training nodes: rolling-origin Optuna search, direct multi-horizon.
 
 Implements an Optuna TPE study where each trial is evaluated by a **rolling-origin
-backtest** using the **direct multi-horizon strategy (E1, protocol §7)**:
+backtest** using the **direct multi-horizon strategy**:
 - One independent CatBoostRegressor per forecast horizon h ∈ {1, 2, 3}.
 - model_h trains on (features_at_origin_t, demand(t+h)) pairs (shifted-target formulation)
   and predicts demand(origin+h) from the origin row's features at inference time.
 - No recursion — predictions are never reused as inputs for later steps.
 
-The Optuna objective is pooled ``WMAPE_M3`` across rolling-origin cycles (protocol §3.5, §4).
+The Optuna objective is pooled ``WMAPE_M3`` across rolling-origin cycles.
 Top-N pre-champions are refit on full history (3 models each) for the downstream
 model-selection stage, which selects champions directly from rolling-origin metrics
-— no separate held-out test stage (protocol §4, §11).
+— no separate held-out test stage.
 """
 
 import logging
@@ -51,22 +51,22 @@ def train_monthly_catboost_candidates(  # noqa: PLR0915
     monthly_catboost_split_metadata: dict,
     params: dict,
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict, dict, dict]:
-    """Tune CatBoost with a rolling-origin backtest (direct multi-horizon E1) and persist pre-champions.
+    """Tune CatBoost with a rolling-origin backtest (direct multi-horizon) and persist pre-champions.
 
     Each Optuna trial is evaluated by a **rolling-origin backtest** using the
-    **direct E1 strategy** (protocol §7): for each horizon h ∈ {1, 2, 3} an
+    **direct multi-horizon strategy**: for each horizon h ∈ {1, 2, 3} an
     independent CatBoostRegressor is trained on ``(features_at_origin_t, demand(t+h))``
     pairs (shifted-target formulation) and predicts ``demand(origin+h)`` from the
     origin row's features. No recursion is used. The Optuna objective is pooled
-    ``WMAPE_M3`` (protocol §3.5, §4).
+    ``WMAPE_M3``.
 
     Top-N pre-champions are refit on full history (3 models each) and persisted for
     the model-selection stage, which selects champions directly from rolling-origin
-    metrics — no separate held-out test stage (protocol §4, §11).
+    metrics — no separate held-out test stage.
 
     Args:
-        monthly_catboost_full_train: CatBoost-ready full-history DataFrame (through
-            ``L``) produced by ``adapt_monthly_data_for_catboost``.
+        monthly_catboost_full_train: CatBoost-ready full-history DataFrame
+            produced by ``adapt_monthly_data_for_catboost``.
         monthly_catboost_split_metadata: Metadata dict from the CatBoost adapter.
             Provides ``date_column``, ``target_column``, ``sku_column``, and
             ``all_feature_columns``.
@@ -152,7 +152,7 @@ def train_monthly_catboost_candidates(  # noqa: PLR0915
     # ── build rolling-origin cycles ───────────────────────────────────────────
     cycles = build_monthly_rolling_origin_cycles(full_df, date_col, rolling_origin_cfg)
     logger.info(
-        "CatBoost direct-E1 rolling-origin training — %d rows | %s → %s | "
+        "CatBoost direct multi-horizon rolling-origin training — %d rows | %s → %s | "
         "%d cycles (H=%d) | n_features=%d | objective=%s | max_trials=%d",
         len(full_df),
         full_df[date_col].min().date(),
@@ -408,7 +408,7 @@ def train_monthly_catboost_candidates(  # noqa: PLR0915
         else None
     )
     logger.info(
-        "CatBoost E1 training done — trials=%d  successful=%d  failed=%d  "
+        "CatBoost training done — trials=%d  successful=%d  failed=%d  "
         "best=%s  %s=%.4f",
         len(trial_results),
         len(successful),
@@ -478,12 +478,12 @@ def _make_direct_fit_forecast_fn(
 
     Returns a callable ``(train_df, cycle) -> np.ndarray`` that:
     - For each horizon h trains a CatBoostRegressor on (features_at_t, demand(t+h))
-      pairs (shifted-target, E1 strategy — protocol §7).
+      pairs (shifted-target formulation).
     - At cycle inference, applies each model_h to the last row of train_df
       (the origin row) to predict demand(origin+h).
 
     Features are evaluated at the origin row so all configured lag/rolling
-    features are valid at inference time regardless of horizon (protocol §7, E1).
+    features are valid at inference time regardless of horizon.
     """
 
     def fit_forecast(
@@ -493,7 +493,7 @@ def _make_direct_fit_forecast_fn(
         available = [c for c in feature_cols if c in df.columns]
         if not available:
             raise ValueError(
-                "No feature columns available in train_df for CatBoost direct E1."
+                "No feature columns available in train_df for CatBoost direct multi-horizon."
             )
 
         predictions: list[float] = []
@@ -505,7 +505,7 @@ def _make_direct_fit_forecast_fn(
             valid_mask = y_h.notna()
             if valid_mask.sum() < 3:  # too few pairs to train
                 raise ValueError(
-                    f"CatBoost direct-E1: horizon h={h} has fewer than 3 training pairs "
+                    f"CatBoost direct multi-horizon: horizon h={h} has fewer than 3 training pairs "
                     f"in this cycle (train_df has {len(df)} rows, shift=-{h})."
                 )
             X_train = df.loc[valid_mask, available].to_numpy(dtype=float)
@@ -712,7 +712,7 @@ def _build_catboost_training_metadata(  # noqa: PLR0913
     return {
         "model_family": "catboost",
         "granularity": "monthly",
-        "strategy": "direct_multi_horizon_e1",
+        "strategy": "direct_multi_horizon",
         "evaluation_mode": "rolling_origin",
         "run_timestamp": run_ts,
         "optimizer": "optuna_tpe",
@@ -741,7 +741,7 @@ def _build_catboost_training_metadata(  # noqa: PLR0913
         "selected_prechampion_ids": list(prechampion_ids),
         "note": (
             "Champions selected directly on rolling-origin metrics; "
-            "no reserved out-of-sample window was used (protocol §9.1)."
+            "no reserved out-of-sample window was used."
         ),
         "failed_candidates": [
             {"candidate_id": r["candidate_id"], "error": r.get("error_message")}

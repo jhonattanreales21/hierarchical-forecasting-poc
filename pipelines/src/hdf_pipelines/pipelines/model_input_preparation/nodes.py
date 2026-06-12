@@ -519,12 +519,12 @@ def prepare_monthly_full_history(
     preparation_metadata: dict[str, Any],
     parameters: dict,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
-    """Return the full monthly history (through ``L``), sorted, for rolling-origin use.
+    """Return the full monthly history, sorted, for rolling-origin use.
 
-    The fixed train/validation/test hold-out has been removed (rolling-origin
-    protocol §2, §11): the series is kept whole and cycles are sliced internally by
-    the rolling-origin engine. This node only sorts and summarises the canonical
-    frame; no months are reserved out of sample.
+    The fixed train/validation/test hold-out has been removed: the series is kept
+    whole and cycles are sliced internally by the rolling-origin engine. This node
+    only sorts and summarises the canonical frame; no months are reserved out of
+    sample.
 
     Args:
         monthly_modeling_data: Generic modeling DataFrame from ``build_monthly_modeling_data``.
@@ -533,7 +533,7 @@ def prepare_monthly_full_history(
 
     Returns:
         Tuple of:
-            - monthly_full_train: All rows sorted by SKU and date (full history through ``L``).
+            - monthly_full_train: All rows sorted by SKU and date (full history through the last observed month).
             - updated_metadata: Metadata dict extended with the full-history date range.
     """
     monthly_params = _get_monthly_params(parameters)
@@ -544,7 +544,7 @@ def prepare_monthly_full_history(
         [sku_column, date_column]
     ).reset_index(drop=True)
     logger.info(
-        "Monthly full history (through L): %s",
+        "Monthly full history (full history): %s",
         _summarize_date_range(full_train, date_column),
     )
 
@@ -562,11 +562,11 @@ def build_monthly_rolling_origin_windows(
     Builds the cycles through the shared rolling-origin engine so that
     ``model_input_preparation`` and ``train_monthly`` share a single window
     definition. With an expanding window and ``step = 1`` the last cycle predicts
-    ``[L-2, L-1, L]`` (protocol §2, §4, §10). Raises a clear error if the series
+    the most recent months. Raises a clear error if the series
     cannot form the requested cycles or the first cycle's train is too short.
 
     Args:
-        monthly_full_train: Full monthly history through ``L``.
+        monthly_full_train: Full monthly history through the last observed month.
         parameters: Pipeline parameters with a ``monthly.rolling_origin`` block.
 
     Returns:
@@ -613,7 +613,7 @@ def build_monthly_rolling_origin_windows(
         "created_by": "model_input_preparation.build_monthly_rolling_origin_windows",
     }
     logger.info(
-        "Built monthly_rolling_origin_windows: %d cycles through L=%s; last cycle "
+        "Built monthly_rolling_origin_windows: %d cycles up to %s; last cycle "
         "targets %s.",
         len(cycles),
         last_observed,
@@ -630,7 +630,7 @@ def build_monthly_split_metadata(
     """Compile the generic monthly full-history metadata artifact for the catalog.
 
     Args:
-        monthly_full_train: Full-history DataFrame (through ``L``).
+        monthly_full_train: Full-history DataFrame (full history).
         preparation_metadata: Extended metadata dict from ``prepare_monthly_full_history``.
         parameters: Pipeline parameters with a ``monthly`` block.
 
@@ -676,7 +676,7 @@ def adapt_monthly_data_for_prophet(
 
     Args:
         monthly_modeling_data: Generic modeling DataFrame.
-        monthly_full_train: Generic full-history frame (through ``L``).
+        monthly_full_train: Generic full-history frame (full history).
         monthly_split_metadata: Generic full-history metadata dict.
         parameters: Pipeline parameters. Reads ``monthly`` (source column names) and
             ``monthly_prophet`` (Prophet column names and active_regressors).
@@ -867,14 +867,14 @@ def adapt_monthly_data_for_sarimax(
     """Transform the generic monthly full history into a SARIMAX-ready tabular dataset.
 
     Produces a tabular DataFrame with ``[date_column, target_column, *exogenous_columns]``
-    covering all history through ``L``.  Validates temporal index quality, enforces
+    covering all history through the last observed month.  Validates temporal index quality, enforces
     monthly frequency, separates target from exogenous features, and emits
     SARIMAX-specific metadata. The rolling-origin engine slices cycles at train time.
 
     Consumes the generic ``monthly_full_train`` dataset; never reads Prophet-renamed columns.
 
     Args:
-        monthly_full_train: Generic full-history frame (through ``L``).
+        monthly_full_train: Generic full-history frame (full history).
         monthly_split_metadata: Generic full-history metadata dict.
         parameters: Pipeline parameters. Reads the ``monthly_sarimax`` block.
 
@@ -1297,13 +1297,12 @@ def adapt_monthly_data_for_catboost(
     """Build the CatBoost-ready monthly full-history dataset for rolling-origin training.
 
     Computes target-derived lag, rolling, trend, and calendar features on the full
-    chronological dataset (through ``L``). No fixed train/validation/test split is
-    produced — the rolling-origin engine slices cycles internally at train time
-    (protocol §2, §11). Supports the **direct multi-horizon** strategy (E1, §7): each
-    horizon's model trains and predicts independently from features available at the
-    origin row.
+    chronological dataset (full history). No fixed train/validation/test split is
+    produced — the rolling-origin engine slices cycles internally at train time.
+    Supports the **direct multi-horizon** strategy: each horizon's model trains and
+    predicts independently from features available at the origin row.
 
-    In the direct multi-horizon E1 strategy, model_h trains on pairs
+    In the direct multi-horizon strategy, model_h trains on pairs
     ``(features_at_t, demand(t+h))`` and predicts ``demand(origin+h)`` from the
     origin row's features. Because features are evaluated at the **origin row**
     (not the predicted row), all lag and rolling features are valid for any horizon
@@ -1311,7 +1310,7 @@ def adapt_monthly_data_for_catboost(
     metadata documents the theoretically valid lags per horizon for audit purposes.
 
     Args:
-        monthly_full_train: Generic monthly full-history frame (through ``L``).
+        monthly_full_train: Generic monthly full-history frame (full history).
         monthly_split_metadata: Generic full-history metadata dict (used for
             provenance; split boundaries are not read).
         parameters: Pipeline parameters. Reads the ``monthly_catboost`` block.
@@ -1363,7 +1362,7 @@ def adapt_monthly_data_for_catboost(
             )
 
     logger.info(
-        "Building CatBoost monthly full-history dataset (rolling-origin, direct E1) "
+        "Building CatBoost monthly full-history dataset (rolling-origin, direct multi-horizon) "
         "from monthly_full_train shape=%s.",
         monthly_full_train.shape,
     )
@@ -1483,7 +1482,7 @@ def adapt_monthly_data_for_catboost(
         if col.startswith("demand_diff_") or col.startswith("demand_pct_change_")
     ]
 
-    # Document per-horizon lag validity (protocol §7, E1 direct strategy).
+    # Document per-horizon lag validity.
     # In the shifted-target formulation, all lags are valid at origin; this is
     # for audit documentation only.
     valid_lags_per_horizon: dict[int, list[int]] = {
@@ -1525,7 +1524,7 @@ def adapt_monthly_data_for_catboost(
                 "For model_h the training target is demand h steps ahead of each row "
                 "(shifted-target formulation). Features are evaluated at the origin row, "
                 "so all lag features are valid at inference time. valid_lags_per_horizon "
-                "documents the theoretically safe lag set per horizon (protocol §7)."
+                "documents the theoretically safe lag set per horizon."
             ),
         },
         "full_train": _summarize_date_range(catboost_full_train, date_column),
@@ -1536,7 +1535,7 @@ def adapt_monthly_data_for_catboost(
 
     logger.info(
         "Built monthly_catboost_full_train (shape=%s) and monthly_catboost_split_metadata "
-        "(n_features=%d, direct_multi_horizon E1).",
+        "(n_features=%d, direct multi-horizon).",
         catboost_full_train.shape,
         len(all_feature_columns),
     )
@@ -1557,7 +1556,7 @@ def build_monthly_prophet_split_metadata(  # noqa: PLR0913
     """Compile a metadata dict covering the Prophet full history and future horizons.
 
     Args:
-        monthly_prophet_full_train: Prophet full-history frame (through ``L``).
+        monthly_prophet_full_train: Prophet full-history frame (full history).
         monthly_prophet_future_3m: Future regressor DataFrame for the 3-month horizon.
         monthly_prophet_future_6m: Future regressor DataFrame for the 6-month horizon.
         monthly_prophet_future_12m: Future regressor DataFrame for the 12-month horizon.

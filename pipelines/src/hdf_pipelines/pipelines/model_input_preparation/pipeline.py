@@ -1,12 +1,12 @@
 """Monthly model-input preparation pipeline.
 
-Rolling-origin protocol: the fixed train/validation/test hold-out is removed.
-The series is kept whole (full history through L) and the rolling-origin engine
-slices cycles internally at train time.
+The fixed train/validation/test hold-out is removed. The series is kept whole
+(full history) and the rolling-origin engine slices cycles internally at train
+time.
 
 Flow:
   1. build_monthly_modeling_data            → monthly_modeling_data  (generic, month_start_date/monthly_demand)
-  2. prepare_monthly_full_history           → monthly_full_train  (generic full history through L)
+  2. prepare_monthly_full_history           → monthly_full_train  (generic full history)
   3. build_monthly_rolling_origin_windows   → monthly_rolling_origin_windows  (audit artifact)
   4. build_monthly_split_metadata           → monthly_split_metadata  (generic)
   5. adapt_monthly_data_for_prophet         → monthly_prophet_modeling_data/full_train
@@ -14,7 +14,7 @@ Flow:
   7. build_monthly_prophet_split_metadata   → monthly_prophet_split_metadata
   8. adapt_monthly_data_for_sarimax         → monthly_sarimax_full_train/split_metadata
   9. build_monthly_generic_future_frames    → monthly_future_3m/6m/12m  (canonical inference inputs)
- 10. adapt_monthly_data_for_catboost        → monthly_catboost_full_train/split_metadata  (direct E1)
+ 10. adapt_monthly_data_for_catboost        → monthly_catboost_full_train/split_metadata  (direct multi-horizon)
 """
 
 from kedro.pipeline import Pipeline, node, pipeline
@@ -50,7 +50,7 @@ def create_pipeline(**kwargs) -> Pipeline:
                 ],
                 name="build_monthly_modeling_data",
             ),
-            # ── Step 2: Generic full history (through L) ──────────────────────
+            # ── Step 2: Generic full history (full history) ──────────────────────
             node(
                 func=prepare_monthly_full_history,
                 inputs=[
@@ -163,7 +163,7 @@ def create_pipeline(**kwargs) -> Pipeline:
                 ],
                 name="build_monthly_generic_future_frames",
             ),
-            # ── Step 10: CatBoost adapter (direct multi-horizon E1) ───────────
+            # ── Step 10: CatBoost adapter (direct multi-horizon) ───────────
             node(
                 func=adapt_monthly_data_for_catboost,
                 inputs=[

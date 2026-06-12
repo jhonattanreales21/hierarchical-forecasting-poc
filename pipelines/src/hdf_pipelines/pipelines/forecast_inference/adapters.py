@@ -309,10 +309,10 @@ def predict_monthly_catboost(
 ) -> pd.DataFrame:
     """Generate monthly forecasts from a CatBoost champion.
 
-    Dispatches to the **direct multi-horizon** strategy (E1, protocol §7):
+    Dispatches to the **direct multi-horizon** strategy:
     applies model_h1, model_h2, model_h3 independently from the origin row's
     precomputed features. No recursion — predictions are never reused as inputs.
-    CatBoost forecasts at most 3 months ahead (protocol §8); steps beyond 3 receive
+    CatBoost forecasts at most 3 months ahead; steps beyond 3 receive
     NaN and a warning.
 
     Falls back to the legacy recursive path when the champion artifact carries a
@@ -321,7 +321,7 @@ def predict_monthly_catboost(
     Args:
         model: CatBoost champion artifact — a dict carrying ``"model_h1"``,
             ``"model_h2"``, ``"model_h3"`` and ``"feature_columns"`` for the
-            direct E1 strategy, or a dict/CatBoostRegressor for legacy recursive.
+            direct multi-horizon strategy, or a dict/CatBoostRegressor for legacy recursive.
         future_df: Future feature frame (date column + future-known columns).
         metadata: ``champion_monthly_metadata`` from model selection.
         params: Contents of ``forecast_inference.monthly``.
@@ -354,7 +354,7 @@ def predict_monthly_catboost(
     ordered[date_col] = pd.to_datetime(ordered[date_col])
     ordered = ordered.sort_values(date_col).reset_index(drop=True)
 
-    # Detect strategy: direct E1 if champion carries model_h1/h2/h3.
+    # Detect strategy: direct multi-horizon if champion carries model_h1/h2/h3.
     is_direct = isinstance(model, dict) and "model_h1" in model
     strategy = str(
         metadata.get("strategy", "direct_multi_horizon" if is_direct else "recursive")
@@ -376,7 +376,7 @@ def predict_monthly_catboost(
 
     # Legacy fallback: recursive single-model inference.
     logger.warning(
-        "CatBoost champion does not carry direct E1 models (model_h1/h2/h3); "
+        "CatBoost champion does not carry direct multi-horizon models (model_h1/h2/h3); "
         "falling back to legacy recursive inference."
     )
     return _predict_recursive_catboost(
@@ -403,7 +403,7 @@ def _predict_direct_catboost(
     requested_horizon: int,
     max_horizon: int,
 ) -> pd.DataFrame:
-    """Direct multi-horizon CatBoost inference (E1 strategy, protocol §7).
+    """Direct multi-horizon CatBoost inference.
 
     Applies model_h1, model_h2, model_h3 from the origin row's features.
     Steps beyond max_horizon receive NaN with a warning.
@@ -448,7 +448,7 @@ def _predict_direct_catboost(
     if requested_horizon > max_horizon:
         logger.warning(
             "CatBoost direct champion has max_forecast_horizon=%d but %d months "
-            "were requested. Steps %d–%d will be NaN (protocol §8).",
+            "were requested. Steps %d–%d will be NaN.",
             max_horizon,
             requested_horizon,
             max_horizon + 1,
@@ -488,7 +488,7 @@ def _predict_direct_catboost(
 
     n_predicted = sum(1 for r in forecast_rows if np.isfinite(r["forecast"]))
     logger.info(
-        "CatBoost direct-E1 adapter produced %d rows (%d non-NaN) for %d-month horizon "
+        "CatBoost direct multi-horizon adapter produced %d rows (%d non-NaN) for %d-month horizon "
         "(%d features, max_horizon=%d, intervals=None).",
         len(core),
         n_predicted,

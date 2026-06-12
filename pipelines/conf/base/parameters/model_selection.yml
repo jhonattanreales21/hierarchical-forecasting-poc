@@ -6,15 +6,14 @@ model_selection:
   selection_strategy: "best_by_horizon"
   tie_breaker: "RMSE"
 
-  # --- Monthly multi-family selection (rolling-origin protocol) ---
-  # Champions are selected directly on pooled rolling-origin metrics
-  # (no held-out test stage). Phase 1 compares Prophet + SARIMAX; CatBoost is
-  # re-enabled in Phase 2.
+  # Champions are selected directly on the pooled rolling-origin metrics produced
+  # by training; there is no separate held-out evaluation stage.
   monthly:
     enabled: true
     active_families:
       - prophet
       - sarimax
+      - catboost
     primary_metric: wmape_m3
     direction: minimize
     tie_breakers:
@@ -98,16 +97,15 @@ model_selection:
 
   # --- CatBoost adapter settings for multi-family selection ---
   # Column names default to the CatBoost split metadata when omitted. CatBoost is
-  # disabled from the active Phase-1 selection route and re-enters in Phase 2 as
-  # direct multi-horizon models.
+  # evaluated as direct horizon-specific models.
   monthly_catboost:
     enabled: true
     date_column: "month_start_date"
     target_column: "monthly_demand"
     model_family: catboost
 
-    # Rolling-origin M-2/M-3 WMAPE (operational lead-time). Phase 2 replaces the
-    # legacy recursive scorer with direct horizon-specific CatBoost models.
+    # Per-horizon WMAPE (operational lead-time) from the direct horizon-specific
+    # CatBoost models.
     operational_lead_time:
       enabled: true
       lead_times:

@@ -80,10 +80,6 @@ monthly_modeling_data:
   type: pandas.ParquetDataset
   filepath: data/05_model_input/monthly_modeling_data.parquet
 
-monthly_train:
-  type: pandas.ParquetDataset
-  filepath: data/05_model_input/monthly_train.parquet
-
 monthly_full_train:
   type: pandas.ParquetDataset
   filepath: data/05_model_input/monthly_full_train.parquet
@@ -93,7 +89,7 @@ monthly_split_metadata:
   filepath: data/05_model_input/monthly_split_metadata.json
 
 # 05_model_input — Rolling-origin window specification (audit artifact). The last
-# cycle predicts [L-2, L-1, L]; shared by model_input_preparation and train_monthly.
+# cycle predicts the most recent months; shared by model_input_preparation and train_monthly.
 monthly_rolling_origin_windows:
   type: json.JSONDataset
   filepath: data/05_model_input/monthly_rolling_origin_windows.json
@@ -112,10 +108,6 @@ monthly_future_12m:
   filepath: data/05_model_input/monthly_future_12m.parquet
 
 # 05_model_input — CatBoost monthly model-ready datasets
-monthly_catboost_train:
-  type: pandas.ParquetDataset
-  filepath: data/05_model_input/monthly_catboost_train.parquet
-
 monthly_catboost_full_train:
   type: pandas.ParquetDataset
   filepath: data/05_model_input/monthly_catboost_full_train.parquet
@@ -125,10 +117,6 @@ monthly_catboost_split_metadata:
   filepath: data/05_model_input/monthly_catboost_split_metadata.json
 
 # 05_model_input — SARIMAX monthly model-ready datasets
-monthly_sarimax_train:
-  type: pandas.ParquetDataset
-  filepath: data/05_model_input/monthly_sarimax_train.parquet
-
 monthly_sarimax_full_train:
   type: pandas.ParquetDataset
   filepath: data/05_model_input/monthly_sarimax_full_train.parquet
@@ -136,15 +124,6 @@ monthly_sarimax_full_train:
 monthly_sarimax_split_metadata:
   type: json.JSONDataset
   filepath: data/05_model_input/monthly_sarimax_split_metadata.json
-
-# Legacy / future-stage placeholders
-model_input_monthly_catboost_train:
-  type: pandas.ParquetDataset
-  filepath: data/05_model_input/monthly_catboost_train.parquet
-
-model_input_monthly_sarimax_train:
-  type: pandas.ParquetDataset
-  filepath: data/05_model_input/monthly_sarimax_train.parquet
 
 # Weekly splits
 model_input_weekly_prophet_train:

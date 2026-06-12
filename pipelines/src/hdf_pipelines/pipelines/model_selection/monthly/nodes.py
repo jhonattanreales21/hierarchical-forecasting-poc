@@ -1,29 +1,17 @@
 """Monthly multi-family model selection nodes.
 
-Compares prechampion candidates on the held-out monthly test
-period, selects one family champion per family, then elects one monthly production
-champion.
+Selects one champion per model family from the pooled rolling-origin metrics
+produced by training, then elects a single monthly production champion across
+families.
 """
 
 import logging
-import warnings as _warnings
-from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
 import numpy as np
 import pandas as pd
-from catboost import CatBoostRegressor
 from prophet import Prophet
-from shared.catboost_recursive import (
-    build_demand_buffer,
-    compute_recursive_target_features,
-    extract_periods_from_column_names,
-)
-from shared.metrics import mase as _shared_mase
-from shared.metrics import rmse as _shared_rmse
-from shared.metrics import wape as _shared_wape
-from statsmodels.stats.diagnostic import acorr_ljungbox
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 
 from .explainability import (
@@ -38,173 +26,6 @@ logger = logging.getLogger(__name__)
 
 
 # ── Node 1 ────────────────────────────────────────────────────────────────────
-
-
-def evaluate_monthly_family_candidates_on_test(  # noqa: PLR0913
-    monthly_prophet_candidate_models: dict,
-    monthly_prophet_prechampion_configs: dict,
-    monthly_prophet_train: pd.DataFrame,
-    monthly_prophet_validation: pd.DataFrame,
-    monthly_prophet_test: pd.DataFrame,
-    monthly_sarimax_candidate_models: dict,
-    monthly_sarimax_prechampion_configs: dict,
-    monthly_sarimax_training_metadata: dict,
-    monthly_sarimax_train: pd.DataFrame,
-    monthly_sarimax_validation: pd.DataFrame,
-    monthly_sarimax_test: pd.DataFrame,
-    params_monthly: dict,
-    params_prophet: dict,
-    params_sarimax: dict,
-    monthly_catboost_candidate_models: dict | None = None,
-    monthly_catboost_prechampion_configs: dict | None = None,
-    monthly_catboost_split_metadata: dict | None = None,
-    monthly_catboost_train: pd.DataFrame | None = None,
-    monthly_catboost_validation: pd.DataFrame | None = None,
-    monthly_catboost_test: pd.DataFrame | None = None,
-    params_catboost: dict | None = None,
-) -> pd.DataFrame:
-    """Score all Prophet, SARIMAX, and CatBoost prechampions on the held-out test set.
-
-    Evaluates only the families listed in ``params_monthly.active_families``. Every
-    family is scored consistently: each candidate is refit on the combined
-    train+validation split and then forecast forward over the held-out test period.
-    The test split is never seen during fitting, so the reported test metrics are
-    leakage-safe and the cross-family comparison is fair (all families see the same
-    data at test time). A full-history refit (including the test split) happens only
-    later, for the elected production champion.
-
-    CatBoost inputs are optional: they are only required when ``catboost`` is an
-    active family. When present, CatBoost candidates are refit on train+validation
-    and scored on the precomputed test feature matrix (a one-shot tabular prediction,
-    consistent with how CatBoost validation metrics were computed during training).
-
-    Args:
-        monthly_prophet_candidate_models: Dict mapping candidate_id → fitted
-            Prophet model from the training stage.
-        monthly_prophet_prechampion_configs: Prechampion config dict emitted by
-            Prophet training, containing a ``prechampions`` list.
-        monthly_prophet_train: Training-only split; the leakage-safe MASE
-            denominator and the first part of the Prophet refit window.
-        monthly_prophet_validation: Validation split appended to train to form the
-            leakage-safe Prophet refit window for test scoring.
-        monthly_prophet_test: Held-out Prophet test split with ds, y, and regressor
-            columns.
-        monthly_sarimax_candidate_models: Dict mapping trial_id → SARIMAX candidate
-            entry (rank, config, model, validation_metrics).
-        monthly_sarimax_prechampion_configs: Prechampion config dict emitted by
-            SARIMAX training, containing a ``candidates`` list.
-        monthly_sarimax_training_metadata: Training metadata dict; used to retrieve
-            the exogenous column names used during training.
-        monthly_sarimax_train: Training-only split used as the leakage-safe MASE
-            denominator and as the first part of the SARIMAX fit window.
-        monthly_sarimax_validation: Validation split appended to train to form the
-            leakage-safe SARIMAX fit window for test scoring.
-        monthly_sarimax_test: Held-out SARIMAX test split with date, target, and
-            optional exogenous columns.
-        params_monthly: Contents of ``model_selection.monthly`` from the parameter
-            file (active_families, primary_metric, mase_seasonal_period, …).
-        params_prophet: Contents of ``model_selection.monthly_prophet`` (column
-            names, metric settings, …).
-        params_sarimax: Contents of ``model_selection.monthly_sarimax`` (column
-            names, …).
-        monthly_catboost_candidate_models: Dict mapping candidate_id → CatBoost
-            candidate entry (rank, config, model, feature_columns, validation_metrics).
-            Required only when ``catboost`` is an active family.
-        monthly_catboost_prechampion_configs: Prechampion config dict emitted by
-            CatBoost training, containing a ``candidates`` list. Required only when
-            ``catboost`` is an active family.
-        monthly_catboost_split_metadata: CatBoost split metadata (feature/target/date
-            column names). Used to resolve feature columns at scoring time.
-        monthly_catboost_train: CatBoost training-only split (MASE denominator and
-            first part of the refit window).
-        monthly_catboost_validation: CatBoost validation split appended to train to
-            form the leakage-safe refit window for test scoring.
-        monthly_catboost_test: Held-out CatBoost test split with precomputed feature
-            columns and the target column.
-        params_catboost: Contents of ``model_selection.monthly_catboost`` (column
-            names). Optional; defaults are read from the split metadata.
-
-    Returns:
-        DataFrame with one row per evaluated candidate containing: family,
-        candidate_id, candidate_rank, granularity, selection_stage,
-        test_start_date, test_end_date, n_test_rows, wape, mase, rmse, bias,
-        primary_metric, primary_metric_value, is_family_champion,
-        is_production_champion.
-
-    Raises:
-        ValueError: When an active family has no prechampion candidates.
-        RuntimeError: When all candidates for an active family fail to score.
-    """
-    active_families: list[str] = list(
-        params_monthly.get("active_families", ["prophet", "sarimax"])
-    )
-    require_all: bool = bool(params_monthly.get("require_all_active_families", True))
-    mase_period: int = int(params_monthly.get("mase_seasonal_period", 12))
-
-    _validate_active_families(
-        active_families,
-        monthly_prophet_prechampion_configs,
-        monthly_sarimax_prechampion_configs,
-        monthly_catboost_prechampion_configs or {},
-        require_all,
-    )
-
-    all_rows: list[dict] = []
-
-    if "prophet" in active_families:
-        prophet_rows = _score_prophet_candidates(
-            candidate_models=monthly_prophet_candidate_models,
-            prechampion_configs=monthly_prophet_prechampion_configs,
-            train_df=monthly_prophet_train,
-            validation_df=monthly_prophet_validation,
-            test_df=monthly_prophet_test,
-            params=params_prophet,
-            mase_period=mase_period,
-            require_all=require_all,
-        )
-        all_rows.extend(prophet_rows)
-
-    if "sarimax" in active_families:
-        sarimax_rows = _score_sarimax_candidates(
-            candidate_models=monthly_sarimax_candidate_models,
-            prechampion_configs=monthly_sarimax_prechampion_configs,
-            training_metadata=monthly_sarimax_training_metadata,
-            train_df=monthly_sarimax_train,
-            validation_df=monthly_sarimax_validation,
-            test_df=monthly_sarimax_test,
-            params=params_sarimax,
-            mase_period=mase_period,
-            require_all=require_all,
-        )
-        all_rows.extend(sarimax_rows)
-
-    if "catboost" in active_families:
-        catboost_rows = _score_catboost_candidates(
-            candidate_models=monthly_catboost_candidate_models or {},
-            prechampion_configs=monthly_catboost_prechampion_configs or {},
-            split_metadata=monthly_catboost_split_metadata or {},
-            train_df=monthly_catboost_train,
-            validation_df=monthly_catboost_validation,
-            test_df=monthly_catboost_test,
-            params=params_catboost or {},
-            mase_period=mase_period,
-            require_all=require_all,
-        )
-        all_rows.extend(catboost_rows)
-
-    if not all_rows:
-        raise RuntimeError("No candidate metrics were produced for any active family.")
-
-    metrics_df = pd.DataFrame(all_rows)
-    logger.info(
-        "Monthly candidate test metrics — %d rows | families=%s",
-        len(metrics_df),
-        sorted(metrics_df["family"].unique().tolist()),
-    )
-    return metrics_df
-
-
-# ── Node 2 ────────────────────────────────────────────────────────────────────
 
 
 _ROLLING_ORIGIN_METRIC_KEYS: tuple[str, ...] = (
@@ -224,47 +45,59 @@ def assemble_monthly_candidate_metrics(
     params_monthly: dict,
     monthly_catboost_prechampion_configs: dict | None = None,
 ) -> pd.DataFrame:
-    """Assemble the cross-family candidate metrics table from rolling-origin pre-champions.
+    """Assemble the cross-family candidate metrics table from the pre-champions.
 
-    Replaces the held-out test stage (protocol §4, §11): champions are selected
-    directly from the pooled rolling-origin metrics already produced by each
-    family tuner. One row per pre-champion candidate, with the WMAPE / WMAPE_Mh /
-    MASE / BIAS metric set plus the SARIMAX Ljung-Box eligibility flag.
+    Champions are selected directly from the pooled rolling-origin metrics already
+    produced by each family tuner. One row per pre-champion candidate, with the
+    WMAPE / per-horizon WMAPE / MASE / BIAS metric set plus the SARIMAX Ljung-Box
+    eligibility flag.
 
     Args:
         monthly_prophet_prechampion_configs: Prophet ``prechampion_configs`` artifact.
         monthly_sarimax_prechampion_configs: SARIMAX ``prechampion_configs`` artifact.
-        params_monthly: Contents of ``model_selection.monthly`` (reads ``active_families``).
+        params_monthly: Contents of ``model_selection.monthly`` (reads
+            ``active_families`` and ``require_all_active_families``).
         monthly_catboost_prechampion_configs: CatBoost ``prechampion_configs`` artifact
-            (optional; required only when ``catboost`` is in ``active_families``).
+            (required only when ``catboost`` is in ``active_families``).
 
     Returns:
         DataFrame with one row per candidate across active families.
 
     Raises:
-        ValueError: When no candidates can be assembled.
+        ValueError: When an active family has no candidates while
+            ``require_all_active_families`` is set, or when no candidates can be
+            assembled at all.
     """
     active_families = [
         str(f) for f in params_monthly.get("active_families", ["prophet", "sarimax"])
     ]
+    require_all = bool(params_monthly.get("require_all_active_families", True))
+
+    # Per family: its prechampion artifact and the key holding the candidate list.
+    family_sources: dict[str, tuple[dict, str]] = {
+        "prophet": (monthly_prophet_prechampion_configs or {}, "prechampions"),
+        "sarimax": (monthly_sarimax_prechampion_configs or {}, "candidates"),
+        "catboost": (monthly_catboost_prechampion_configs or {}, "candidates"),
+    }
+
     rows: list[dict] = []
-    if "prophet" in active_families:
-        rows.extend(
-            _candidate_rows(
-                monthly_prophet_prechampion_configs, "prophet", "prechampions"
-            )
+    missing: list[str] = []
+    for family in active_families:
+        configs, list_key = family_sources.get(family, ({}, "candidates"))
+        family_rows = _candidate_rows(configs, family, list_key)
+        if not family_rows:
+            missing.append(family)
+            continue
+        rows.extend(family_rows)
+
+    if missing and require_all:
+        raise ValueError(
+            "require_all_active_families is set but these active families have no "
+            f"prechampion candidates: {missing}"
         )
-    if "sarimax" in active_families:
-        rows.extend(
-            _candidate_rows(
-                monthly_sarimax_prechampion_configs, "sarimax", "candidates"
-            )
-        )
-    if "catboost" in active_families:
-        rows.extend(
-            _candidate_rows(
-                monthly_catboost_prechampion_configs or {}, "catboost", "candidates"
-            )
+    for family in missing:
+        logger.warning(
+            "Active family '%s' has no prechampion candidates — skipped.", family
         )
 
     if not rows:
@@ -312,9 +145,9 @@ def select_monthly_family_champions(
     """Select the best rolling-origin candidate within each active model family.
 
     Ranks candidates by the configured primary metric (default: ``wmape_m3``) and
-    applies tie-breakers in order (protocol §3.10). Exactly one family champion is
+    applies tie-breakers in order. Exactly one family champion is
     selected per active family. For SARIMAX, candidates flagged by the Ljung-Box
-    filter are excluded before ranking (protocol §3.9), with a fallback to the full
+    filter are excluded before ranking, with a fallback to the full
     set when none are eligible.
 
     Args:
@@ -352,7 +185,7 @@ def select_monthly_family_champions(
             logger.warning("No candidates found for family '%s' — skipping.", family)
             continue
 
-        # SARIMAX: exclude Ljung-Box-flagged candidates before ranking (protocol §3.9).
+        # SARIMAX: exclude Ljung-Box-flagged candidates before ranking.
         if family == "sarimax" and "autocorrelation_excluded" in family_df.columns:
             eligible = family_df[~family_df["autocorrelation_excluded"].fillna(False)]
             if eligible.empty:
@@ -399,7 +232,7 @@ def select_monthly_family_champions(
     return pd.DataFrame(champion_rows)
 
 
-# ── Node 3 ────────────────────────────────────────────────────────────────────
+# ── Node 2 ────────────────────────────────────────────────────────────────────
 
 
 def select_monthly_production_champion(
@@ -411,7 +244,7 @@ def select_monthly_production_champion(
 
     Only family champions (one per family) participate in the final comparison.
     The selection uses the same metric ordering as family champion selection:
-    primary metric first, then tie-breakers in order (protocol §3.10).
+    primary metric first, then tie-breakers in order.
 
     Args:
         monthly_family_champion_summary: Output of ``select_monthly_family_champions``.
@@ -483,7 +316,7 @@ def select_monthly_production_champion(
     return pd.DataFrame([summary_row])
 
 
-# ── Node 4 ────────────────────────────────────────────────────────────────────
+# ── Node 3 ────────────────────────────────────────────────────────────────────
 
 
 def annotate_monthly_candidate_champion_flags(
@@ -493,13 +326,12 @@ def annotate_monthly_candidate_champion_flags(
 ) -> pd.DataFrame:
     """Mark family and production champions in the candidate metrics table.
 
-    ``monthly_candidate_test_metrics`` is the app/reporting-facing audit table, so
+    ``monthly_candidate_metrics`` is the app/reporting-facing audit table, so
     its champion flags must reflect the separately persisted family and production
     champion summaries.
 
     Args:
-        monthly_candidate_test_metrics: Full held-out test metrics for all
-            candidates.
+        monthly_candidate_metrics: Rolling-origin metrics for all candidates.
         monthly_family_champion_summary: One selected champion row per model family.
         monthly_model_selection_summary: One selected production champion row.
 
@@ -570,7 +402,7 @@ def annotate_monthly_candidate_champion_flags(
     return metrics_df
 
 
-# ── Node 5 ────────────────────────────────────────────────────────────────────
+# ── Node 4 ────────────────────────────────────────────────────────────────────
 
 
 def build_monthly_champion_artifacts(  # noqa: PLR0913
@@ -704,8 +536,7 @@ def build_monthly_champion_artifacts(  # noqa: PLR0913
             "primary_metric": "wmape_m3",
             "note": (
                 "Champions selected directly on pooled rolling-origin metrics; "
-                "no reserved out-of-sample window was used (optimistic-selection risk, "
-                "protocol §9.1)."
+                "no reserved out-of-sample window was used (optimistic-selection risk)."
             ),
         },
         "metrics": champ_metrics,
@@ -753,7 +584,7 @@ def build_monthly_champion_artifacts(  # noqa: PLR0913
     return champion_model, metadata
 
 
-# ── Node 6 ────────────────────────────────────────────────────────────────────
+# ── Node 5 ────────────────────────────────────────────────────────────────────
 
 
 def generate_monthly_family_champion_explanations(  # noqa: PLR0913, PLR0912, PLR0915
@@ -986,989 +817,6 @@ def generate_monthly_family_champion_explanations(  # noqa: PLR0913, PLR0912, PL
 # ── Private helpers ───────────────────────────────────────────────────────────
 
 
-def _concat_sorted(frames: list[pd.DataFrame], date_col: str) -> pd.DataFrame:
-    """Concatenate frames, parse the date column, sort ascending, and reset the index.
-
-    Empty or None frames are ignored so a missing validation split degrades to the
-    train split alone rather than failing.
-    """
-    parts = [f for f in frames if f is not None and not f.empty]
-    combined = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
-    if combined.empty:
-        return combined
-    combined[date_col] = pd.to_datetime(combined[date_col])
-    return combined.sort_values(date_col).reset_index(drop=True)
-
-
-def _validate_active_families(
-    active_families: list[str],
-    prophet_configs: dict,
-    sarimax_configs: dict,
-    catboost_configs: dict,
-    require_all: bool,
-) -> None:
-    """Raise clearly when required family artifacts are absent."""
-    missing: list[str] = []
-    if "prophet" in active_families and not prophet_configs.get("prechampions"):
-        missing.append(
-            "prophet (monthly_prophet_prechampion_configs has no prechampions)"
-        )
-    if "sarimax" in active_families and not sarimax_configs.get("candidates"):
-        missing.append(
-            "sarimax (monthly_sarimax_prechampion_configs has no candidates)"
-        )
-    if "catboost" in active_families and not catboost_configs.get("candidates"):
-        missing.append(
-            "catboost (monthly_catboost_prechampion_configs has no candidates)"
-        )
-    if missing and require_all:
-        raise ValueError(
-            "require_all_active_families=true but the following families have no "
-            f"prechampion artifacts: {missing}"
-        )
-    for msg in missing:
-        logger.warning("Active family missing artifacts: %s", msg)
-
-
-def _score_prophet_candidates(  # noqa: PLR0913
-    candidate_models: dict,
-    prechampion_configs: dict,
-    train_df: pd.DataFrame,
-    validation_df: pd.DataFrame,
-    test_df: pd.DataFrame,
-    params: dict,
-    mase_period: int,
-    require_all: bool,
-) -> list[dict]:
-    """Score each Prophet prechampion leakage-safely on the held-out test split.
-
-    Each candidate is refit on train + validation only (mirroring the SARIMAX path),
-    then used to forecast the test period. The MASE denominator uses the train-only
-    split. The test split is never seen during fitting.
-
-    When ``operational_lead_time`` is enabled, rolling-origin M-h WAPE is also
-    computed (a fresh Prophet refit per origin, forecasting h steps ahead), giving the
-    same operational lead-time diagnostics that SARIMAX already produces.
-    """
-    date_col: str = params.get("date_column", "ds")
-    target_col: str = params.get("target_column", "y")
-
-    # Rolling-origin (operational lead-time) config — disabled unless configured.
-    ro_cfg: dict = params.get("operational_lead_time", {})
-    ro_enabled: bool = bool(ro_cfg.get("enabled", False))
-    ro_lead_times: list[int] = [int(h) for h in ro_cfg.get("lead_times", [2, 3])]
-
-    prechampions: list[dict] = prechampion_configs.get("prechampions", [])
-    if not prechampions:
-        msg = "monthly_prophet_prechampion_configs has no 'prechampions' entries."
-        if require_all:
-            raise ValueError(msg)
-        logger.warning(msg)
-        return []
-
-    if test_df.empty:
-        raise ValueError("monthly_prophet_test is empty.")
-    if target_col not in test_df.columns:
-        raise ValueError(
-            f"Target column '{target_col}' missing from monthly_prophet_test."
-        )
-
-    # Leakage-safe fit window: train + validation only (never the test split).
-    fit_df = _concat_sorted([train_df, validation_df], date_col)
-
-    test_df = test_df.copy()
-    test_df[date_col] = pd.to_datetime(test_df[date_col])
-    test_df = test_df.sort_values(date_col).reset_index(drop=True)
-
-    y_train = train_df[target_col].values.astype(float)  # MASE denominator (train only)
-    y_true = test_df[target_col].values.astype(float)
-    test_start = str(test_df[date_col].min().date())
-    test_end = str(test_df[date_col].max().date())
-
-    rows: list[dict] = []
-    for pc in prechampions:
-        candidate_id: str = str(pc.get("candidate_id", ""))
-        if candidate_id not in candidate_models:
-            logger.warning(
-                "Prophet candidate '%s' not found in candidate_models — skipping.",
-                candidate_id,
-            )
-            continue
-
-        candidate_model = candidate_models[candidate_id]
-        active_regressors: list[str] = list(pc.get("active_regressors", []))
-
-        try:
-            refit_model = _refit_prophet_on_frame(
-                candidate_model, fit_df, active_regressors, date_col, target_col
-            )
-
-            future_df = test_df[[date_col]].rename(columns={date_col: "ds"})
-            for reg in active_regressors:
-                if reg in test_df.columns:
-                    future_df[reg] = test_df[reg].values
-
-            forecast = refit_model.predict(future_df)
-            y_pred = forecast["yhat"].values.astype(float)[: len(y_true)]
-
-            # Rolling-origin M-h WAPE (operational lead-time), fresh refit per origin.
-            ro_metrics: dict = {}
-            if ro_enabled and ro_lead_times:
-                ro_metrics = _rolling_origin_wape(
-                    fit_df=fit_df,
-                    test_df=test_df,
-                    target_col=target_col,
-                    lead_times=ro_lead_times,
-                    forecast_h_step=_make_prophet_h_step(
-                        candidate_model, active_regressors, date_col, target_col
-                    ),
-                )
-
-            rows.append(
-                _build_metrics_row(
-                    family="prophet",
-                    candidate_id=candidate_id,
-                    y_true=y_true,
-                    y_pred=y_pred,
-                    y_train=y_train,
-                    mase_period=mase_period,
-                    test_start=test_start,
-                    test_end=test_end,
-                    candidate_rank=pc.get("rank"),
-                    extra_metrics=ro_metrics,
-                )
-            )
-            logger.info(
-                "Prophet candidate '%s' scored — wape=%.4f%s",
-                candidate_id,
-                rows[-1]["wape"] or float("nan"),
-                _format_rolling_origin_log(ro_metrics),
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "Prophet candidate '%s' scoring failed: %s", candidate_id, exc
-            )
-
-    if not rows and require_all:
-        raise RuntimeError(
-            "All Prophet prechampion candidates failed during test scoring."
-        )
-    return rows
-
-
-def _score_sarimax_candidates(  # noqa: PLR0912, PLR0913, PLR0915
-    candidate_models: dict,
-    prechampion_configs: dict,
-    training_metadata: dict,
-    train_df: pd.DataFrame,
-    validation_df: pd.DataFrame,
-    test_df: pd.DataFrame,
-    params: dict,
-    mase_period: int,
-    require_all: bool,
-) -> list[dict]:
-    """Score each SARIMAX prechampion leakage-safely on the held-out test split.
-
-    Each candidate is refit on train + validation only (the test split is never
-    seen), then forecast forward over the test period. The MASE denominator uses
-    the train-only split, consistent with Prophet scoring.
-
-    Also computes:
-    - Ljung-Box residual autocorrelation test and marks candidates with p-value below
-      the configured threshold as ``autocorrelation_excluded``.
-    - Rolling-origin M-2/M-3 WAPE using progressively extended history windows.
-    """
-    date_col: str = params.get("date_column", "month_start_date")
-    target_col: str = params.get("target_column", "monthly_demand")
-
-    # Ljung-Box config
-    ljung_box_cfg: dict = params.get("ljung_box", {})
-    lb_enabled: bool = bool(ljung_box_cfg.get("enabled", True))
-    lb_lags: int = int(ljung_box_cfg.get("lags", 10))
-    lb_threshold: float = float(ljung_box_cfg.get("pvalue_threshold", 0.05))
-
-    # Rolling-origin config
-    ro_cfg: dict = params.get("operational_lead_time", {})
-    ro_enabled: bool = bool(ro_cfg.get("enabled", True))
-    ro_lead_times: list[int] = [int(h) for h in ro_cfg.get("lead_times", [2, 3])]
-
-    candidates_list: list[dict] = prechampion_configs.get("candidates", [])
-    if not candidates_list:
-        msg = "monthly_sarimax_prechampion_configs has no 'candidates' entries."
-        if require_all:
-            raise ValueError(msg)
-        logger.warning(msg)
-        return []
-
-    if test_df.empty:
-        raise ValueError("monthly_sarimax_test is empty.")
-    if target_col not in test_df.columns:
-        raise ValueError(
-            f"Target column '{target_col}' missing from monthly_sarimax_test."
-        )
-
-    # Fall-back exog source: training metadata (legacy; candidate entry preferred).
-    exog_cols_default: list[str] = list(training_metadata.get("exogenous_columns", []))
-
-    # Leakage-safe fit window: train + validation only (never the test split).
-    fit_df = _concat_sorted([train_df, validation_df], date_col)
-
-    test_df = test_df.copy()
-    test_df[date_col] = pd.to_datetime(test_df[date_col])
-    test_df = test_df.sort_values(date_col).reset_index(drop=True)
-
-    y_train = train_df[target_col].values.astype(float)  # MASE denominator (train only)
-    y_true = test_df[target_col].values.astype(float)
-    fit_y = fit_df[target_col].values.astype(float)
-    n_test = len(test_df)
-
-    test_start = str(test_df[date_col].min().date())
-    test_end = str(test_df[date_col].max().date())
-
-    rows: list[dict] = []
-    for pc in candidates_list:
-        trial_id: str = str(pc.get("trial_id", ""))
-        if trial_id not in candidate_models:
-            logger.warning(
-                "SARIMAX candidate '%s' not found in candidate_models — skipping.",
-                trial_id,
-            )
-            continue
-
-        entry = candidate_models[trial_id]
-        # Prefer candidate-level exogenous_columns (emitted by hardened training).
-        candidate_exog: list[str] = list(
-            entry.get("exogenous_columns") or exog_cols_default
-        )
-        config = entry.get("config", {})
-        use_exog: bool = bool(config.get("use_exog", False))
-
-        try:
-            # Resolve exog columns present in both fit_df and test_df for consistency.
-            available_exog = [
-                c
-                for c in candidate_exog
-                if c in fit_df.columns and c in test_df.columns
-            ]
-            if use_exog and candidate_exog:
-                missing_exog = [
-                    c
-                    for c in candidate_exog
-                    if c not in fit_df.columns or c not in test_df.columns
-                ]
-                if missing_exog:
-                    logger.warning(
-                        "SARIMAX candidate '%s': exogenous columns %s not found in "
-                        "fit or test DataFrames. Proceeding with: %s",
-                        trial_id,
-                        missing_exog,
-                        available_exog,
-                    )
-            fit_exog = (
-                fit_df[available_exog].values.astype(float)
-                if (use_exog and available_exog)
-                else None
-            )
-            test_exog = (
-                test_df[available_exog].values.astype(float)
-                if (use_exog and available_exog)
-                else None
-            )
-
-            model_obj = SARIMAX(
-                endog=fit_y,
-                exog=fit_exog,
-                order=tuple(config["order"]),
-                seasonal_order=tuple(config["seasonal_order"]),
-                trend=config.get("trend"),
-                enforce_stationarity=bool(config.get("enforce_stationarity", False)),
-                enforce_invertibility=bool(config.get("enforce_invertibility", False)),
-            )
-            result = model_obj.fit(disp=False)
-
-            # Ljung-Box residual autocorrelation test
-            lb_pvalue: float | None = None
-            autocorr_excluded: bool = False
-            if lb_enabled:
-                try:
-                    lb_df = acorr_ljungbox(result.resid, lags=[lb_lags], return_df=True)
-                    lb_pvalue = float(lb_df["lb_pvalue"].iloc[-1])
-                    autocorr_excluded = lb_pvalue < lb_threshold
-                    if autocorr_excluded:
-                        logger.warning(
-                            "SARIMAX candidate '%s': Ljung-Box p-value=%.4f < "
-                            "threshold=%.3f — marked for exclusion from champion "
-                            "selection.",
-                            trial_id,
-                            lb_pvalue,
-                            lb_threshold,
-                        )
-                except Exception as lb_exc:  # noqa: BLE001
-                    logger.warning(
-                        "SARIMAX candidate '%s': Ljung-Box test failed (%s) — "
-                        "skipping autocorrelation filter.",
-                        trial_id,
-                        lb_exc,
-                    )
-
-            forecast_out = result.get_forecast(steps=n_test, exog=test_exog)
-            y_pred = np.asarray(forecast_out.predicted_mean, dtype=float)[:n_test]
-
-            # Rolling-origin M-2/M-3 metrics
-            ro_metrics: dict = {}
-            if ro_enabled and ro_lead_times:
-                try:
-                    ro_metrics = _compute_sarimax_rolling_origin_metrics(
-                        fit_df=fit_df,
-                        test_df=test_df,
-                        config=config,
-                        available_exog=available_exog,
-                        use_exog=use_exog,
-                        date_col=date_col,
-                        target_col=target_col,
-                        lead_times=ro_lead_times,
-                    )
-                    logger.info(
-                        "SARIMAX candidate '%s' rolling-origin: %s",
-                        trial_id,
-                        {k: v for k, v in ro_metrics.items() if k.endswith("_wape")},
-                    )
-                except Exception as ro_exc:  # noqa: BLE001
-                    logger.warning(
-                        "SARIMAX candidate '%s': rolling-origin metrics failed "
-                        "(%s) — skipping.",
-                        trial_id,
-                        ro_exc,
-                    )
-
-            rows.append(
-                _build_metrics_row(
-                    family="sarimax",
-                    candidate_id=trial_id,
-                    y_true=y_true,
-                    y_pred=y_pred,
-                    y_train=y_train,
-                    mase_period=mase_period,
-                    test_start=test_start,
-                    test_end=test_end,
-                    candidate_rank=pc.get("rank"),
-                    ljung_box_pvalue=lb_pvalue,
-                    autocorrelation_excluded=autocorr_excluded,
-                    extra_metrics=ro_metrics,
-                )
-            )
-            logger.info(
-                "SARIMAX candidate '%s' scored — wape=%.4f  lb_pvalue=%s  "
-                "autocorr_excluded=%s",
-                trial_id,
-                rows[-1]["wape"] or float("nan"),
-                f"{lb_pvalue:.4f}" if lb_pvalue is not None else "n/a",
-                autocorr_excluded,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("SARIMAX candidate '%s' scoring failed: %s", trial_id, exc)
-
-    if not rows and require_all:
-        raise RuntimeError(
-            "All SARIMAX prechampion candidates failed during test scoring."
-        )
-    return rows
-
-
-def _score_catboost_candidates(  # noqa: PLR0912, PLR0913, PLR0915
-    candidate_models: dict,
-    prechampion_configs: dict,
-    split_metadata: dict,
-    train_df: pd.DataFrame | None,
-    validation_df: pd.DataFrame | None,
-    test_df: pd.DataFrame | None,
-    params: dict,
-    mase_period: int,
-    require_all: bool,
-) -> list[dict]:
-    """Score each CatBoost prechampion leakage-safely on the held-out test split.
-
-    Each candidate is refit on train + validation only (mirroring the Prophet and
-    SARIMAX paths), then used to predict over the test period. The test split is
-    never seen during fitting. The headline test metrics use a one-shot tabular
-    forecast over the precomputed test feature matrix — consistent with how CatBoost
-    validation metrics were produced during training (``model.predict(X_val)``). The
-    MASE denominator uses the train-only split.
-
-    When ``operational_lead_time`` is enabled, rolling-origin M-h WAPE is also
-    computed **recursively** (predicted demand feeds the lag/rolling features of later
-    steps, exactly like production inference), so the lead-time metric is honest and
-    comparable to the SARIMAX/Prophet M-h numbers rather than an optimistic one-shot
-    forecast that uses actual lags.
-
-    Args:
-        candidate_models: Dict mapping candidate_id → CatBoost candidate entry dict
-            (``config``, ``model``, ``feature_columns``, ``validation_metrics``).
-        prechampion_configs: CatBoost prechampion config dict with a ``candidates``
-            list (each entry carries ``candidate_id``, ``rank``, ``feature_columns``).
-        split_metadata: CatBoost split metadata; supplies fallback column names and
-            the ordered feature list (``all_feature_columns``).
-        train_df: Training-only split (MASE denominator and first part of the refit
-            window).
-        validation_df: Validation split appended to train for the leakage-safe refit.
-        test_df: Held-out test split with precomputed features and the target column.
-        params: Contents of ``model_selection.monthly_catboost`` (column overrides).
-        mase_period: Seasonal period for the MASE naive benchmark.
-        require_all: When True, raise on missing candidates or universal scoring
-            failure; when False, degrade to a warning and skip.
-
-    Returns:
-        List of metric row dicts (one per successfully scored candidate).
-
-    Raises:
-        ValueError: When required inputs/columns are missing under ``require_all``.
-        RuntimeError: When every candidate fails to score under ``require_all``.
-    """
-    date_col: str = str(
-        params.get("date_column")
-        or split_metadata.get("date_column", "month_start_date")
-    )
-    target_col: str = str(
-        params.get("target_column")
-        or split_metadata.get("target_column", "monthly_demand")
-    )
-
-    # Rolling-origin (operational lead-time) config — disabled unless configured.
-    ro_cfg: dict = params.get("operational_lead_time", {})
-    ro_enabled: bool = bool(ro_cfg.get("enabled", False))
-    ro_lead_times: list[int] = [int(h) for h in ro_cfg.get("lead_times", [2, 3])]
-    recursive_settings = _resolve_catboost_recursive_settings(split_metadata)
-
-    candidates_list: list[dict] = prechampion_configs.get("candidates", [])
-    if not candidates_list:
-        msg = "monthly_catboost_prechampion_configs has no 'candidates' entries."
-        if require_all:
-            raise ValueError(msg)
-        logger.warning(msg)
-        return []
-
-    if train_df is None or test_df is None:
-        msg = (
-            "CatBoost is an active family but its train/test splits were not provided "
-            "to monthly model selection."
-        )
-        if require_all:
-            raise ValueError(msg)
-        logger.warning(msg)
-        return []
-    if test_df.empty:
-        raise ValueError("monthly_catboost_test is empty.")
-    if target_col not in test_df.columns:
-        raise ValueError(
-            f"Target column '{target_col}' missing from monthly_catboost_test."
-        )
-
-    default_features: list[str] = list(split_metadata.get("all_feature_columns", []))
-
-    # Leakage-safe fit window: train + validation only (never the test split).
-    fit_df = _concat_sorted([train_df, validation_df], date_col)
-
-    test_df = test_df.copy()
-    test_df[date_col] = pd.to_datetime(test_df[date_col])
-    test_df = test_df.sort_values(date_col).reset_index(drop=True)
-
-    y_train = train_df[target_col].values.astype(float)  # MASE denominator (train only)
-    y_true = test_df[target_col].values.astype(float)
-    test_start = str(test_df[date_col].min().date())
-    test_end = str(test_df[date_col].max().date())
-
-    rows: list[dict] = []
-    for pc in candidates_list:
-        candidate_id: str = str(pc.get("candidate_id", ""))
-        if candidate_id not in candidate_models:
-            logger.warning(
-                "CatBoost candidate '%s' not found in candidate_models — skipping.",
-                candidate_id,
-            )
-            continue
-
-        entry = candidate_models[candidate_id]
-        config: dict = dict(entry.get("config", {}))
-        feature_columns: list[str] = list(
-            entry.get("feature_columns")
-            or pc.get("feature_columns")
-            or default_features
-        )
-        fitted_model = entry.get("model")
-
-        try:
-            # Resolve features present in both the fit window and the test split.
-            available = [
-                c
-                for c in feature_columns
-                if c in fit_df.columns and c in test_df.columns
-            ]
-            if not available:
-                raise ValueError(
-                    "No CatBoost feature columns are present in both the fit and "
-                    "test frames; cannot build the feature matrix."
-                )
-            missing = [c for c in feature_columns if c not in available]
-            if missing:
-                logger.warning(
-                    "CatBoost candidate '%s': feature columns %s missing from fit or "
-                    "test frame. Proceeding with %d available column(s).",
-                    candidate_id,
-                    missing,
-                    len(available),
-                )
-
-            x_fit = fit_df[available].to_numpy(dtype=float)
-            y_fit = fit_df[target_col].to_numpy(dtype=float)
-            x_test = test_df[available].to_numpy(dtype=float)
-
-            refit_model = _refit_catboost_on_arrays(config, x_fit, y_fit, fitted_model)
-            y_pred = np.asarray(refit_model.predict(x_test), dtype=float)[: len(y_true)]
-
-            # Recursive rolling-origin M-h WAPE (operational lead-time), fresh refit
-            # per origin with predicted demand feeding later lag/rolling features.
-            ro_metrics: dict = {}
-            if ro_enabled and ro_lead_times:
-                ro_metrics = _rolling_origin_wape(
-                    fit_df=fit_df,
-                    test_df=test_df,
-                    target_col=target_col,
-                    lead_times=ro_lead_times,
-                    forecast_h_step=_make_catboost_h_step(
-                        config=config,
-                        fitted_model=fitted_model,
-                        feature_columns=available,
-                        target_col=target_col,
-                        date_col=date_col,
-                        recursive_settings=recursive_settings,
-                    ),
-                )
-
-            rows.append(
-                _build_metrics_row(
-                    family="catboost",
-                    candidate_id=candidate_id,
-                    y_true=y_true,
-                    y_pred=y_pred,
-                    y_train=y_train,
-                    mase_period=mase_period,
-                    test_start=test_start,
-                    test_end=test_end,
-                    candidate_rank=pc.get("rank"),
-                    extra_metrics=ro_metrics,
-                )
-            )
-            logger.info(
-                "CatBoost candidate '%s' scored — wape=%.4f%s",
-                candidate_id,
-                rows[-1]["wape"] or float("nan"),
-                _format_rolling_origin_log(ro_metrics),
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "CatBoost candidate '%s' scoring failed: %s", candidate_id, exc
-            )
-
-    if not rows and require_all:
-        raise RuntimeError(
-            "All CatBoost prechampion candidates failed during test scoring."
-        )
-    return rows
-
-
-def _refit_catboost_on_arrays(
-    config: dict,
-    x_fit: np.ndarray,
-    y_fit: np.ndarray,
-    fitted_model: Any | None = None,
-) -> CatBoostRegressor:
-    """Rebuild a CatBoostRegressor from a candidate config and fit it on ``x_fit``.
-
-    Reproduces the selected configuration on a new data window (train+validation for
-    test scoring, or full history for the champion). No ``eval_set`` is supplied —
-    the held-out window must never leak into fitting — so early stopping is not used.
-    When the original fitted model is available, the tree count is capped at its
-    early-stopped best iteration so the refit reproduces the selected complexity
-    rather than the full ``iterations`` ceiling.
-
-    Args:
-        config: Hyperparameter dict from the candidate entry (valid CatBoost kwargs).
-        x_fit: Feature matrix for fitting.
-        y_fit: Target array for fitting.
-        fitted_model: Original train-only fitted model (used to read the best
-            iteration). May be None.
-
-    Returns:
-        A freshly fitted CatBoostRegressor.
-    """
-    fit_config = {k: v for k, v in config.items() if k != "random_seed"}
-
-    best_iteration: int | None = None
-    if fitted_model is not None:
-        try:
-            best_iteration = int(fitted_model.get_best_iteration())
-        except Exception:  # noqa: BLE001
-            best_iteration = None
-    if best_iteration and best_iteration > 0:
-        fit_config["iterations"] = best_iteration + 1
-
-    model = CatBoostRegressor(**fit_config, verbose=False, allow_writing_files=False)
-    model.fit(x_fit, y_fit, verbose=False)
-    return model
-
-
-def _resolve_catboost_recursive_settings(split_metadata: dict) -> dict:
-    """Resolve the recursive target-feature settings from CatBoost split metadata.
-
-    Mirrors the resolution performed by the production CatBoost inference adapter so
-    the rolling-origin recursion reproduces exactly how the champion forecasts.
-
-    Returns:
-        Dict with ``target_lags``, ``rolling_windows``, ``include_std``,
-        ``include_min_max``, ``trend_diffs``, and ``trend_pct_changes``.
-    """
-    lag_settings = dict(split_metadata.get("lag_settings") or {})
-    target_lags = sorted(
-        int(x) for x in lag_settings.get("target_lags", [1, 2, 3, 6, 12])
-    )
-
-    rolling_settings = dict(split_metadata.get("rolling_settings") or {})
-    rolling_windows = sorted(
-        int(x) for x in rolling_settings.get("windows", [3, 6, 12])
-    )
-    include_std = bool(rolling_settings.get("include_std", True))
-    include_min_max = bool(rolling_settings.get("include_min_max", True))
-
-    trend_feature_cols = list(split_metadata.get("trend_feature_columns") or [])
-    trend_diffs = extract_periods_from_column_names(trend_feature_cols, "demand_diff_")
-    trend_pct_changes = extract_periods_from_column_names(
-        trend_feature_cols, "demand_pct_change_"
-    )
-
-    return {
-        "target_lags": target_lags,
-        "rolling_windows": rolling_windows,
-        "include_std": include_std,
-        "include_min_max": include_min_max,
-        "trend_diffs": trend_diffs,
-        "trend_pct_changes": trend_pct_changes,
-    }
-
-
-def _make_catboost_h_step(  # noqa: PLR0913
-    config: dict,
-    fitted_model: Any | None,
-    feature_columns: list[str],
-    target_col: str,
-    date_col: str,
-    recursive_settings: dict,
-) -> Callable[[pd.DataFrame, pd.DataFrame, int], float]:
-    """Build a recursive rolling-origin h-step forecast function for a CatBoost candidate.
-
-    The returned callable refits CatBoost on the origin window, seeds the demand
-    buffer from the origin's observed demand, then forecasts ``h`` steps recursively —
-    each prediction is appended to the buffer so it feeds the lag/rolling/trend
-    features of subsequent steps, exactly like production inference. Future-known
-    calendar/exogenous features come from the corresponding test rows.
-
-    Args:
-        config: CatBoost hyperparameter dict from the candidate entry.
-        fitted_model: Train-only fitted model (used to cap the tree count).
-        feature_columns: Ordered feature columns to build the prediction matrix.
-        target_col: Target column name.
-        date_col: Date column name.
-        recursive_settings: Output of ``_resolve_catboost_recursive_settings``.
-
-    Returns:
-        Callable ``(origin_df, future_slice, h) -> float``.
-    """
-
-    def _h_step(origin_df: pd.DataFrame, future_slice: pd.DataFrame, h: int) -> float:
-        x_origin = origin_df[feature_columns].to_numpy(dtype=float)
-        y_origin = origin_df[target_col].to_numpy(dtype=float)
-        model = _refit_catboost_on_arrays(config, x_origin, y_origin, fitted_model)
-
-        demand_buffer = build_demand_buffer(origin_df, target_col, date_col)
-        future_sorted = future_slice.sort_values(date_col)
-
-        predictions: list[float] = []
-        for _, row in future_sorted.iterrows():
-            recursive_feats = compute_recursive_target_features(
-                demand_buffer=demand_buffer,
-                target_lags=recursive_settings["target_lags"],
-                rolling_windows=recursive_settings["rolling_windows"],
-                include_std=recursive_settings["include_std"],
-                include_min_max=recursive_settings["include_min_max"],
-                trend_diffs=recursive_settings["trend_diffs"],
-                trend_pct_changes=recursive_settings["trend_pct_changes"],
-            )
-            feature_values = [
-                (
-                    recursive_feats[col]
-                    if col in recursive_feats
-                    else (row[col] if col in row.index else np.nan)
-                )
-                for col in feature_columns
-            ]
-            prediction = float(
-                model.predict(np.array([feature_values], dtype=float))[0]
-            )
-            predictions.append(prediction)
-            demand_buffer.append(prediction)
-
-        return predictions[h - 1]
-
-    return _h_step
-
-
-def _build_metrics_row(  # noqa: PLR0913
-    family: str,
-    candidate_id: str,
-    y_true: np.ndarray,
-    y_pred: np.ndarray,
-    y_train: np.ndarray,
-    mase_period: int,
-    test_start: str,
-    test_end: str,
-    candidate_rank: int | None,
-    ljung_box_pvalue: float | None = None,
-    autocorrelation_excluded: bool = False,
-    extra_metrics: dict | None = None,
-) -> dict:
-    """Compute test metrics and return a single candidate row dict."""
-    wape_val = _safe_float(_shared_wape(y_true, y_pred))
-    rmse_val = _safe_float(_shared_rmse(y_true, y_pred))
-
-    mase_val: float | None = None
-    if len(y_train) > mase_period:
-        raw = _shared_mase(y_true, y_pred, y_train, mase_period)
-        mase_val = _safe_float(raw)
-
-    epsilon = 1.0
-    bias_val = _safe_float(
-        float(np.sum(y_pred - y_true)) / (float(np.sum(np.abs(y_true))) + epsilon)
-    )
-
-    row = {
-        "family": family,
-        "candidate_id": candidate_id,
-        "candidate_rank": candidate_rank,
-        "granularity": "monthly",
-        "selection_stage": "test",
-        "test_start_date": test_start,
-        "test_end_date": test_end,
-        "n_test_rows": len(y_true),
-        "wape": wape_val,
-        "mase": mase_val,
-        "rmse": rmse_val,
-        "bias": bias_val,
-        "ljung_box_pvalue": ljung_box_pvalue,
-        "autocorrelation_excluded": autocorrelation_excluded,
-        "primary_metric": "wape",
-        "primary_metric_value": wape_val,
-        "is_family_champion": False,
-        "is_production_champion": False,
-    }
-    if extra_metrics:
-        row.update(extra_metrics)
-    return row
-
-
-def _compute_sarimax_rolling_origin_metrics(  # noqa: PLR0913
-    fit_df: pd.DataFrame,
-    test_df: pd.DataFrame,
-    config: dict,
-    available_exog: list[str],
-    use_exog: bool,
-    date_col: str,
-    target_col: str,
-    lead_times: list[int],
-) -> dict:
-    """Compute rolling-origin WAPE for each lead time using the held-out test window.
-
-    For lead_time h, the set of valid (origin, target) pairs is:
-    - target = test_df row at 0-based index i, where i >= h - 1
-    - origin = fit_df extended with the first (i - h + 1) test rows
-
-    Each origin gets a fresh SARIMAX refit; the h-th step forecast is compared to
-    the actual at position i. The pairs are aggregated into WAPE.
-
-    Args:
-        fit_df: Combined train+validation DataFrame (leakage-safe fit window).
-        test_df: Held-out test DataFrame already sorted by date_col.
-        config: SARIMAX order/seasonal_order/trend/enforce_* config dict.
-        available_exog: Exogenous column names available in both fit_df and test_df.
-        use_exog: Whether to pass exogenous features to SARIMAX.
-        date_col: Date column name.
-        target_col: Target column name.
-        lead_times: List of lead-time horizons to evaluate (e.g. [2, 3]).
-
-    Returns:
-        Dict with keys ``test_m{h}_wape`` and ``n_m{h}_pairs`` for each ``h``
-        in ``lead_times``. Values are ``None`` / 0 when no valid pairs exist.
-    """
-    results: dict = {}
-
-    for h in lead_times:
-        actuals: list[float] = []
-        preds: list[float] = []
-
-        for i in range(len(test_df)):
-            if i < h - 1:
-                continue  # not enough history ahead of this target for lead_time h
-
-            n_extra = i - (h - 1)  # test rows to extend the origin window
-            if n_extra == 0:
-                origin_df = fit_df
-            else:
-                origin_df = pd.concat(
-                    [fit_df, test_df.iloc[:n_extra].copy()], ignore_index=True
-                )
-
-            origin_y = origin_df[target_col].values.astype(float)
-            origin_exog = (
-                origin_df[available_exog].values.astype(float)
-                if (use_exog and available_exog)
-                else None
-            )
-            future_slice = test_df.iloc[n_extra : n_extra + h]
-            future_exog = (
-                future_slice[available_exog].values.astype(float)
-                if (use_exog and available_exog)
-                else None
-            )
-
-            try:
-                model_ro = SARIMAX(
-                    endog=origin_y,
-                    exog=origin_exog,
-                    order=tuple(config["order"]),
-                    seasonal_order=tuple(config["seasonal_order"]),
-                    trend=config.get("trend"),
-                    enforce_stationarity=bool(
-                        config.get("enforce_stationarity", False)
-                    ),
-                    enforce_invertibility=bool(
-                        config.get("enforce_invertibility", False)
-                    ),
-                )
-                with _warnings.catch_warnings(record=True):
-                    _warnings.simplefilter("always")
-                    result_ro = model_ro.fit(disp=False)
-
-                forecast_ro = result_ro.get_forecast(steps=h, exog=future_exog)
-                y_pred_ro = np.asarray(forecast_ro.predicted_mean, dtype=float)
-
-                if len(y_pred_ro) >= h:
-                    pred_h = float(y_pred_ro[h - 1])
-                    actual_h = float(test_df.iloc[i][target_col])
-                    if np.isfinite(pred_h) and np.isfinite(actual_h):
-                        preds.append(pred_h)
-                        actuals.append(actual_h)
-            except Exception:  # noqa: BLE001
-                logger.warning(
-                    "Rolling-origin SARIMAX: refit failed at test index=%d lead_time=%d "
-                    "— skipping pair.",
-                    i,
-                    h,
-                )
-                continue
-
-        m_label = f"test_m{h}_wape"
-        n_label = f"n_m{h}_pairs"
-        if actuals:
-            results[m_label] = _safe_float(
-                _shared_wape(np.array(actuals), np.array(preds))
-            )
-            results[n_label] = len(actuals)
-        else:
-            results[m_label] = None
-            results[n_label] = 0
-
-    return results
-
-
-def _rolling_origin_wape(
-    fit_df: pd.DataFrame,
-    test_df: pd.DataFrame,
-    target_col: str,
-    lead_times: list[int],
-    forecast_h_step: Callable[[pd.DataFrame, pd.DataFrame, int], float],
-) -> dict:
-    """Compute rolling-origin (operational lead-time) WAPE for each lead time.
-
-    For lead_time ``h`` the valid (origin, target) pairs are:
-    - target = ``test_df`` row at 0-based index ``i``, where ``i >= h - 1``
-    - origin = ``fit_df`` extended with the first ``i - h + 1`` test rows
-
-    ``forecast_h_step(origin_df, future_slice, h)`` must refit the model on the origin
-    window and return the ``h``-step-ahead point forecast for the target row. Because
-    a fresh model is fit at each origin, the metric reflects genuine multi-step
-    extrapolation. The pairing mirrors ``_compute_sarimax_rolling_origin_metrics`` so
-    M-h metrics are directly comparable across Prophet, SARIMAX, and CatBoost.
-
-    Args:
-        fit_df: Combined train+validation DataFrame (leakage-safe fit window).
-        test_df: Held-out test DataFrame already sorted by date.
-        target_col: Target column name.
-        lead_times: Lead-time horizons to evaluate (e.g. ``[2, 3]``).
-        forecast_h_step: Callable returning the h-step-ahead forecast for the target.
-
-    Returns:
-        Dict with keys ``test_m{h}_wape`` and ``n_m{h}_pairs`` for each ``h``.
-    """
-    results: dict = {}
-    for h in lead_times:
-        actuals: list[float] = []
-        preds: list[float] = []
-        for i in range(len(test_df)):
-            if i < h - 1:
-                continue  # not enough test history ahead of this target for lead h
-            n_extra = i - (h - 1)
-            origin_df = (
-                fit_df
-                if n_extra == 0
-                else pd.concat([fit_df, test_df.iloc[:n_extra]], ignore_index=True)
-            )
-            future_slice = test_df.iloc[n_extra : n_extra + h]
-            try:
-                pred_h = float(forecast_h_step(origin_df, future_slice, h))
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "Rolling-origin forecast failed at test index=%d lead_time=%d: %s",
-                    i,
-                    h,
-                    exc,
-                )
-                continue
-            actual_h = float(test_df.iloc[i][target_col])
-            if np.isfinite(pred_h) and np.isfinite(actual_h):
-                preds.append(pred_h)
-                actuals.append(actual_h)
-
-        if actuals:
-            results[f"test_m{h}_wape"] = _safe_float(
-                _shared_wape(np.array(actuals), np.array(preds))
-            )
-            results[f"n_m{h}_pairs"] = len(actuals)
-        else:
-            results[f"test_m{h}_wape"] = None
-            results[f"n_m{h}_pairs"] = 0
-    return results
-
-
-def _format_rolling_origin_log(ro_metrics: dict) -> str:
-    """Format rolling-origin M-h WAPE values as a one-line log suffix."""
-    if not ro_metrics:
-        return ""
-    parts = [
-        f"{k}={v:.4f}"
-        for k, v in sorted(ro_metrics.items())
-        if k.endswith("_wape") and v is not None
-    ]
-    return f"  rolling-origin: {', '.join(parts)}" if parts else ""
-
-
 def _build_sort_columns(
     primary_metric: str, tie_breakers: list[str], available_columns: Any
 ) -> list[str]:
@@ -2112,7 +960,7 @@ def _build_catboost_champion_model(
 ) -> tuple[Any, dict, dict]:
     """Refit a direct multi-horizon CatBoost champion on full history.
 
-    The CatBoost champion artifact from the direct E1 training node carries three
+    The CatBoost champion artifact from the direct multi-horizon training node carries three
     fitted models (``model_h1``, ``model_h2``, ``model_h3``) and shared
     ``feature_columns``. On refit, three fresh models are trained with the same
     config on full history. The champion artifact preserves the three-model structure
@@ -2304,42 +1152,6 @@ def _refit_prophet_on_frame(
         model.add_regressor(name, **kwargs)
     model.fit(fit_input)
     return model
-
-
-def _make_prophet_h_step(
-    candidate_model: Any,
-    active_regressors: list[str],
-    date_col: str,
-    target_col: str,
-) -> Callable[[pd.DataFrame, pd.DataFrame, int], float]:
-    """Build a rolling-origin h-step forecast function for a Prophet candidate.
-
-    The returned callable refits the candidate's configuration on the origin window
-    and returns the h-step-ahead ``yhat`` for the target row, so the operational
-    lead-time WAPE reflects a genuine multi-step Prophet forecast.
-
-    Args:
-        candidate_model: The fitted Prophet candidate (source of hyperparameters).
-        active_regressors: Regressor columns the candidate uses.
-        date_col: Date column name in the origin/future frames.
-        target_col: Target column name in the origin frame.
-
-    Returns:
-        Callable ``(origin_df, future_slice, h) -> float``.
-    """
-
-    def _h_step(origin_df: pd.DataFrame, future_slice: pd.DataFrame, h: int) -> float:
-        ro_model = _refit_prophet_on_frame(
-            candidate_model, origin_df, active_regressors, date_col, target_col
-        )
-        future = future_slice[[date_col]].rename(columns={date_col: "ds"})
-        for reg in active_regressors:
-            if reg in future_slice.columns:
-                future[reg] = future_slice[reg].to_numpy()
-        forecast = ro_model.predict(future)
-        return float(forecast["yhat"].to_numpy()[h - 1])
-
-    return _h_step
 
 
 def _extract_prophet_params(model: Any) -> dict:
@@ -2552,7 +1364,7 @@ def _build_inference_contract(  # noqa: PLR0913
     if production_family == "catboost":
         feature_columns = list(catboost_feature_columns or active_regressors)
         strategy = catboost_strategy or "direct_multi_horizon"
-        # CatBoost direct multi-horizon: max 3 months (protocol §8).
+        # CatBoost direct multi-horizon: max 3 months.
         forecast_horizons = list(range(1, catboost_max_horizon + 1))
         return {
             "model_family": "catboost",

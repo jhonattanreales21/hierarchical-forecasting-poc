@@ -2,9 +2,9 @@
 
 Implements Optuna Bayesian hyperparameter tuning for Prophet on monthly demand.
 Each trial is scored by a **rolling-origin backtest**: for every cycle the model
-is refit on history through the cycle origin and forecasts the next ``H`` months;
+is refit on history through the cycle origin and forecasts the next ``horizon`` months;
 WMAPE and BIAS metrics are pooled where applicable. The Optuna objective is
-pooled ``WMAPE_M3`` (protocol §3.5, §4). The top-N pre-champions are persisted (refit on
+pooled ``WMAPE_M3``. The top-N pre-champions are persisted (refit on
 full history) for the model-selection stage, which chooses champions directly from
 these rolling-origin metrics — there is no separate hold-out test stage.
 """
@@ -52,12 +52,12 @@ def train_and_evaluate_monthly_prophet_candidates(  # noqa: PLR0915
     """Tune Prophet with a rolling-origin backtest and persist pre-champions.
 
     Runs one ephemeral Optuna study. Each trial is evaluated by refitting Prophet
-    at every rolling-origin cycle and forecasting the next ``H`` months; the
+    at every rolling-origin cycle and forecasting the next ``horizon`` months; the
     objective is pooled ``WMAPE_M3``. The top-N pre-champions are refit
-    on full history (through ``L``) and persisted for model selection.
+    on full history (full history) and persisted for model selection.
 
     Args:
-        monthly_prophet_full_train: Prophet-ready full history (through ``L``) with
+        monthly_prophet_full_train: Prophet-ready full history (full history) with
             columns ds, y, sku, and all active regressor columns.
         monthly_prophet_split_metadata: Metadata from model_input_preparation
             (date range, active_regressors). Used for cross-checking regressors;

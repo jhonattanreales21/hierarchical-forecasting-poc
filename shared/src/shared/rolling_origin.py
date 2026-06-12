@@ -1,20 +1,20 @@
 """Rolling-origin backtesting engine for the monthly forecasting layer.
 
-This module is the single source of truth for the rolling-origin protocol
-(see ``rolling_origin_evaluation_protocol_en.md``). It is reused by:
+This module is the single source of truth for the rolling-origin protocol. It is
+reused by:
 
 - ``model_input_preparation`` — to emit the auditable window specification
   (``monthly_rolling_origin_windows``), and
 - ``train_monthly`` — to drive each Optuna trial's per-cycle backtest so that
   tuning and champion selection happen in a single step on the same metrics.
 
-Design invariants (protocol §3, §5, §6):
+Design invariants:
 
 - **Expanding window, step = 1.** Each cycle trains on all history up to and
   including its origin and forecasts the next ``horizon`` months.
-- **Last cycle predicts ``[L-2, L-1, L]``** — the origin of the last cycle is
-  ``L - horizon`` so that all observed history through ``L`` participates in
-  tuning and selection; no months are reserved out of sample.
+- **Last cycle predicts the most recent months** — the origin of the last cycle is
+  ``horizon`` months before the last observed month, so all observed history
+  participates in tuning and selection; no months are reserved out of sample.
 - **Pooled aggregation where applicable.** WMAPE, per-horizon WMAPE, and BIAS
   are pooled from cycle-level numerator/denominator totals. MASE and RMSE remain
   cycle-level summary averages.
@@ -39,7 +39,7 @@ from shared.metrics import wape as _wape
 
 logger = logging.getLogger(__name__)
 
-# Default epsilon guard for per-horizon WMAPE and BIAS denominators (protocol §5).
+# Default epsilon guard for per-horizon WMAPE and BIAS denominators.
 DEFAULT_EPSILON: float = 1.0
 _POOL_PREFIX: str = "_pool_"
 
@@ -53,7 +53,7 @@ class RollingOriginCycle:
         origin_date: Last observed month used for training in this cycle.
         train_end_date: Alias of ``origin_date`` (train includes months ``<= origin``).
         target_dates: The ``horizon`` consecutive month-start dates predicted by
-            this cycle, in chronological order (M-1 … M-H).
+            this cycle, in chronological order.
     """
 
     cycle_index: int
@@ -79,23 +79,23 @@ def generate_rolling_origin_cycles(
     window: str = "expanding",
     min_train_periods: int | None = None,
 ) -> list[RollingOriginCycle]:
-    """Generate the rolling-origin cycles for a monthly series through ``L``.
+    """Generate the rolling-origin cycles for a monthly series through the last observed month.
 
     With an expanding window and ``step = 1`` the last cycle's origin is
-    ``L - horizon`` so it predicts exactly the most recent ``horizon`` months
-    ``[L-H+1, …, L]`` (protocol §2, §4). Target months are taken positionally as
+    ``horizon`` months before the last observed month, so it predicts exactly the
+    most recent ``horizon`` months. Target months are taken positionally as
     the ``horizon`` dates immediately following each origin, which assumes a
     contiguous monthly series (enforced upstream by the data contract).
 
     Args:
-        dates: Sorted, unique month-start dates of the observed series (through ``L``).
+        dates: Sorted, unique month-start dates of the observed series (full history).
         n_cycles: Number of rolling-origin cycles (tuning **and** selection).
-        horizon: Forecast horizon per cycle, in months (``H``; e.g. 3).
-        step_months: Origin advance between consecutive cycles (protocol fixes 1).
+        horizon: Forecast horizon per cycle, in months (e.g. 3).
+        step_months: Origin advance between consecutive cycles.
         window: Training window type. Only ``"expanding"`` is supported.
         min_train_periods: Minimum number of training months required for the
             earliest cycle. When set and the first cycle's train is shorter, a
-            ``ValueError`` is raised with a clear message (protocol §9.3, §10).
+            ``ValueError`` is raised with a clear message.
 
     Returns:
         List of ``RollingOriginCycle`` ordered from earliest to latest origin.
@@ -165,7 +165,7 @@ def compute_cycle_metrics(
     season: int = 12,
     epsilon: float = DEFAULT_EPSILON,
 ) -> dict[str, float]:
-    """Compute one cycle's metrics over its ``[M-1, …, M-H]`` block (protocol §5).
+    """Compute one cycle's metrics over its horizon block.
 
     Args:
         y_true: Actual demand for the cycle's target months, in horizon order.
@@ -204,7 +204,7 @@ def compute_cycle_metrics(
         metrics[f"{_POOL_PREFIX}wmape_m{h}_den"] = raw_den
         metrics[f"{_POOL_PREFIX}wmape_m{h}_epsilon"] = float(epsilon)
 
-    # Normalised directional BIAS over the block (protocol §5).
+    # Normalised directional BIAS over the block.
     raw_bias_den = float(np.sum(abs_true))
     denom_bias = raw_bias_den + epsilon
     metrics[f"{_POOL_PREFIX}bias_num"] = float(np.sum(error))
@@ -320,10 +320,10 @@ def run_rolling_origin(
     (``full_df`` rows with ``date_col <= origin``), delegates fitting and
     ``horizon``-step forecasting to ``fit_forecast_fn``, then scores the forecast
     against the observed target months. A cycle that raises is logged and recorded
-    with NaN metrics so the remaining cycles still contribute (protocol §6, §9.1).
+    with NaN metrics so the remaining cycles still contribute.
 
     Args:
-        full_df: Full-history modeling frame (through ``L``) with ``date_col``,
+        full_df: Full-history modeling frame (full history) with ``date_col``,
             ``target_col``, and any future-known exogenous columns. Must be sorted
             or sortable by ``date_col``.
         date_col: Name of the month-start date column.

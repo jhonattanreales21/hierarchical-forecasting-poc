@@ -156,7 +156,7 @@ def test_training_metadata_fields(full_train_df, split_metadata, params):
         full_train_df, split_metadata, params
     )
     assert metadata["evaluation_mode"] == "rolling_origin"
-    assert metadata["strategy"] == "direct_multi_horizon_e1"
+    assert metadata["strategy"] == "direct_multi_horizon"
     assert metadata["model_family"] == "catboost"
     assert "n_cycles" in metadata
     assert "horizon" in metadata

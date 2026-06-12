@@ -41,8 +41,8 @@ model_input_preparation:
       drop_rows_with_null_active_regressors: true
 
     # Rolling-origin backtesting replaces the fixed train/validation/test hold-out.
-    # The series is kept whole (through L); cycles are sliced internally by the
-    # rolling-origin engine. Values interpolate the global protocol parameters.
+    # The series is kept whole; cycles are sliced internally by the rolling-origin
+    # engine. Values interpolate the global rolling-origin parameters.
     rolling_origin:
       horizon: ${forecast_horizon}
       n_cycles: ${n_cycles}

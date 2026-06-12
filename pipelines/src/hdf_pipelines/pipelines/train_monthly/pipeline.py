@@ -1,7 +1,7 @@
 """Monthly training pipeline: composes the rolling-origin family tuners.
 
-Phase 1 of the rolling-origin migration trains Prophet and SARIMAX on the
-full-history frame. CatBoost (direct multi-horizon) is reintroduced in Phase 2.
+Composes the Prophet and SARIMAX tuners on the full-history frame. The CatBoost
+direct multi-horizon tuner is registered and composed separately.
 """
 
 from kedro.pipeline import Pipeline, pipeline

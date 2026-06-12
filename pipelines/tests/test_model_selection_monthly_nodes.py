@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from hdf_pipelines.pipelines.model_selection.monthly.nodes import (
     annotate_monthly_candidate_champion_flags,
@@ -96,6 +97,26 @@ def _sarimax_prechampions() -> dict:
     }
 
 
+def _catboost_prechampions() -> dict:
+    return {
+        "model_family": "catboost",
+        "granularity": "monthly",
+        "selection_stage": "rolling_origin",
+        "candidates": [
+            {
+                "candidate_id": "catboost_trial_001",
+                "rank": 1,
+                "rolling_origin_metrics": _metrics(0.04),
+            },
+            {
+                "candidate_id": "catboost_trial_002",
+                "rank": 2,
+                "rolling_origin_metrics": _metrics(0.13),
+            },
+        ],
+    }
+
+
 def _params(refit_enabled: bool = False) -> dict:
     return {
         "active_families": ["prophet", "sarimax"],
@@ -106,6 +127,12 @@ def _params(refit_enabled: bool = False) -> dict:
         "mase_seasonal_period": 12,
         "refit_champion": {"enabled": refit_enabled},
     }
+
+
+def _params_with_catboost(refit_enabled: bool = False) -> dict:
+    params = _params(refit_enabled)
+    params["active_families"] = ["prophet", "sarimax", "catboost"]
+    return params
 
 
 def _prophet_full_train() -> pd.DataFrame:
@@ -216,3 +243,44 @@ def test_build_monthly_champion_artifacts_has_new_metadata_contract() -> None:
     assert "test_period" not in metadata
     assert metadata["training_cutoff"] == "2024-06-01"
     assert metadata["selection"]["primary_metric"] == "wmape_m3"
+
+
+def test_catboost_competes_and_wins_production_when_best() -> None:
+    params = _params_with_catboost()
+    metrics = assemble_monthly_candidate_metrics(
+        _prophet_prechampions(),
+        _sarimax_prechampions(),
+        params,
+        _catboost_prechampions(),
+    )
+
+    assert set(metrics["family"]) == {"prophet", "sarimax", "catboost"}
+
+    family_summary = select_monthly_family_champions(metrics, params)
+    champions = dict(
+        zip(
+            family_summary["family"],
+            family_summary["family_champion_id"],
+            strict=True,
+        )
+    )
+    assert champions["catboost"] == "catboost_trial_001"
+
+    production_summary = select_monthly_production_champion(
+        family_summary, metrics, params
+    )
+    row = production_summary.iloc[0]
+    assert row["production_champion_family"] == "catboost"
+    assert row["production_champion_id"] == "catboost_trial_001"
+    assert row["primary_metric_value"] == 0.04
+
+
+def test_require_all_active_families_raises_when_catboost_missing() -> None:
+    params = _params_with_catboost()
+    with pytest.raises(ValueError, match="catboost"):
+        assemble_monthly_candidate_metrics(
+            _prophet_prechampions(),
+            _sarimax_prechampions(),
+            params,
+            {"candidates": []},
+        )

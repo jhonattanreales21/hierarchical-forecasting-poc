@@ -1,11 +1,11 @@
 """Monthly SARIMAX training nodes (rolling-origin protocol).
 
 Each Optuna trial is scored by a rolling-origin backtest: for every cycle SARIMAX
-is refit on history through the origin and forecasts the next ``H`` months;
-WMAPE/BIAS metrics are pooled across cycles and the objective is ``WMAPE_M3``
-(protocol §3.5, §4). A Ljung-Box residual test on the last rolling-origin cycle
-fit marks each candidate's eligibility (protocol §3.9); ineligible candidates are
-kept out of the pre-champion shortlist when any eligible candidate exists.
+is refit on history through the origin and forecasts the next ``horizon`` months;
+WMAPE/BIAS metrics are pooled across cycles and the objective is ``WMAPE_M3``. A
+Ljung-Box residual test on the last rolling-origin cycle fit marks each candidate's
+eligibility; ineligible candidates are kept out of the pre-champion shortlist when
+any eligible candidate exists.
 """
 
 import logging
@@ -55,7 +55,7 @@ def train_and_evaluate_monthly_sarimax_candidates(  # noqa: PLR0915
     candidates are persisted (refit on full history) as pre-champions.
 
     Args:
-        monthly_sarimax_full_train: SARIMAX-ready full history (through ``L``) with
+        monthly_sarimax_full_train: SARIMAX-ready full history (full history) with
             date, target, and exogenous columns.
         monthly_sarimax_split_metadata: Metadata from the SARIMAX input adapter
             (column names, exogenous columns).
@@ -176,7 +176,7 @@ def train_and_evaluate_monthly_sarimax_candidates(  # noqa: PLR0915
             )
             raise RuntimeError(f"{trial_id}: all rolling-origin cycles failed")
 
-        # Ljung-Box eligibility on the last rolling-origin cycle (protocol §3.9).
+        # Ljung-Box eligibility on the last rolling-origin cycle.
         lb_pvalue, excluded, lb_cycle_index = _ljung_box_eligibility_on_last_cycle(
             config=config,
             full_df=full_df,
@@ -583,7 +583,7 @@ def _select_prechampion_ids(tuning_df: pd.DataFrame, top_n: int) -> list[str]:
     """Select the top-N eligible pre-champion trial ids (Ljung-Box aware).
 
     Prefers candidates not flagged by the Ljung-Box filter; falls back to all
-    successful candidates (ordered by rank) when none are eligible (protocol §4).
+    successful candidates (ordered by rank) when none are eligible.
     """
     success = tuning_df[tuning_df["status"] == "success"].copy()
     success = success[success["rank"].notna()].sort_values("rank")
