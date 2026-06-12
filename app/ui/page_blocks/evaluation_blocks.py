@@ -238,13 +238,14 @@ def render_production_selection_summary(sel_df: pd.DataFrame) -> None:
     with cols[0]:
         render_kpi_card(
             label="Eligible Families",
-            value=str(row.get("candidate_count", "N/A")),
-            help_text="Candidates evaluated",
+            value=str(row.get("family_champion_count", "N/A")),
+            help_text="Number of model families with at least one eligible candidate",
         )
     with cols[1]:
         render_kpi_card(
-            label="Family Champions",
-            value=str(row.get("family_champion_count", "N/A")),
+            label="Total Candidates",
+            value=str(row.get("candidate_count", "N/A")),
+            help_text="Total candidates evaluated across all families",
         )
     with cols[2]:
         render_kpi_card(

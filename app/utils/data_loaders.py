@@ -67,12 +67,22 @@ def load_json(path: Path) -> dict:
 def load_monthly_modeling_data() -> pd.DataFrame:
     """Load monthly modeling data (actuals), returning only ds and y columns.
 
+    Supports both the family-agnostic schema (month_start_date / monthly_demand)
+    and the legacy Prophet schema (ds / y).
+
     Returns:
         DataFrame with ds (datetime) and y columns, sorted by ds.
     """
     if not ACTUALS.exists():
         return pd.DataFrame()
-    df = pd.read_parquet(ACTUALS, columns=["ds", "y"])
+    df = pd.read_parquet(ACTUALS)
+    if "ds" not in df.columns and "month_start_date" in df.columns:
+        df = df.rename(columns={"month_start_date": "ds"})
+    if "y" not in df.columns and "monthly_demand" in df.columns:
+        df = df.rename(columns={"monthly_demand": "y"})
+    if "ds" not in df.columns or "y" not in df.columns:
+        return pd.DataFrame()
+    df = df[["ds", "y"]].copy()
     df["ds"] = pd.to_datetime(df["ds"])
     return df.sort_values("ds").reset_index(drop=True)
 
@@ -83,6 +93,10 @@ def load_monthly_modeling_data_full() -> pd.DataFrame:
     if not ACTUALS.exists():
         return pd.DataFrame()
     df = pd.read_parquet(ACTUALS)
+    if "ds" not in df.columns and "month_start_date" in df.columns:
+        df = df.rename(columns={"month_start_date": "ds"})
+    if "y" not in df.columns and "monthly_demand" in df.columns:
+        df = df.rename(columns={"monthly_demand": "y"})
     if "ds" in df.columns:
         df["ds"] = pd.to_datetime(df["ds"])
         df = df.sort_values("ds")

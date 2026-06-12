@@ -35,8 +35,19 @@ _REGEN_FORECAST_CMD = "uv run kedro run --pipeline forecast_inference"
 
 
 def _detect_available_horizons() -> list[int]:
-    """Return the list of horizons (in months) for which forecast parquets exist."""
-    return [h for h in _ALL_HORIZONS if forecast_parquet(h).exists()]
+    """Return horizons (in months) for which a non-empty forecast parquet exists."""
+    available = []
+    for h in _ALL_HORIZONS:
+        p = forecast_parquet(h)
+        if not p.exists():
+            continue
+        try:
+            df = pd.read_parquet(p, columns=["date"])
+            if not df.empty:
+                available.append(h)
+        except Exception:  # noqa: BLE001
+            pass
+    return available
 
 
 def render_monthly_page_header() -> None:
@@ -85,9 +96,12 @@ def render_monthly_kpi_summary(identity: dict) -> None:
         )
     with cols[1]:
         render_kpi_card(
-            label="WMAPE",
+            label="WMAPE (pooled)",
             value=format_percentage(wmape) if wmape is not None else "N/A",
-            help_text="Weighted Mean Absolute % Error from rolling-origin evaluation",
+            help_text=(
+                "Pooled Weighted Mean Absolute % Error across all rolling-origin "
+                "windows. Champion selection uses WMAPE at the M+3 horizon (wmape_m3)."
+            ),
             status=wmape_status,
         )
     with cols[2]:
