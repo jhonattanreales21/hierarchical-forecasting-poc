@@ -16,8 +16,21 @@ _VALID_DIRECTIONS: frozenset[str] = frozenset({"minimize", "maximize"})
 def create_optuna_study(
     direction: str,
     sampler_config: dict[str, Any] | None = None,
+    pruner: optuna.pruners.BasePruner | None = None,
 ) -> Study:
-    """Create an ephemeral Optuna study with the configured sampler."""
+    """Create an ephemeral Optuna study with the configured sampler.
+
+    Args:
+        direction: ``"minimize"`` or ``"maximize"``.
+        sampler_config: TPE sampler configuration (name, seed, n_startup_trials,
+            multivariate, gamma).
+        pruner: Optional Optuna pruner. When provided (e.g. for rolling-origin
+            cycle pruning), trials may be pruned via ``trial.report`` /
+            ``trial.should_prune`` inside the objective. Defaults to no pruning.
+
+    Returns:
+        A configured Optuna ``Study``.
+    """
     sampler_config = sampler_config or {}
     sampler_name = str(sampler_config.get("name", "tpe")).lower()
     if sampler_name != "tpe":
@@ -38,7 +51,33 @@ def create_optuna_study(
         multivariate=multivariate,
         gamma=gamma_fn,
     )
-    return optuna.create_study(direction=direction, sampler=sampler)
+    return optuna.create_study(direction=direction, sampler=sampler, pruner=pruner)
+
+
+def build_rolling_origin_pruner(
+    pruning_config: dict[str, Any] | None,
+) -> optuna.pruners.BasePruner | None:
+    """Build an Optuna pruner for rolling-origin cycle pruning, or ``None``.
+
+    The objective reports the running cross-cycle objective after each cycle; the
+    ``MedianPruner`` then prunes trials that are clearly worse than the running
+    median at the same cycle (protocol §9.2). ``n_warmup_cycles`` cycles run before
+    pruning is allowed so the first noisy cycles never trigger a prune.
+
+    Args:
+        pruning_config: ``tuning.pruning`` block with ``enabled``, ``n_startup_trials``,
+            and ``n_warmup_cycles``.
+
+    Returns:
+        A ``MedianPruner`` when enabled, else ``None`` (no pruning).
+    """
+    cfg = pruning_config or {}
+    if not bool(cfg.get("enabled", False)):
+        return None
+    return optuna.pruners.MedianPruner(
+        n_startup_trials=int(cfg.get("n_startup_trials", 10)),
+        n_warmup_steps=int(cfg.get("n_warmup_cycles", 1)),
+    )
 
 
 def validate_objective_metric_direction(

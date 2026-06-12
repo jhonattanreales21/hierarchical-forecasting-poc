@@ -6,20 +6,21 @@ model_selection:
   selection_strategy: "best_by_horizon"
   tie_breaker: "RMSE"
 
-  # --- Monthly multi-family selection ---
+  # --- Monthly multi-family selection (rolling-origin protocol) ---
+  # Champions are selected directly on macro-averaged rolling-origin metrics
+  # (no held-out test stage). Phase 1 compares Prophet + SARIMAX; CatBoost is
+  # re-enabled in Phase 2.
   monthly:
     enabled: true
     active_families:
       - prophet
       - sarimax
-      - catboost
-    primary_metric: wape
+    primary_metric: wmape_m3
     direction: minimize
     tie_breakers:
-      - test_m3_wape
-      - test_m2_wape
+      - wmape_m2
+      - wmape_m1
       - mase
-      - rmse
       - abs_bias
     # Fail loudly when any active family has no prechampion artifacts.
     require_all_active_families: true

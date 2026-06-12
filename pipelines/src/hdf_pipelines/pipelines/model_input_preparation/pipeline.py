@@ -1,28 +1,35 @@
 """Monthly model-input preparation pipeline.
 
+Rolling-origin protocol: the fixed train/validation/test hold-out is removed.
+The series is kept whole (full history through L) and the rolling-origin engine
+slices cycles internally at train time.
+
 Flow:
   1. build_monthly_modeling_data            → monthly_modeling_data  (generic, month_start_date/monthly_demand)
-  2. split_monthly_modeling_data            → monthly_train/validation/test/full_train  (generic)
-  3. build_monthly_split_metadata           → monthly_split_metadata  (generic)
-  4. adapt_monthly_data_for_prophet         → monthly_prophet_modeling_data/train/validation/test/full_train
-  5. build_monthly_prophet_future_regressors → monthly_prophet_future_3m/6m/12m
-  6. build_monthly_prophet_split_metadata   → monthly_prophet_split_metadata
-  7. adapt_monthly_data_for_sarimax         → monthly_sarimax_train/validation/test/full_train/split_metadata
-  8. build_monthly_generic_future_frames    → monthly_future_3m/6m/12m  (canonical inference inputs)
+  2. prepare_monthly_full_history           → monthly_full_train  (generic full history through L)
+  3. build_monthly_rolling_origin_windows   → monthly_rolling_origin_windows  (audit artifact)
+  4. build_monthly_split_metadata           → monthly_split_metadata  (generic)
+  5. adapt_monthly_data_for_prophet         → monthly_prophet_modeling_data/full_train
+  6. build_monthly_prophet_future_regressors → monthly_prophet_future_3m/6m/12m
+  7. build_monthly_prophet_split_metadata   → monthly_prophet_split_metadata
+  8. adapt_monthly_data_for_sarimax         → monthly_sarimax_full_train/split_metadata
+  9. build_monthly_generic_future_frames    → monthly_future_3m/6m/12m  (canonical inference inputs)
+
+CatBoost input preparation is reintroduced in Phase 2 (direct multi-horizon).
 """
 
 from kedro.pipeline import Pipeline, node, pipeline
 
 from .nodes import (
-    adapt_monthly_data_for_catboost,
     adapt_monthly_data_for_prophet,
     adapt_monthly_data_for_sarimax,
     build_monthly_generic_future_frames,
     build_monthly_modeling_data,
     build_monthly_prophet_future_regressors,
     build_monthly_prophet_split_metadata,
+    build_monthly_rolling_origin_windows,
     build_monthly_split_metadata,
-    split_monthly_modeling_data,
+    prepare_monthly_full_history,
 )
 
 
@@ -43,30 +50,34 @@ def create_pipeline(**kwargs) -> Pipeline:
                 ],
                 name="build_monthly_modeling_data",
             ),
-            # ── Step 2: Generic temporal splits ───────────────────────────────
+            # ── Step 2: Generic full history (through L) ──────────────────────
             node(
-                func=split_monthly_modeling_data,
+                func=prepare_monthly_full_history,
                 inputs=[
                     "monthly_modeling_data",
                     "monthly_preparation_metadata",
                     "params:model_input_preparation",
                 ],
                 outputs=[
-                    "monthly_train",
-                    "monthly_validation",
-                    "monthly_test",
                     "monthly_full_train",
                     "monthly_split_preparation_metadata",
                 ],
-                name="split_monthly_modeling_data",
+                name="prepare_monthly_full_history",
             ),
-            # ── Step 3: Generic split metadata ────────────────────────────────
+            # ── Step 3: Rolling-origin window specification (audit artifact) ──
+            node(
+                func=build_monthly_rolling_origin_windows,
+                inputs=[
+                    "monthly_full_train",
+                    "params:model_input_preparation",
+                ],
+                outputs="monthly_rolling_origin_windows",
+                name="build_monthly_rolling_origin_windows",
+            ),
+            # ── Step 4: Generic full-history metadata ─────────────────────────
             node(
                 func=build_monthly_split_metadata,
                 inputs=[
-                    "monthly_train",
-                    "monthly_validation",
-                    "monthly_test",
                     "monthly_full_train",
                     "monthly_split_preparation_metadata",
                     "params:model_input_preparation",
@@ -74,29 +85,23 @@ def create_pipeline(**kwargs) -> Pipeline:
                 outputs="monthly_split_metadata",
                 name="build_monthly_split_metadata",
             ),
-            # ── Step 4: Prophet compatibility adapter ─────────────────────────
+            # ── Step 5: Prophet compatibility adapter ─────────────────────────
             node(
                 func=adapt_monthly_data_for_prophet,
                 inputs=[
                     "monthly_modeling_data",
-                    "monthly_train",
-                    "monthly_validation",
-                    "monthly_test",
                     "monthly_full_train",
                     "monthly_split_metadata",
                     "params:model_input_preparation",
                 ],
                 outputs=[
                     "monthly_prophet_modeling_data",
-                    "monthly_prophet_train",
-                    "monthly_prophet_validation",
-                    "monthly_prophet_test",
                     "monthly_prophet_full_train",
                     "monthly_prophet_adapter_metadata",
                 ],
                 name="adapt_monthly_data_for_prophet",
             ),
-            # ── Step 5: Prophet future regressors ─────────────────────────────
+            # ── Step 6: Prophet future regressors ─────────────────────────────
             node(
                 func=build_monthly_prophet_future_regressors,
                 inputs=[
@@ -113,13 +118,10 @@ def create_pipeline(**kwargs) -> Pipeline:
                 ],
                 name="build_monthly_prophet_future_regressors",
             ),
-            # ── Step 6: Prophet split metadata ────────────────────────────────
+            # ── Step 7: Prophet split metadata ────────────────────────────────
             node(
                 func=build_monthly_prophet_split_metadata,
                 inputs=[
-                    "monthly_prophet_train",
-                    "monthly_prophet_validation",
-                    "monthly_prophet_test",
                     "monthly_prophet_full_train",
                     "monthly_prophet_future_3m",
                     "monthly_prophet_future_6m",
@@ -130,27 +132,21 @@ def create_pipeline(**kwargs) -> Pipeline:
                 outputs="monthly_prophet_split_metadata",
                 name="build_monthly_prophet_split_metadata",
             ),
-            # ── Step 7: SARIMAX adapter ───────────────────────────────────────
+            # ── Step 8: SARIMAX adapter ───────────────────────────────────────
             node(
                 func=adapt_monthly_data_for_sarimax,
                 inputs=[
-                    "monthly_train",
-                    "monthly_validation",
-                    "monthly_test",
                     "monthly_full_train",
                     "monthly_split_metadata",
                     "params:model_input_preparation",
                 ],
                 outputs=[
-                    "monthly_sarimax_train",
-                    "monthly_sarimax_validation",
-                    "monthly_sarimax_test",
                     "monthly_sarimax_full_train",
                     "monthly_sarimax_split_metadata",
                 ],
                 name="adapt_monthly_data_for_sarimax",
             ),
-            # ── Step 8: Generic future frames (canonical champion inference inputs) ──
+            # ── Step 9: Generic future frames (canonical champion inference inputs) ──
             node(
                 func=build_monthly_generic_future_frames,
                 inputs=[
@@ -166,26 +162,6 @@ def create_pipeline(**kwargs) -> Pipeline:
                     "monthly_future_12m",
                 ],
                 name="build_monthly_generic_future_frames",
-            ),
-            # ── Step 9: CatBoost adapter ──────────────────────────────────────
-            node(
-                func=adapt_monthly_data_for_catboost,
-                inputs=[
-                    "monthly_train",
-                    "monthly_validation",
-                    "monthly_test",
-                    "monthly_full_train",
-                    "monthly_split_metadata",
-                    "params:model_input_preparation",
-                ],
-                outputs=[
-                    "monthly_catboost_train",
-                    "monthly_catboost_validation",
-                    "monthly_catboost_test",
-                    "monthly_catboost_full_train",
-                    "monthly_catboost_split_metadata",
-                ],
-                name="adapt_monthly_data_for_catboost",
             ),
         ]
     )

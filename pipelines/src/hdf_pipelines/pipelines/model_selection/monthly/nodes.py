@@ -207,54 +207,128 @@ def evaluate_monthly_family_candidates_on_test(  # noqa: PLR0913
 # ── Node 2 ────────────────────────────────────────────────────────────────────
 
 
-def select_monthly_family_champions(
-    monthly_candidate_test_metrics: pd.DataFrame,
+_ROLLING_ORIGIN_METRIC_KEYS: tuple[str, ...] = (
+    "wmape", "wmape_m1", "wmape_m2", "wmape_m3", "mase", "bias", "rmse",
+)
+
+
+def assemble_monthly_candidate_metrics(
+    monthly_prophet_prechampion_configs: dict,
+    monthly_sarimax_prechampion_configs: dict,
     params_monthly: dict,
 ) -> pd.DataFrame:
-    """Select the best test-period candidate within each active model family.
+    """Assemble the cross-family candidate metrics table from rolling-origin pre-champions.
 
-    Ranks candidates by the configured primary metric (default: wape) and applies
-    tie-breakers in order. Exactly one family champion is selected per active
-    family present in ``monthly_candidate_test_metrics``.
+    Replaces the held-out test stage (protocol §4, §11): champions are selected
+    directly from the macro-averaged rolling-origin metrics already produced by each
+    family tuner. One row per pre-champion candidate, with the WMAPE / WMAPE_Mh /
+    MASE / BIAS metric set plus the SARIMAX Ljung-Box eligibility flag.
 
     Args:
-        monthly_candidate_test_metrics: Output of
-            ``evaluate_monthly_family_candidates_on_test``.
+        monthly_prophet_prechampion_configs: Prophet ``prechampion_configs`` artifact.
+        monthly_sarimax_prechampion_configs: SARIMAX ``prechampion_configs`` artifact.
+        params_monthly: Contents of ``model_selection.monthly`` (reads ``active_families``).
+
+    Returns:
+        DataFrame with one row per candidate across active families.
+
+    Raises:
+        ValueError: When no candidates can be assembled.
+    """
+    active_families = [
+        str(f) for f in params_monthly.get("active_families", ["prophet", "sarimax"])
+    ]
+    rows: list[dict] = []
+    if "prophet" in active_families:
+        rows.extend(
+            _candidate_rows(monthly_prophet_prechampion_configs, "prophet", "prechampions")
+        )
+    if "sarimax" in active_families:
+        rows.extend(
+            _candidate_rows(monthly_sarimax_prechampion_configs, "sarimax", "candidates")
+        )
+
+    if not rows:
+        raise ValueError(
+            "No candidate metrics could be assembled from the pre-champion configs."
+        )
+    return pd.DataFrame(rows)
+
+
+def _candidate_rows(prechampion_configs: dict, family: str, list_key: str) -> list[dict]:
+    """Build candidate metric rows from a family's prechampion_configs artifact."""
+    entries = list((prechampion_configs or {}).get(list_key, []))
+    rows: list[dict] = []
+    for entry in entries:
+        candidate_id = str(entry.get("candidate_id") or entry.get("trial_id"))
+        metrics = dict(entry.get("rolling_origin_metrics", {}))
+        row = {
+            "family": family,
+            "candidate_id": candidate_id,
+            "granularity": "monthly",
+            "candidate_rank": _safe_int(entry.get("rank")),
+            "selection_stage": "rolling_origin",
+            "ljung_box_pvalue": _safe_float(entry.get("ljung_box_pvalue")),
+            "autocorrelation_excluded": bool(entry.get("autocorrelation_excluded", False)),
+            "primary_metric": "wmape_m3",
+            "primary_metric_value": _safe_float(metrics.get("wmape_m3")),
+            "is_family_champion": False,
+            "is_production_champion": False,
+        }
+        for key in _ROLLING_ORIGIN_METRIC_KEYS:
+            row[key] = _safe_float(metrics.get(key))
+        rows.append(row)
+    return rows
+
+
+def select_monthly_family_champions(
+    monthly_candidate_metrics: pd.DataFrame,
+    params_monthly: dict,
+) -> pd.DataFrame:
+    """Select the best rolling-origin candidate within each active model family.
+
+    Ranks candidates by the configured primary metric (default: ``wmape_m3``) and
+    applies tie-breakers in order (protocol §3.10). Exactly one family champion is
+    selected per active family. For SARIMAX, candidates flagged by the Ljung-Box
+    filter are excluded before ranking (protocol §3.9), with a fallback to the full
+    set when none are eligible.
+
+    Args:
+        monthly_candidate_metrics: Output of ``assemble_monthly_candidate_metrics``.
         params_monthly: Contents of ``model_selection.monthly``; must contain
             ``primary_metric`` and ``tie_breakers``.
 
     Returns:
-        DataFrame with one row per family champion containing: family, granularity,
-        family_champion_id, family_champion_rank, wape, mase, rmse, bias,
-        selection_reason, model_artifact_key, metadata_artifact_key.
+        DataFrame with one row per family champion (family, granularity,
+        family_champion_id, family_champion_rank, the rolling-origin metric set,
+        selection_reason, and artifact keys).
 
     Raises:
-        ValueError: When the input metrics table is empty or missing required columns.
+        ValueError: When the input metrics table is empty.
     """
-    if monthly_candidate_test_metrics.empty:
+    if monthly_candidate_metrics.empty:
         raise ValueError(
-            "monthly_candidate_test_metrics is empty; cannot select family champions."
+            "monthly_candidate_metrics is empty; cannot select family champions."
         )
 
-    primary_metric: str = str(params_monthly.get("primary_metric", "wape"))
+    primary_metric: str = str(params_monthly.get("primary_metric", "wmape_m3"))
     tie_breakers: list[str] = list(
-        params_monthly.get("tie_breakers", ["mase", "rmse", "abs_bias"])
+        params_monthly.get("tie_breakers", ["wmape_m2", "wmape_m1", "mase", "abs_bias"])
     )
     active_families: list[str] = sorted(
-        monthly_candidate_test_metrics["family"].unique().tolist()
+        monthly_candidate_metrics["family"].unique().tolist()
     )
 
     champion_rows: list[dict] = []
     for family in active_families:
-        family_df = monthly_candidate_test_metrics[
-            monthly_candidate_test_metrics["family"] == family
+        family_df = monthly_candidate_metrics[
+            monthly_candidate_metrics["family"] == family
         ].copy()
-
         if family_df.empty:
             logger.warning("No candidates found for family '%s' — skipping.", family)
             continue
 
-        # For SARIMAX: exclude candidates flagged by the Ljung-Box filter before ranking.
+        # SARIMAX: exclude Ljung-Box-flagged candidates before ranking (protocol §3.9).
         if family == "sarimax" and "autocorrelation_excluded" in family_df.columns:
             eligible = family_df[~family_df["autocorrelation_excluded"].fillna(False)]
             if eligible.empty:
@@ -276,13 +350,11 @@ def select_monthly_family_champions(
                 "granularity": "monthly",
                 "family_champion_id": best["candidate_id"],
                 "family_champion_rank": 1,
-                "wape": _safe_float(best.get("wape")),
-                "mase": _safe_float(best.get("mase")),
-                "rmse": _safe_float(best.get("rmse")),
-                "bias": _safe_float(best.get("bias")),
+                **{k: _safe_float(best.get(k)) for k in _ROLLING_ORIGIN_METRIC_KEYS},
+                "ljung_box_pvalue": _safe_float(best.get("ljung_box_pvalue")),
                 "selection_reason": (
-                    f"Best {primary_metric} among {len(family_df)} {family} candidate(s) "
-                    f"on held-out test set"
+                    f"Best {primary_metric} among {len(family_df)} eligible {family} "
+                    f"candidate(s) on the rolling-origin backtest"
                 ),
                 "model_artifact_key": f"monthly_{family}_candidate_models",
                 "metadata_artifact_key": f"monthly_{family}_prechampion_configs",
@@ -290,9 +362,7 @@ def select_monthly_family_champions(
         )
         logger.info(
             "Family champion (%s): %s  %s=%.4f",
-            family,
-            best["candidate_id"],
-            primary_metric,
+            family, best["candidate_id"], primary_metric,
             _safe_float(best.get(primary_metric)) or float("nan"),
         )
 
@@ -300,7 +370,6 @@ def select_monthly_family_champions(
         raise RuntimeError(
             "No family champions could be selected from the metrics table."
         )
-
     return pd.DataFrame(champion_rows)
 
 
@@ -309,26 +378,22 @@ def select_monthly_family_champions(
 
 def select_monthly_production_champion(
     monthly_family_champion_summary: pd.DataFrame,
-    monthly_candidate_test_metrics: pd.DataFrame,
+    monthly_candidate_metrics: pd.DataFrame,
     params_monthly: dict,
 ) -> pd.DataFrame:
     """Compare family champions and elect one monthly production champion.
 
     Only family champions (one per family) participate in the final comparison.
     The selection uses the same metric ordering as family champion selection:
-    primary metric first, then tie-breakers in order.
+    primary metric first, then tie-breakers in order (protocol §3.10).
 
     Args:
         monthly_family_champion_summary: Output of ``select_monthly_family_champions``.
-        monthly_candidate_test_metrics: Full candidate metrics table for summary stats.
+        monthly_candidate_metrics: Full candidate metrics table for summary stats.
         params_monthly: Contents of ``model_selection.monthly``.
 
     Returns:
-        Single-row DataFrame describing the production champion selection:
-        granularity, active_families, production_champion_family,
-        production_champion_id, primary_metric, primary_metric_value,
-        tie_breakers, selection_timestamp, selection_reason, candidate_count,
-        family_champion_count.
+        Single-row DataFrame describing the production champion selection.
 
     Raises:
         ValueError: When the family champion summary is empty.
@@ -338,9 +403,9 @@ def select_monthly_production_champion(
             "monthly_family_champion_summary is empty; cannot select production champion."
         )
 
-    primary_metric: str = str(params_monthly.get("primary_metric", "wape"))
+    primary_metric: str = str(params_monthly.get("primary_metric", "wmape_m3"))
     tie_breakers: list[str] = list(
-        params_monthly.get("tie_breakers", ["mase", "rmse", "abs_bias"])
+        params_monthly.get("tie_breakers", ["wmape_m2", "wmape_m1", "mase", "abs_bias"])
     )
     active_families: list[str] = list(
         params_monthly.get("active_families", ["prophet", "sarimax"])
@@ -386,7 +451,7 @@ def select_monthly_production_champion(
         "tie_breakers": tie_breakers,
         "selection_timestamp": datetime.now(tz=UTC).isoformat(),
         "selection_reason": selection_reason,
-        "candidate_count": len(monthly_candidate_test_metrics),
+        "candidate_count": len(monthly_candidate_metrics),
         "family_champion_count": len(ranked),
     }
     return pd.DataFrame([summary_row])
@@ -396,7 +461,7 @@ def select_monthly_production_champion(
 
 
 def annotate_monthly_candidate_champion_flags(
-    monthly_candidate_test_metrics: pd.DataFrame,
+    monthly_candidate_metrics: pd.DataFrame,
     monthly_family_champion_summary: pd.DataFrame,
     monthly_model_selection_summary: pd.DataFrame,
 ) -> pd.DataFrame:
@@ -420,9 +485,9 @@ def annotate_monthly_candidate_champion_flags(
         ValueError: When candidate metrics are empty, no family champions are
             available, or the production champion summary is empty.
     """
-    if monthly_candidate_test_metrics.empty:
+    if monthly_candidate_metrics.empty:
         raise ValueError(
-            "monthly_candidate_test_metrics is empty; cannot annotate champion flags."
+            "monthly_candidate_metrics is empty; cannot annotate champion flags."
         )
     if monthly_family_champion_summary.empty:
         raise ValueError(
@@ -433,7 +498,7 @@ def annotate_monthly_candidate_champion_flags(
             "monthly_model_selection_summary is empty; cannot annotate champion flags."
         )
 
-    metrics_df = monthly_candidate_test_metrics.copy()
+    metrics_df = monthly_candidate_metrics.copy()
     family_champion_pairs = set(
         zip(
             monthly_family_champion_summary["family"].astype(str),
@@ -485,7 +550,7 @@ def annotate_monthly_candidate_champion_flags(
 def build_monthly_champion_artifacts(  # noqa: PLR0913
     monthly_model_selection_summary: pd.DataFrame,
     monthly_family_champion_summary: pd.DataFrame,
-    monthly_candidate_test_metrics: pd.DataFrame,
+    monthly_candidate_metrics: pd.DataFrame,
     monthly_prophet_candidate_models: dict,
     monthly_sarimax_candidate_models: dict,
     monthly_prophet_full_train: pd.DataFrame,
@@ -570,7 +635,7 @@ def build_monthly_champion_artifacts(  # noqa: PLR0913
     )
 
     champ_metrics = _extract_champion_metrics(
-        monthly_candidate_test_metrics, production_family, production_candidate_id
+        monthly_candidate_metrics, production_family, production_candidate_id
     )
 
     family_champions: dict[str, dict] = {}
@@ -578,13 +643,11 @@ def build_monthly_champion_artifacts(  # noqa: PLR0913
         fam = str(fc_row["family"])
         family_champions[fam] = {
             "champion_id": str(fc_row["family_champion_id"]),
-            "wape": _safe_float(fc_row.get("wape")),
+            "wmape_m3": _safe_float(fc_row.get("wmape_m3")),
+            "wmape": _safe_float(fc_row.get("wmape")),
             "mase": _safe_float(fc_row.get("mase")),
-            "rmse": _safe_float(fc_row.get("rmse")),
             "bias": _safe_float(fc_row.get("bias")),
         }
-
-    test_start, test_end, n_rows = _extract_test_period(monthly_candidate_test_metrics)
 
     metadata: dict = {
         "granularity": "monthly",
@@ -598,20 +661,26 @@ def build_monthly_champion_artifacts(  # noqa: PLR0913
         ),
         "family_champions": family_champions,
         "selection": {
-            "primary_metric": str(summary_row.get("primary_metric", "wape")),
+            "primary_metric": str(summary_row.get("primary_metric", "wmape_m3")),
             "direction": "minimize",
             "tie_breakers": list(
-                params_monthly.get("tie_breakers", ["mase", "rmse", "abs_bias"])
+                params_monthly.get(
+                    "tie_breakers", ["wmape_m2", "wmape_m1", "mase", "abs_bias"]
+                )
             ),
             "selected_at": str(
                 summary_row.get("selection_timestamp", datetime.now(tz=UTC).isoformat())
             ),
             "selection_reason": str(summary_row.get("selection_reason", "")),
         },
-        "test_period": {
-            "start_date": test_start,
-            "end_date": test_end,
-            "n_rows": n_rows,
+        "evaluation": {
+            "mode": "rolling_origin",
+            "primary_metric": "wmape_m3",
+            "note": (
+                "Champions selected directly on macro-averaged rolling-origin metrics; "
+                "no reserved out-of-sample window was used (optimistic-selection risk, "
+                "protocol §9.1)."
+            ),
         },
         "metrics": champ_metrics,
         "inference_contract": inference_contract,
@@ -656,13 +725,13 @@ def generate_monthly_family_champion_explanations(  # noqa: PLR0913, PLR0912, PL
     monthly_family_champion_summary: pd.DataFrame,
     monthly_prophet_candidate_models: dict,
     monthly_sarimax_candidate_models: dict,
-    monthly_catboost_candidate_models: dict,
     monthly_prophet_full_train: pd.DataFrame,
     monthly_sarimax_full_train: pd.DataFrame,
-    monthly_catboost_full_train: pd.DataFrame,
     monthly_sarimax_training_metadata: dict,
-    monthly_catboost_split_metadata: dict,
     params_monthly: dict,
+    monthly_catboost_candidate_models: dict | None = None,
+    monthly_catboost_full_train: pd.DataFrame | None = None,
+    monthly_catboost_split_metadata: dict | None = None,
 ) -> tuple[pd.DataFrame, Any, pd.DataFrame, dict]:
     """Generate driver-importance explanations for every monthly family champion.
 
@@ -726,7 +795,9 @@ def generate_monthly_family_champion_explanations(  # noqa: PLR0913, PLR0912, PL
             enabled,
             summary_empty,
         )
-        return empty_importance, None, empty_shap, metadata
+        # Empty-dict sentinel (falsy) instead of None: Kedro forbids saving None,
+        # and consumers treat a falsy explainer as "no SHAP available".
+        return empty_importance, {}, empty_shap, metadata
 
     include_components = bool(
         explain_cfg.get("prophet", {}).get("include_components", True)
@@ -734,7 +805,7 @@ def generate_monthly_family_champion_explanations(  # noqa: PLR0913, PLR0912, PL
 
     per_family: dict[str, dict] = {}
     families_meta: dict[str, dict] = {}
-    catboost_explainer: Any = None
+    catboost_explainer: Any = {}
     catboost_shap_values: pd.DataFrame = empty_shap
 
     for _, row in monthly_family_champion_summary.iterrows():
@@ -2416,31 +2487,16 @@ def _build_inference_contract(  # noqa: PLR0913
 def _extract_champion_metrics(
     metrics_df: pd.DataFrame, family: str, candidate_id: str
 ) -> dict:
-    """Extract scalar metrics for the production champion from the metrics table."""
+    """Extract the rolling-origin metric set for the production champion."""
+    keys = ["wmape", "wmape_m1", "wmape_m2", "wmape_m3", "mase", "bias", "rmse"]
     mask = (metrics_df["family"] == family) & (
         metrics_df["candidate_id"] == candidate_id
     )
     subset = metrics_df[mask]
     if subset.empty:
-        return {"wape": None, "mase": None, "rmse": None, "bias": None}
+        return dict.fromkeys(keys)
     row = subset.iloc[0]
-    return {
-        "wape": _safe_float(row.get("wape")),
-        "mase": _safe_float(row.get("mase")),
-        "rmse": _safe_float(row.get("rmse")),
-        "bias": _safe_float(row.get("bias")),
-    }
-
-
-def _extract_test_period(metrics_df: pd.DataFrame) -> tuple[str, str, int]:
-    """Return (test_start, test_end, n_rows) from the metrics table."""
-    if metrics_df.empty:
-        return ("", "", 0)
-    return (
-        str(metrics_df["test_start_date"].iloc[0]),
-        str(metrics_df["test_end_date"].iloc[0]),
-        int(metrics_df["n_test_rows"].iloc[0]),
-    )
+    return {k: _safe_float(row.get(k)) for k in keys}
 
 
 def _safe_float(value: Any) -> float | None:
@@ -2450,6 +2506,17 @@ def _safe_float(value: Any) -> float | None:
     try:
         result = float(value)
         return result if np.isfinite(result) else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_int(value: Any) -> int | None:
+    """Convert to Python int, returning None for missing or non-finite values."""
+    if value is None:
+        return None
+    try:
+        f = float(value)
+        return int(f) if np.isfinite(f) else None
     except (TypeError, ValueError):
         return None
 

@@ -40,15 +40,15 @@ model_input_preparation:
       drop_rows_with_null_target: true
       drop_rows_with_null_active_regressors: true
 
-    split:
-      mode: "months"
-      validation_months: 4
-      test_months: 4
-      # Date-based split mode is also supported. Switch mode to "date" and use:
-      # mode: "date"
-      # train_end_date: "2024-12-01"
-      # validation_end_date: "2025-06-01"
-      # test_end_date: "2026-03-01"
+    # Rolling-origin backtesting replaces the fixed train/validation/test hold-out.
+    # The series is kept whole (through L); cycles are sliced internally by the
+    # rolling-origin engine. Values interpolate the global protocol parameters.
+    rolling_origin:
+      horizon: ${forecast_horizon}
+      n_cycles: ${n_cycles}
+      window: ${rolling_window}
+      step_months: ${step_months}
+      min_train_periods: ${min_train_periods}
 
     supported_future_horizons: [3, 6, 12]
     min_working_weekday_count_for_flag: 5
@@ -96,11 +96,6 @@ model_input_preparation:
     missing_values:
       drop_rows_with_null_target: true
       drop_rows_with_null_active_regressors: true
-
-    split:
-      mode: "months"
-      validation_months: 4
-      test_months: 4
 
     future:
       horizons_months: [3, 6, 12]

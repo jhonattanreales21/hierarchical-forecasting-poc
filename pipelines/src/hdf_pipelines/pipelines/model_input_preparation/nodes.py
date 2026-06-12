@@ -16,6 +16,7 @@ from typing import Any
 import holidays
 import pandas as pd
 from pandas.api.types import is_datetime64_any_dtype, is_numeric_dtype
+from shared.rolling_origin import generate_rolling_origin_cycles
 
 logger = logging.getLogger(__name__)
 
@@ -221,102 +222,6 @@ def _drop_null_modeling_rows(
         dataset_name,
     )
     return cleaned_df, dropped_rows
-
-
-def _parse_month_start(date_value: Any, field_name: str) -> pd.Timestamp:
-    """Parse and normalize a configured date boundary to month start."""
-    parsed_date = pd.to_datetime(date_value, errors="coerce")
-    if pd.isna(parsed_date):
-        raise ValueError(f"Invalid {field_name!r}: {date_value!r}")
-    return pd.Timestamp(parsed_date).to_period("M").to_timestamp()
-
-
-def _split_by_dates(
-    df: pd.DataFrame,
-    date_column: str,
-    split_params: Mapping[str, Any],
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Split historical data using explicit date boundaries."""
-    train_end_date = _parse_month_start(
-        split_params["train_end_date"], "train_end_date"
-    )
-    validation_end_date = _parse_month_start(
-        split_params["validation_end_date"], "validation_end_date"
-    )
-    test_end_date = _parse_month_start(split_params["test_end_date"], "test_end_date")
-
-    if not (train_end_date < validation_end_date < test_end_date):
-        raise ValueError(
-            "Date split boundaries must satisfy "
-            "train_end_date < validation_end_date < test_end_date."
-        )
-
-    train = df.loc[df[date_column] <= train_end_date].copy()
-    validation = df.loc[
-        (df[date_column] > train_end_date) & (df[date_column] <= validation_end_date)
-    ].copy()
-    test = df.loc[
-        (df[date_column] > validation_end_date) & (df[date_column] <= test_end_date)
-    ].copy()
-    return train, validation, test
-
-
-def _split_by_month_counts(
-    df: pd.DataFrame,
-    date_column: str,
-    split_params: Mapping[str, Any],
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Split historical data using trailing validation and test month counts."""
-    validation_months = int(split_params["validation_months"])
-    test_months = int(split_params["test_months"])
-    if validation_months <= 0 or test_months <= 0:
-        raise ValueError("validation_months and test_months must be positive integers.")
-
-    # Build an ordered list of unique month timestamps to use as positional index for slicing.
-    unique_months = pd.Series(
-        pd.DatetimeIndex(df[date_column].drop_duplicates().sort_values())
-    ).reset_index(drop=True)
-    required_months = validation_months + test_months
-    if len(unique_months) <= required_months:
-        raise ValueError(
-            "Not enough historical months to create non-empty train, validation, "
-            f"and test splits. Found {len(unique_months)} unique months and need "
-            f"more than {required_months}."
-        )
-
-    # Slice from the tail: last N months = test, preceding M months = validation, rest = train.
-    test_month_index = unique_months.iloc[-test_months:]
-    validation_month_index = unique_months.iloc[
-        -(validation_months + test_months) : -test_months
-    ]
-    train_month_index = unique_months.iloc[: -(validation_months + test_months)]
-
-    train = df.loc[df[date_column].isin(train_month_index)].copy()
-    validation = df.loc[df[date_column].isin(validation_month_index)].copy()
-    test = df.loc[df[date_column].isin(test_month_index)].copy()
-    return train, validation, test
-
-
-def _validate_split_frames(
-    train: pd.DataFrame,
-    validation: pd.DataFrame,
-    test: pd.DataFrame,
-    date_column: str,
-) -> None:
-    """Validate split emptiness, overlap, and chronological ordering."""
-    split_frames = {"train": train, "validation": validation, "test": test}
-    for split_name, split_df in split_frames.items():
-        if split_df.empty:
-            raise ValueError(f"{split_name.title()} split is empty.")
-
-    if not (
-        train[date_column].max() < validation[date_column].min()
-        and validation[date_column].max() < test[date_column].min()
-    ):
-        raise ValueError(
-            "Chronological splits overlap or are out of order. Expected "
-            "train < validation < test."
-        )
 
 
 def _parse_weekmask(weekmask: str) -> set[int]:
@@ -606,100 +511,128 @@ def build_monthly_modeling_data(
     return modeling_df, preparation_metadata
 
 
-def split_monthly_modeling_data(
+def prepare_monthly_full_history(
     monthly_modeling_data: pd.DataFrame,
     preparation_metadata: dict[str, Any],
     parameters: dict,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, Any]]:
-    """Partition the generic monthly modeling table into temporal splits.
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Return the full monthly history (through ``L``), sorted, for rolling-origin use.
 
-    Supports two split modes controlled by ``parameters["monthly"]["split"]["mode"]``:
-
-    - ``"date"`` — explicit cutoff dates.
-    - ``"months"`` — trailing month counts.
-
-    ``full_train`` concatenates all three partitions and is intended for the final
-    retrain before production inference.
+    The fixed train/validation/test hold-out has been removed (rolling-origin
+    protocol §2, §11): the series is kept whole and cycles are sliced internally by
+    the rolling-origin engine. This node only sorts and summarises the canonical
+    frame; no months are reserved out of sample.
 
     Args:
         monthly_modeling_data: Generic modeling DataFrame from ``build_monthly_modeling_data``.
         preparation_metadata: Metadata dict produced by the preparation node.
-        parameters: Pipeline parameters with a ``monthly.split`` block.
+        parameters: Pipeline parameters with a ``monthly`` block.
 
     Returns:
-        Tuple of five items:
-            - monthly_train: Historical rows reserved for model fitting.
-            - monthly_validation: Held-out rows for hyperparameter selection.
-            - monthly_test: Held-out rows for final evaluation.
-            - monthly_full_train: All rows combined, sorted by SKU and date.
-            - updated_metadata: Metadata dict extended with split-mode and date-range summaries.
+        Tuple of:
+            - monthly_full_train: All rows sorted by SKU and date (full history through ``L``).
+            - updated_metadata: Metadata dict extended with the full-history date range.
     """
     monthly_params = _get_monthly_params(parameters)
     date_column = monthly_params["date_column"]
     sku_column = monthly_params["sku_column"]
-    split_params = monthly_params["split"]
-    split_mode = split_params["mode"]
 
-    logger.info(
-        "Splitting monthly modeling data shape=%s using split mode=%s.",
-        monthly_modeling_data.shape,
-        split_mode,
-    )
-
-    if split_mode == "date":
-        train, validation, test = _split_by_dates(
-            monthly_modeling_data, date_column, split_params
-        )
-    elif split_mode == "months":
-        train, validation, test = _split_by_month_counts(
-            monthly_modeling_data, date_column, split_params
-        )
-    else:
-        raise ValueError(
-            f"Unsupported split mode {split_mode!r}. Expected 'date' or 'months'."
-        )
-
-    _validate_split_frames(train, validation, test, date_column)
     full_train = (
-        pd.concat([train, validation, test], ignore_index=True)
-        .sort_values([sku_column, date_column])
-        .reset_index(drop=True)
+        monthly_modeling_data.sort_values([sku_column, date_column]).reset_index(
+            drop=True
+        )
     )
-
-    logger.info("Train split: %s", _summarize_date_range(train, date_column))
-    logger.info("Validation split: %s", _summarize_date_range(validation, date_column))
-    logger.info("Test split: %s", _summarize_date_range(test, date_column))
+    logger.info(
+        "Monthly full history (through L): %s",
+        _summarize_date_range(full_train, date_column),
+    )
 
     updated_metadata = dict(preparation_metadata)
-    updated_metadata["split_mode"] = split_mode
-    updated_metadata["train"] = _summarize_date_range(train, date_column)
-    updated_metadata["validation"] = _summarize_date_range(validation, date_column)
-    updated_metadata["test"] = _summarize_date_range(test, date_column)
     updated_metadata["full_train"] = _summarize_date_range(full_train, date_column)
+    return full_train, updated_metadata
 
-    return train, validation, test, full_train, updated_metadata
+
+def build_monthly_rolling_origin_windows(
+    monthly_full_train: pd.DataFrame,
+    parameters: dict,
+) -> dict[str, Any]:
+    """Generate and persist the rolling-origin window specification (audit artifact).
+
+    Builds the cycles through the shared rolling-origin engine so that
+    ``model_input_preparation`` and ``train_monthly`` share a single window
+    definition. With an expanding window and ``step = 1`` the last cycle predicts
+    ``[L-2, L-1, L]`` (protocol §2, §4, §10). Raises a clear error if the series
+    cannot form the requested cycles or the first cycle's train is too short.
+
+    Args:
+        monthly_full_train: Full monthly history through ``L``.
+        parameters: Pipeline parameters with a ``monthly.rolling_origin`` block.
+
+    Returns:
+        JSON-serialisable dict describing the configuration and every cycle.
+    """
+    monthly_params = _get_monthly_params(parameters)
+    date_column = monthly_params["date_column"]
+    ro_cfg = dict(monthly_params.get("rolling_origin", {}))
+
+    horizon = int(ro_cfg.get("horizon", 3))
+    n_cycles = int(ro_cfg.get("n_cycles", 5))
+    window = str(ro_cfg.get("window", "expanding"))
+    step_months = int(ro_cfg.get("step_months", 1))
+    raw_min_train = ro_cfg.get("min_train_periods")
+    min_train_periods = int(raw_min_train) if raw_min_train is not None else None
+
+    dates = (
+        pd.to_datetime(monthly_full_train[date_column])
+        .drop_duplicates()
+        .sort_values()
+        .tolist()
+    )
+    cycles = generate_rolling_origin_cycles(
+        dates=dates,
+        n_cycles=n_cycles,
+        horizon=horizon,
+        step_months=step_months,
+        window=window,
+        min_train_periods=min_train_periods,
+    )
+
+    last_observed = pd.Timestamp(max(dates)).strftime("%Y-%m-%d")
+    metadata: dict[str, Any] = {
+        "granularity": "monthly",
+        "date_column": date_column,
+        "last_observed_month": last_observed,
+        "horizon": horizon,
+        "n_cycles": n_cycles,
+        "window": window,
+        "step_months": step_months,
+        "min_train_periods": min_train_periods,
+        "n_periods": len(dates),
+        "cycles": [c.to_dict() for c in cycles],
+        "created_by": "model_input_preparation.build_monthly_rolling_origin_windows",
+    }
+    logger.info(
+        "Built monthly_rolling_origin_windows: %d cycles through L=%s; last cycle "
+        "targets %s.",
+        len(cycles), last_observed, metadata["cycles"][-1]["target_dates"],
+    )
+    return metadata
 
 
 def build_monthly_split_metadata(
-    monthly_train: pd.DataFrame,
-    monthly_validation: pd.DataFrame,
-    monthly_test: pd.DataFrame,
     monthly_full_train: pd.DataFrame,
     preparation_metadata: dict[str, Any],
     parameters: dict,
 ) -> dict[str, Any]:
-    """Compile a generic monthly split metadata artifact for catalog persistence.
+    """Compile the generic monthly full-history metadata artifact for the catalog.
 
     Args:
-        monthly_train: Train split DataFrame.
-        monthly_validation: Validation split DataFrame.
-        monthly_test: Test split DataFrame.
-        monthly_full_train: Full-train split DataFrame.
-        preparation_metadata: Extended metadata dict from ``split_monthly_modeling_data``.
+        monthly_full_train: Full-history DataFrame (through ``L``).
+        preparation_metadata: Extended metadata dict from ``prepare_monthly_full_history``.
         parameters: Pipeline parameters with a ``monthly`` block.
 
     Returns:
-        Dict with granularity, column names, split boundaries, row counts, active
+        Dict with granularity, column names, full-history range, row count, active
         features, and dropped-row counts.
     """
     monthly_params = _get_monthly_params(parameters)
@@ -710,18 +643,10 @@ def build_monthly_split_metadata(
         "date_column": preparation_metadata["date_column"],
         "target_column": preparation_metadata["target_column"],
         "sku_column": preparation_metadata["sku_column"],
-        "split_mode": preparation_metadata["split_mode"],
+        "evaluation_mode": "rolling_origin",
         "active_features": preparation_metadata["active_regressors"],
-        "train": _summarize_date_range(monthly_train, date_column),
-        "validation": _summarize_date_range(monthly_validation, date_column),
-        "test": _summarize_date_range(monthly_test, date_column),
         "full_train": _summarize_date_range(monthly_full_train, date_column),
-        "row_counts": {
-            "train": len(monthly_train),
-            "validation": len(monthly_validation),
-            "test": len(monthly_test),
-            "full_train": len(monthly_full_train),
-        },
+        "row_counts": {"full_train": len(monthly_full_train)},
         "dropped_rows": preparation_metadata["dropped_rows"],
         "created_by": "model_input_preparation",
     }
@@ -733,36 +658,29 @@ def build_monthly_split_metadata(
 
 def adapt_monthly_data_for_prophet(
     monthly_modeling_data: pd.DataFrame,
-    monthly_train: pd.DataFrame,
-    monthly_validation: pd.DataFrame,
-    monthly_test: pd.DataFrame,
     monthly_full_train: pd.DataFrame,
     monthly_split_metadata: dict[str, Any],
     parameters: dict,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, Any]]:
+) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, Any]]:
     """Rename generic monthly columns to Prophet's ds / y convention.
 
-    Consumes the generic monthly datasets and produces Prophet-compatible equivalents
-    by renaming ``month_start_date`` → ``ds`` and ``monthly_demand`` → ``y``.  All
-    other columns (SKU, active regressors) are preserved without modification.
+    Consumes the generic full-history monthly datasets and produces Prophet-compatible
+    equivalents by renaming ``month_start_date`` → ``ds`` and ``monthly_demand`` → ``y``.
+    All other columns (SKU, active regressors) are preserved without modification.
+    The rolling-origin engine slices cycles from the full-history frame at train time;
+    no fixed train/validation/test partitions are produced.
 
     Args:
         monthly_modeling_data: Generic modeling DataFrame.
-        monthly_train: Generic train split.
-        monthly_validation: Generic validation split.
-        monthly_test: Generic test split.
-        monthly_full_train: Generic full-train split.
-        monthly_split_metadata: Generic split metadata dict.
+        monthly_full_train: Generic full-history frame (through ``L``).
+        monthly_split_metadata: Generic full-history metadata dict.
         parameters: Pipeline parameters. Reads ``monthly`` (source column names) and
             ``monthly_prophet`` (Prophet column names and active_regressors).
 
     Returns:
-        Tuple of six items:
+        Tuple of:
             - monthly_prophet_modeling_data: Prophet-format modeling DataFrame.
-            - monthly_prophet_train: Prophet-format train split.
-            - monthly_prophet_validation: Prophet-format validation split.
-            - monthly_prophet_test: Prophet-format test split.
-            - monthly_prophet_full_train: Prophet-format full-train split.
+            - monthly_prophet_full_train: Prophet-format full-history frame.
             - prophet_adapter_metadata: Internal metadata dict for
               ``build_monthly_prophet_split_metadata``.
     """
@@ -780,9 +698,6 @@ def adapt_monthly_data_for_prophet(
         return df.rename(columns=rename_map).copy()
 
     prophet_modeling_data = _rename(monthly_modeling_data)
-    prophet_train = _rename(monthly_train)
-    prophet_validation = _rename(monthly_validation)
-    prophet_test = _rename(monthly_test)
     prophet_full_train = _rename(monthly_full_train)
 
     _validate_datetime_and_numeric(
@@ -799,7 +714,7 @@ def adapt_monthly_data_for_prophet(
     prophet_adapter_metadata: dict[str, Any] = {
         "model_family": "prophet",
         "granularity": monthly_split_metadata["granularity"],
-        "split_mode": monthly_split_metadata["split_mode"],
+        "evaluation_mode": monthly_split_metadata.get("evaluation_mode", "rolling_origin"),
         "active_regressors": list(prophet_params["active_regressors"]),
         "dropped_rows": monthly_split_metadata["dropped_rows"],
         "modeling_data": _summarize_date_range(
@@ -809,9 +724,6 @@ def adapt_monthly_data_for_prophet(
 
     return (
         prophet_modeling_data,
-        prophet_train,
-        prophet_validation,
-        prophet_test,
         prophet_full_train,
         prophet_adapter_metadata,
     )
@@ -926,36 +838,28 @@ def _prepare_sarimax_split(
 
 
 def adapt_monthly_data_for_sarimax(
-    monthly_train: pd.DataFrame,
-    monthly_validation: pd.DataFrame,
-    monthly_test: pd.DataFrame,
     monthly_full_train: pd.DataFrame,
     monthly_split_metadata: dict[str, Any],
     parameters: dict,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, Any]]:
-    """Transform generic monthly splits into SARIMAX-ready tabular datasets.
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Transform the generic monthly full history into a SARIMAX-ready tabular dataset.
 
-    Produces tabular DataFrames with ``[date_column, target_column, *exogenous_columns]``
-    for each split.  Validates temporal index quality, enforces monthly frequency,
-    separates target from exogenous features, and emits SARIMAX-specific split metadata.
+    Produces a tabular DataFrame with ``[date_column, target_column, *exogenous_columns]``
+    covering all history through ``L``.  Validates temporal index quality, enforces
+    monthly frequency, separates target from exogenous features, and emits
+    SARIMAX-specific metadata. The rolling-origin engine slices cycles at train time.
 
-    Consumes generic ``monthly_*`` datasets; never reads Prophet-renamed columns.
+    Consumes the generic ``monthly_full_train`` dataset; never reads Prophet-renamed columns.
 
     Args:
-        monthly_train: Generic train split.
-        monthly_validation: Generic validation split.
-        monthly_test: Generic test split.
-        monthly_full_train: Generic full-train split.
-        monthly_split_metadata: Generic split metadata dict.
+        monthly_full_train: Generic full-history frame (through ``L``).
+        monthly_split_metadata: Generic full-history metadata dict.
         parameters: Pipeline parameters. Reads the ``monthly_sarimax`` block.
 
     Returns:
-        Tuple of five items:
-            - sarimax_train: SARIMAX-ready train split DataFrame.
-            - sarimax_validation: SARIMAX-ready validation split DataFrame.
-            - sarimax_test: SARIMAX-ready test split DataFrame.
-            - sarimax_full_train: SARIMAX-ready full-train split DataFrame.
-            - sarimax_split_metadata: Metadata dict for the SARIMAX splits.
+        Tuple of:
+            - sarimax_full_train: SARIMAX-ready full-history DataFrame.
+            - sarimax_split_metadata: Metadata dict for the SARIMAX dataset.
     """
     sarimax_params = _get_monthly_sarimax_params(parameters)
     date_column: str = sarimax_params.get("date_column", "month_start_date")
@@ -963,43 +867,30 @@ def adapt_monthly_data_for_sarimax(
     sku_column: str = sarimax_params.get("sku_column", "sku")
     exogenous_columns: list[str] = list(sarimax_params.get("exogenous_columns", []))
 
-    splits_raw = {
-        "train": monthly_train,
-        "validation": monthly_validation,
-        "test": monthly_test,
-        "full_train": monthly_full_train,
-    }
-
-    # Fail early when required columns are missing in any split.
+    # Fail early when required columns are missing.
     required_cols = [date_column, target_column, *exogenous_columns]
-    for split_name, split_df in splits_raw.items():
-        _validate_required_columns(
-            split_df,
-            required_cols,
-            f"monthly_{split_name} (sarimax adapter)",
-        )
+    _validate_required_columns(
+        monthly_full_train,
+        required_cols,
+        "monthly_full_train (sarimax adapter)",
+    )
 
     logger.info(
-        "Adapting generic monthly splits for SARIMAX: date=%s, target=%s, exog=%s.",
+        "Adapting generic monthly full history for SARIMAX: date=%s, target=%s, exog=%s.",
         date_column,
         target_column,
         exogenous_columns if exogenous_columns else "(none)",
     )
 
-    prepared_splits: dict[str, pd.DataFrame] = {}
-    split_infos: dict[str, Any] = {}
-    for split_name, split_df in splits_raw.items():
-        prepared, info = _prepare_sarimax_split(
-            split_df,
-            date_column=date_column,
-            target_column=target_column,
-            exogenous_columns=exogenous_columns,
-            sarimax_params=sarimax_params,
-            split_name=split_name,
-        )
-        prepared_splits[split_name] = prepared
-        split_infos[split_name] = info
-        logger.info("SARIMAX %s split prepared: %s", split_name, info)
+    prepared, info = _prepare_sarimax_split(
+        monthly_full_train,
+        date_column=date_column,
+        target_column=target_column,
+        exogenous_columns=exogenous_columns,
+        sarimax_params=sarimax_params,
+        split_name="full_train",
+    )
+    logger.info("SARIMAX full_train prepared: %s", info)
 
     sarimax_metadata: dict[str, Any] = {
         "granularity": "monthly",
@@ -1010,19 +901,13 @@ def adapt_monthly_data_for_sarimax(
         "frequency": sarimax_params.get("frequency", "MS"),
         "exogenous_columns": exogenous_columns,
         "allow_empty_exog": bool(sarimax_params.get("allow_empty_exog", True)),
-        "splits": split_infos,
+        "splits": {"full_train": info},
         "source_metadata": {"from": "monthly_split_metadata"},
         "created_by": "model_input_preparation.sarimax_adapter",
     }
     logger.info("Built monthly_sarimax_split_metadata: %s", sarimax_metadata)
 
-    return (
-        prepared_splits["train"],
-        prepared_splits["validation"],
-        prepared_splits["test"],
-        prepared_splits["full_train"],
-        sarimax_metadata,
-    )
+    return prepared, sarimax_metadata
 
 
 # ── Prophet future regressors and split metadata ──────────────────────────────
@@ -1652,10 +1537,7 @@ def adapt_monthly_data_for_catboost(
 
 # ── Prophet future regressors and split metadata ──────────────────────────────
 
-def build_monthly_prophet_split_metadata(  # noqa: PLR0912, PLR0913
-    monthly_prophet_train: pd.DataFrame,
-    monthly_prophet_validation: pd.DataFrame,
-    monthly_prophet_test: pd.DataFrame,
+def build_monthly_prophet_split_metadata(  # noqa: PLR0913
     monthly_prophet_full_train: pd.DataFrame,
     monthly_prophet_future_3m: pd.DataFrame,
     monthly_prophet_future_6m: pd.DataFrame,
@@ -1663,24 +1545,21 @@ def build_monthly_prophet_split_metadata(  # noqa: PLR0912, PLR0913
     preparation_metadata: dict[str, Any],
     parameters: dict,
 ) -> dict[str, Any]:
-    """Compile a single metadata dict covering all Prophet split partitions and future horizons.
+    """Compile a metadata dict covering the Prophet full history and future horizons.
 
     Args:
-        monthly_prophet_train: Prophet train split.
-        monthly_prophet_validation: Prophet validation split.
-        monthly_prophet_test: Prophet test split.
-        monthly_prophet_full_train: Prophet full-train split.
+        monthly_prophet_full_train: Prophet full-history frame (through ``L``).
         monthly_prophet_future_3m: Future regressor DataFrame for the 3-month horizon.
         monthly_prophet_future_6m: Future regressor DataFrame for the 6-month horizon.
         monthly_prophet_future_12m: Future regressor DataFrame for the 12-month horizon.
         preparation_metadata: Internal metadata dict produced by ``adapt_monthly_data_for_prophet``.
-            Must contain ``model_family``, ``granularity``, ``split_mode``,
+            Must contain ``model_family``, ``granularity``, ``evaluation_mode``,
             ``active_regressors``, and ``dropped_rows``.
         parameters: Pipeline parameters with a ``monthly_prophet`` block.
 
     Returns:
-        Dict with model_family, granularity, split_mode, active_regressors, train,
-        validation, test, full_train, future_horizons, and dropped_rows.
+        Dict with model_family, granularity, evaluation_mode, active_regressors,
+        full_train, future_horizons, and dropped_rows.
     """
     prophet_params = _get_monthly_prophet_params(parameters)
     prophet_date_column = prophet_params["prophet_date_column"]
@@ -1688,13 +1567,8 @@ def build_monthly_prophet_split_metadata(  # noqa: PLR0912, PLR0913
     metadata = {
         "model_family": preparation_metadata["model_family"],
         "granularity": preparation_metadata["granularity"],
-        "split_mode": preparation_metadata["split_mode"],
+        "evaluation_mode": preparation_metadata.get("evaluation_mode", "rolling_origin"),
         "active_regressors": preparation_metadata["active_regressors"],
-        "train": _summarize_date_range(monthly_prophet_train, prophet_date_column),
-        "validation": _summarize_date_range(
-            monthly_prophet_validation, prophet_date_column
-        ),
-        "test": _summarize_date_range(monthly_prophet_test, prophet_date_column),
         "full_train": _summarize_date_range(
             monthly_prophet_full_train, prophet_date_column
         ),

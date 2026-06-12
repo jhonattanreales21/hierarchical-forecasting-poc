@@ -108,6 +108,12 @@ monthly_split_metadata:
   type: json.JSONDataset
   filepath: data/05_model_input/monthly_split_metadata.json
 
+# 05_model_input — Rolling-origin window specification (audit artifact). The last
+# cycle predicts [L-2, L-1, L]; shared by model_input_preparation and train_monthly.
+monthly_rolling_origin_windows:
+  type: json.JSONDataset
+  filepath: data/05_model_input/monthly_rolling_origin_windows.json
+
 # 05_model_input — Generic monthly future feature frames (family-agnostic canonical inference inputs)
 monthly_future_3m:
   type: pandas.ParquetDataset
@@ -225,9 +231,9 @@ monthly_prophet_tuning_results:
   type: pandas.ParquetDataset
   filepath: data/06_models/tuning/monthly_prophet_tuning_results.parquet
 
-monthly_prophet_validation_metrics:
+monthly_prophet_rolling_origin_metrics:
   type: pandas.ParquetDataset
-  filepath: data/06_models/tuning/monthly_prophet_validation_metrics.parquet
+  filepath: data/06_models/tuning/monthly_prophet_rolling_origin_metrics.parquet
 
 monthly_prophet_prechampion_configs:
   type: json.JSONDataset
@@ -246,9 +252,9 @@ monthly_sarimax_tuning_results:
   type: pandas.ParquetDataset
   filepath: data/06_models/tuning/monthly_sarimax_tuning_results.parquet
 
-monthly_sarimax_validation_metrics:
+monthly_sarimax_rolling_origin_metrics:
   type: pandas.ParquetDataset
-  filepath: data/06_models/tuning/monthly_sarimax_validation_metrics.parquet
+  filepath: data/06_models/tuning/monthly_sarimax_rolling_origin_metrics.parquet
 
 monthly_sarimax_prechampion_configs:
   type: json.JSONDataset
@@ -316,10 +322,10 @@ champion_registry:
   type: json.JSONDataset
   filepath: data/06_models/champions/champion_registry.json
 
-# 06_models — Monthly multi-family selection artifacts
-monthly_candidate_test_metrics:
+# 06_models — Monthly multi-family selection artifacts (rolling-origin metrics)
+monthly_candidate_metrics:
   type: pandas.ParquetDataset
-  filepath: data/06_models/selection/monthly_candidate_test_metrics.parquet
+  filepath: data/06_models/selection/monthly_candidate_metrics.parquet
 
 monthly_family_champion_summary:
   type: pandas.ParquetDataset
