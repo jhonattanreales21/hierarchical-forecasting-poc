@@ -346,6 +346,14 @@ def _format_metric_value(value: Any, kind: str) -> str:
     return format_metric(value, decimals=3)
 
 
+def _coerce_float(value: Any) -> float:
+    """Coerce a value to float for sorting, returning -inf when not numeric."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float("-inf")
+
+
 def _format_hyperparameter_value(value: Any) -> str:
     """Format a hyperparameter value compactly for the details table.
 
@@ -375,7 +383,10 @@ def render_champion_model_details(identity: dict) -> None:
     family = family_label(identity.get("model_family"))
     champion_id = identity.get("champion_id")
     metrics = identity.get("test_metrics", {}) or {}
-    hyperparameters = identity.get("hyperparameters", {}) or {}
+    hyperparameters = dict(identity.get("hyperparameters", {}) or {})
+    # Per-regressor prior scales are nested; surface them in a dedicated table so
+    # they do not clutter (or break) the scalar hyperparameter table.
+    regressor_prior_scales = hyperparameters.pop("regressor_prior_scales", {}) or {}
     active_regressors = identity.get("active_regressors", []) or []
 
     selection_metric = identity.get("selection_metric")
@@ -430,6 +441,27 @@ def render_champion_model_details(identity: dict) -> None:
                 )
             else:
                 st.caption("Hyperparameters are not recorded for this champion.")
+
+        if regressor_prior_scales:
+            st.markdown("**Regressor prior scales**")
+            st.caption(
+                "Per-regressor regularisation strength — higher means the model was "
+                "allowed to follow that exogenous driver more closely."
+            )
+            ranked = sorted(
+                regressor_prior_scales.items(),
+                key=lambda item: _coerce_float(item[1]),
+                reverse=True,
+            )
+            prior_rows = [
+                {"Regressor": name, "Prior scale": _format_hyperparameter_value(scale)}
+                for name, scale in ranked
+            ]
+            st.dataframe(
+                pd.DataFrame(prior_rows),
+                width="stretch",
+                hide_index=True,
+            )
 
         if active_regressors:
             st.markdown(f"**Active exogenous regressors** ({len(active_regressors)})")

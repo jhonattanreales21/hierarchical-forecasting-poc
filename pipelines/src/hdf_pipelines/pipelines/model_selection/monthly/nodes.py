@@ -2132,8 +2132,15 @@ def _refit_prophet_on_frame(
 
     model = Prophet(**model_params)
     for name in regressors:
-        mode = extra[name].get("mode", "additive") if isinstance(extra.get(name), dict) else "additive"
-        model.add_regressor(name, mode=mode)
+        reg_cfg = extra.get(name) if isinstance(extra.get(name), dict) else {}
+        kwargs: dict = {"mode": reg_cfg.get("mode", "additive")}
+        # Reproduce the candidate's tuned per-regressor prior scale. Without this,
+        # add_regressor() silently defaults each regressor to holidays_prior_scale,
+        # discarding the prior scales chosen during tuning.
+        prior_scale = reg_cfg.get("prior_scale")
+        if prior_scale is not None:
+            kwargs["prior_scale"] = float(prior_scale)
+        model.add_regressor(name, **kwargs)
     model.fit(fit_input)
     return model
 
@@ -2186,6 +2193,30 @@ def _extract_prophet_params(model: Any) -> dict:
         "daily_seasonality": getattr(model, "daily_seasonality", False),
         "interval_width": float(getattr(model, "interval_width", 0.8)),
     }
+
+
+def _extract_prophet_regressor_prior_scales(model: Any) -> dict:
+    """Extract the per-regressor prior scales from a fitted Prophet model.
+
+    Prophet stores each registered regressor's prior scale under
+    ``model.extra_regressors[name]['prior_scale']``. These are the tuned
+    regularisation strengths per exogenous driver (e.g. the demand-planning
+    regressors), which the global hyperparameters do not capture. Regressors that
+    were not individually tuned carry the global ``holidays_prior_scale`` default.
+
+    Args:
+        model: A fitted Prophet model.
+
+    Returns:
+        Mapping of regressor name to prior scale, ordered as registered. Empty
+        when the model exposes no extra regressors.
+    """
+    extra = getattr(model, "extra_regressors", None) or {}
+    prior_scales: dict = {}
+    for name, cfg in extra.items():
+        if isinstance(cfg, dict) and cfg.get("prior_scale") is not None:
+            prior_scales[str(name)] = float(cfg["prior_scale"])
+    return prior_scales
 
 
 def _refit_sarimax_full_history(
@@ -2274,7 +2305,11 @@ def _extract_champion_hyperparameters(
         Dict of hyperparameter names to values; schema is family-specific.
     """
     if production_family == "prophet":
-        return _extract_prophet_params(champion_model)
+        params = _extract_prophet_params(champion_model)
+        params["regressor_prior_scales"] = _extract_prophet_regressor_prior_scales(
+            champion_model
+        )
+        return params
     if production_family == "sarimax":
         config = dict(inference_contract.get("sarimax_config") or {})
         return {
