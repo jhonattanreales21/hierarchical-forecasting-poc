@@ -25,15 +25,21 @@ class TestKedroRun:
             session.run(pipeline_names=["model_input_preparation"])
 
         expected_outputs = [
+            "monthly_modeling_data.parquet",
+            "monthly_full_train.parquet",
+            "monthly_split_metadata.json",
+            "monthly_rolling_origin_windows.json",
             "monthly_prophet_modeling_data.parquet",
-            "monthly_prophet_train.parquet",
-            "monthly_prophet_validation.parquet",
-            "monthly_prophet_test.parquet",
             "monthly_prophet_full_train.parquet",
             "monthly_prophet_future_3m.parquet",
             "monthly_prophet_future_6m.parquet",
             "monthly_prophet_future_12m.parquet",
             "monthly_prophet_split_metadata.json",
+            "monthly_sarimax_full_train.parquet",
+            "monthly_sarimax_split_metadata.json",
+            "monthly_future_3m.parquet",
+            "monthly_future_6m.parquet",
+            "monthly_future_12m.parquet",
         ]
         output_dir = _PROJECT_ROOT / "data" / "05_model_input"
         for filename in expected_outputs:

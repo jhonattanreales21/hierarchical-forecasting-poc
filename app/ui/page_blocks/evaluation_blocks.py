@@ -57,7 +57,7 @@ def render_evaluation_summary(identity: dict, business_flag: bool) -> None:
             title="Business accuracy target met",
             message=(
                 f"Forecast precision ≥ {format_percentage(precision_threshold)} "
-                "on the held-out test window."
+                "on the rolling-origin evaluation."
             ),
         )
     else:
@@ -71,10 +71,10 @@ def render_evaluation_summary(identity: dict, business_flag: bool) -> None:
 
     render_section_header(
         f"Production Champion: {family} ({format_optional(champion_id)})",
-        description="Held-out test performance of the model selected across all families.",
+        description="Rolling-origin performance of the model selected across all families.",
     )
 
-    wape = test_m.get("wape")
+    wmape = test_m.get("wmape")
     mase = test_m.get("mase")
     rmse = test_m.get("rmse")
     bias = test_m.get("bias")
@@ -90,9 +90,9 @@ def render_evaluation_summary(identity: dict, business_flag: bool) -> None:
         )
     with cols[1]:
         render_kpi_card(
-            label="Test WMAPE",
-            value=format_percentage(wape) if wape is not None else "N/A",
-            status="success" if (wape is not None and wape < 0.15) else "warning",
+            label="WMAPE",
+            value=format_percentage(wmape) if wmape is not None else "N/A",
+            status="success" if (wmape is not None and wmape < 0.15) else "warning",
             help_text="Primary metric: weighted mean absolute % error",
         )
     with cols[2]:
@@ -104,7 +104,7 @@ def render_evaluation_summary(identity: dict, business_flag: bool) -> None:
         )
     with cols[3]:
         render_kpi_card(
-            label="Test MASE",
+            label="MASE",
             value=f"{mase:.3f}" if mase is not None else "N/A",
             help_text="MASE < 1: better than seasonal naïve",
             status="success" if (mase is not None and mase < 1.0) else "warning",
@@ -113,7 +113,7 @@ def render_evaluation_summary(identity: dict, business_flag: bool) -> None:
     cols2 = st.columns(4)
     with cols2[0]:
         render_kpi_card(
-            label="Test RMSE",
+            label="RMSE",
             value=(
                 format_metric(rmse, decimals=1, suffix=" units")
                 if rmse is not None
@@ -122,7 +122,7 @@ def render_evaluation_summary(identity: dict, business_flag: bool) -> None:
         )
     with cols2[1]:
         render_kpi_card(
-            label="Test Bias",
+            label="Bias",
             value=format_percentage(bias) if bias is not None else "N/A",
             help_text="Relative forecast bias (negative = under-forecast)",
         )
@@ -141,10 +141,9 @@ def render_evaluation_summary(identity: dict, business_flag: bool) -> None:
             ),
         )
 
-    test_period = identity.get("test_period", {}) or {}
+    evaluation = identity.get("evaluation", {}) or {}
     st.caption(
-        f"Test window: {test_period.get('start_date', 'N/A')} → "
-        f"{test_period.get('end_date', 'N/A')}  |  "
+        f"Evaluation mode: {evaluation.get('mode', 'rolling_origin')}  |  "
         f"Training cutoff: {format_date(identity.get('training_cutoff', ''))}  |  "
         f"Selection metric: {str(selection_metric).upper() if selection_metric else 'N/A'}"
     )
@@ -166,7 +165,7 @@ def render_family_champion_comparison(
     render_section_header(
         "Family Champions",
         description=(
-            "Best candidate within each eligible model family on the held-out test "
+            "Best candidate within each eligible model family on rolling-origin "
             "window. The production champion (★) is selected from these by the primary metric."
         ),
     )
@@ -177,11 +176,11 @@ def render_family_champion_comparison(
         )
         return
 
-    cols = ["family", "family_champion_id", "wape", "mase", "rmse", "bias"]
+    cols = ["family", "family_champion_id", "wmape", "mase", "rmse", "bias"]
     available = [c for c in cols if c in family_df.columns]
     display = family_df[available].copy()
-    if "wape" in display.columns:
-        display = display.sort_values("wape").reset_index(drop=True)
+    if "wmape" in display.columns:
+        display = display.sort_values("wmape").reset_index(drop=True)
 
     if production_family and "family" in display.columns:
         display.insert(
@@ -194,7 +193,7 @@ def render_family_champion_comparison(
             ),
         )
 
-    for col in ["wape", "bias"]:
+    for col in ["wmape", "bias"]:
         if col in display.columns:
             display[col] = display[col].map(format_percentage)
     if "mase" in display.columns:
@@ -209,14 +208,14 @@ def render_family_champion_comparison(
             "champion": "Champion",
             "family": "Family",
             "family_champion_id": "Candidate",
-            "wape": "WMAPE",
+            "wmape": "WMAPE",
             "mase": "MASE",
             "rmse": "RMSE",
             "bias": "Bias",
         }
     )
     st.dataframe(display, width="stretch", hide_index=True)
-    st.caption("★ = current production champion family. Ranked by test WMAPE (lower is better).")
+    st.caption("★ = current production champion family. Ranked by WMAPE_M3 (lower is better).")
 
 
 def render_production_selection_summary(sel_df: pd.DataFrame) -> None:
@@ -264,18 +263,18 @@ def render_production_selection_summary(sel_df: pd.DataFrame) -> None:
 
 
 def render_candidate_test_metrics_table(tm_df: pd.DataFrame) -> None:
-    """Render the detailed per-candidate test metrics table across all families.
+    """Render the detailed per-candidate rolling-origin metrics table across families.
 
     Args:
-        tm_df: Per-candidate test metrics DataFrame. Empty triggers a note.
+        tm_df: Per-candidate rolling-origin metrics DataFrame. Empty triggers a note.
     """
     render_section_header(
-        "Detailed Candidate Test Metrics",
+        "Detailed Candidate Metrics",
         description="Full per-candidate evaluation results including horizon-specific error.",
     )
 
     if tm_df is None or tm_df.empty:
-        st.info(f"Candidate test metrics not available. Run `{_MONTHLY_SELECTION_CMD}`.")
+        st.info(f"Candidate metrics not available. Run `{_MONTHLY_SELECTION_CMD}`.")
         return
 
     display_cols = [
@@ -284,19 +283,19 @@ def render_candidate_test_metrics_table(tm_df: pd.DataFrame) -> None:
         "candidate_rank",
         "is_family_champion",
         "is_production_champion",
-        "wape",
+        "wmape",
         "mase",
         "rmse",
         "bias",
-        "test_m2_wape",
-        "test_m3_wape",
+        "wmape_m2",
+        "wmape_m3",
     ]
     available = [c for c in display_cols if c in tm_df.columns]
     display = tm_df[available].copy()
-    if "wape" in display.columns:
-        display = display.sort_values("wape").reset_index(drop=True)
+    if "wmape_m3" in display.columns:
+        display = display.sort_values("wmape_m3").reset_index(drop=True)
 
-    for col in ["wape", "bias", "test_m2_wape", "test_m3_wape"]:
+    for col in ["wmape", "bias", "wmape_m2", "wmape_m3"]:
         if col in display.columns:
             display[col] = display[col].map(format_percentage)
     if "mase" in display.columns:
@@ -313,16 +312,16 @@ def render_candidate_test_metrics_table(tm_df: pd.DataFrame) -> None:
             "candidate_rank": "Rank",
             "is_family_champion": "Family champ",
             "is_production_champion": "Prod champ",
-            "wape": "WMAPE",
+            "wmape": "WMAPE",
             "mase": "MASE",
             "rmse": "RMSE",
             "bias": "Bias",
-            "test_m2_wape": "M+2 WMAPE",
-            "test_m3_wape": "M+3 WMAPE",
+            "wmape_m2": "M+2 WMAPE",
+            "wmape_m3": "M+3 WMAPE",
         }
     )
     st.dataframe(display, width="stretch", hide_index=True)
-    st.caption("Ranked by test WMAPE. MASE < 1 beats the seasonal naïve baseline.")
+    st.caption("Ranked by WMAPE_M3. MASE < 1 beats the seasonal naïve baseline.")
 
 
 def render_validation_notes(meta: dict) -> None:
@@ -333,9 +332,9 @@ def render_validation_notes(meta: dict) -> None:
     """
     with st.expander("Validation protocol & champion parameters"):
         st.markdown(
-            "**Validation approach:** Time-based, leakage-safe splits. Hyperparameters "
-            "are tuned on training data, shortlisted on validation, refit on train+validation, "
-            "and the champion is chosen on a held-out test window — no random shuffling."
+            "**Validation approach:** rolling-origin backtesting with time-based, "
+            "leakage-safe cycles. Tuning and champion selection use the same pooled "
+            "rolling-origin metrics; no random shuffling."
         )
         params = meta.get("hyperparameters") or meta.get("model_params") or {}
         if params:

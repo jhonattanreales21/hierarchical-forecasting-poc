@@ -7,7 +7,7 @@ model_selection:
   tie_breaker: "RMSE"
 
   # --- Monthly multi-family selection (rolling-origin protocol) ---
-  # Champions are selected directly on macro-averaged rolling-origin metrics
+  # Champions are selected directly on pooled rolling-origin metrics
   # (no held-out test stage). Phase 1 compares Prophet + SARIMAX; CatBoost is
   # re-enabled in Phase 2.
   monthly:

@@ -220,7 +220,7 @@ def assemble_monthly_candidate_metrics(
     """Assemble the cross-family candidate metrics table from rolling-origin pre-champions.
 
     Replaces the held-out test stage (protocol §4, §11): champions are selected
-    directly from the macro-averaged rolling-origin metrics already produced by each
+    directly from the pooled rolling-origin metrics already produced by each
     family tuner. One row per pre-champion candidate, with the WMAPE / WMAPE_Mh /
     MASE / BIAS metric set plus the SARIMAX Ljung-Box eligibility flag.
 
@@ -270,6 +270,7 @@ def _candidate_rows(prechampion_configs: dict, family: str, list_key: str) -> li
             "selection_stage": "rolling_origin",
             "ljung_box_pvalue": _safe_float(entry.get("ljung_box_pvalue")),
             "autocorrelation_excluded": bool(entry.get("autocorrelation_excluded", False)),
+            "ljung_box_cycle_index": _safe_int(entry.get("ljung_box_cycle_index")),
             "primary_metric": "wmape_m3",
             "primary_metric_value": _safe_float(metrics.get("wmape_m3")),
             "is_family_champion": False,
@@ -677,7 +678,7 @@ def build_monthly_champion_artifacts(  # noqa: PLR0913
             "mode": "rolling_origin",
             "primary_metric": "wmape_m3",
             "note": (
-                "Champions selected directly on macro-averaged rolling-origin metrics; "
+                "Champions selected directly on pooled rolling-origin metrics; "
                 "no reserved out-of-sample window was used (optimistic-selection risk, "
                 "protocol §9.1)."
             ),

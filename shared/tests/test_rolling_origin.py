@@ -2,7 +2,7 @@
 
 Covers the protocol invariants (§3, §5, §9.3, §10): expanding/step-1 cycle
 generation with the last cycle predicting ``[L-2, L-1, L]``, the minimum-train
-guard, per-cycle metric definitions, macro-average aggregation, and the
+guard, per-cycle metric definitions, pooled aggregation, and the
 family-agnostic driver.
 """
 
@@ -90,16 +90,44 @@ def test_compute_cycle_metrics_keys_and_values() -> None:
     assert m["bias"] == pytest.approx(30.0 / 601.0)
 
 
-def test_aggregate_macro_average_ignores_nan() -> None:
+def test_aggregate_pools_wmape_bias_and_keeps_mase_average() -> None:
     records = [
-        {"wmape": 0.10, "wmape_m3": 0.20, "mase": 0.5},
-        {"wmape": 0.20, "wmape_m3": 0.40, "mase": float("nan")},
-        {"wmape": float("nan"), "wmape_m3": 0.60, "mase": 0.9},
+        {
+            "wmape": 0.10,
+            "_pool_wmape_num": 10.0,
+            "_pool_wmape_den": 100.0,
+            "wmape_m3": 0.20,
+            "_pool_wmape_m3_num": 4.0,
+            "_pool_wmape_m3_den": 20.0,
+            "bias": 0.05,
+            "_pool_bias_num": 5.0,
+            "_pool_bias_den": 100.0,
+            "mase": 0.5,
+        },
+        {
+            "wmape": 0.20,
+            "_pool_wmape_num": 40.0,
+            "_pool_wmape_den": 200.0,
+            "wmape_m3": 0.40,
+            "_pool_wmape_m3_num": 12.0,
+            "_pool_wmape_m3_den": 30.0,
+            "bias": -0.10,
+            "_pool_bias_num": -20.0,
+            "_pool_bias_den": 200.0,
+            "mase": float("nan"),
+        },
+        {
+            "wmape": float("nan"),
+            "wmape_m3": float("nan"),
+            "bias": float("nan"),
+            "mase": 0.9,
+        },
     ]
     agg = aggregate_rolling_origin_metrics(records)
 
-    assert agg["wmape"] == pytest.approx(0.15)  # mean of 0.10, 0.20
-    assert agg["wmape_m3"] == pytest.approx(0.40)  # mean of 0.20, 0.40, 0.60
+    assert agg["wmape"] == pytest.approx(50.0 / 300.0)
+    assert agg["wmape_m3"] == pytest.approx(16.0 / 50.0)
+    assert agg["bias"] == pytest.approx(-15.0 / 300.0)
     assert agg["mase"] == pytest.approx(0.70)  # mean of 0.5, 0.9
     assert agg["n_cycles"] == 3
     assert agg["n_cycles_evaluated"] == 2  # wmape finite in 2 of 3

@@ -26,7 +26,7 @@ apply_global_styles()
 render_page_header(
     title="Evaluation Report",
     subtitle=(
-        "Champion selection rationale and held-out test performance across "
+        "Champion selection rationale and rolling-origin performance across "
         "Prophet, SARIMAX, and CatBoost."
     ),
     eyebrow="Model Evaluation",
@@ -47,8 +47,8 @@ inference_meta = load_inference_metadata()
 selection_summary = load_model_selection_summary()
 identity = extract_champion_identity(meta, inference_meta, selection_summary)
 
-wape = identity.get("test_metrics", {}).get("wape")
-business_flag = wape is not None and wape <= 0.15
+wmape = identity.get("test_metrics", {}).get("wmape")
+business_flag = wmape is not None and wmape <= 0.15
 
 render_evaluation_summary(identity, business_flag)
 

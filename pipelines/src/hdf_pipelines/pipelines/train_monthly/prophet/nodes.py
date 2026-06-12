@@ -3,8 +3,8 @@
 Implements Optuna Bayesian hyperparameter tuning for Prophet on monthly demand.
 Each trial is scored by a **rolling-origin backtest**: for every cycle the model
 is refit on history through the cycle origin and forecasts the next ``H`` months;
-per-cycle metrics are macro-averaged. The Optuna objective is the averaged
-``WMAPE_M3`` (protocol §3.5, §4). The top-N pre-champions are persisted (refit on
+WMAPE and BIAS metrics are pooled where applicable. The Optuna objective is
+pooled ``WMAPE_M3`` (protocol §3.5, §4). The top-N pre-champions are persisted (refit on
 full history) for the model-selection stage, which chooses champions directly from
 these rolling-origin metrics — there is no separate hold-out test stage.
 """
@@ -53,7 +53,7 @@ def train_and_evaluate_monthly_prophet_candidates(  # noqa: PLR0915
 
     Runs one ephemeral Optuna study. Each trial is evaluated by refitting Prophet
     at every rolling-origin cycle and forecasting the next ``H`` months; the
-    objective is the macro-averaged ``WMAPE_M3``. The top-N pre-champions are refit
+    objective is pooled ``WMAPE_M3``. The top-N pre-champions are refit
     on full history (through ``L``) and persisted for model selection.
 
     Args:
@@ -68,7 +68,7 @@ def train_and_evaluate_monthly_prophet_candidates(  # noqa: PLR0915
         Six-element tuple:
 
         1. ``tuning_results`` — DataFrame, one row per candidate (ranked).
-        2. ``rolling_origin_metrics`` — DataFrame, per-candidate macro-averaged metrics.
+        2. ``rolling_origin_metrics`` — DataFrame, per-candidate rolling-origin metrics.
         3. ``prechampion_configs`` — Dict with top-N pre-champion configurations.
         4. ``candidate_models`` — Dict mapping candidate_id → full-history Prophet model
            (top-N only).
@@ -418,7 +418,7 @@ def _build_prechampion_configs(
 ) -> dict:
     """Build the prechampion_configs artifact consumed by model selection.
 
-    Stores each pre-champion's hyperparameters and macro-averaged rolling-origin
+    Stores each pre-champion's hyperparameters and rolling-origin
     metrics so selection can rank families directly on these metrics.
 
     Returns:

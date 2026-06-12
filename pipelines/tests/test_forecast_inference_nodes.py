@@ -1,3 +1,4 @@
+# ruff: noqa: PLR2004
 """Tests for metadata-driven monthly champion forecast inference.
 
 Covers:
@@ -139,8 +140,8 @@ def _prophet_metadata() -> dict[str, Any]:
         "champion_id": "prophet_candidate_001",
         "granularity": "monthly",
         "active_regressors": ["business_days"],
-        "selection": {"primary_metric": "wape"},
-        "metrics": {"wape": 0.08},
+        "selection": {"primary_metric": "wmape"},
+        "metrics": {"wmape": 0.08},
     }
 
 
@@ -150,8 +151,8 @@ def _sarimax_metadata(active_regressors: list[str] | None = None) -> dict[str, A
         "champion_id": "sarimax_trial_001",
         "granularity": "monthly",
         "active_regressors": active_regressors or [],
-        "selection": {"primary_metric": "wape"},
-        "metrics": {"wape": 0.10},
+        "selection": {"primary_metric": "wmape"},
+        "metrics": {"wmape": 0.10},
     }
 
 
@@ -203,8 +204,8 @@ def _catboost_metadata() -> dict[str, Any]:
         "champion_id": "catboost_trial_001",
         "granularity": "monthly",
         "feature_columns": _CATBOOST_FEATURE_COLS,
-        "selection": {"primary_metric": "wape"},
-        "metrics": {"wape": 0.09},
+        "selection": {"primary_metric": "wmape"},
+        "metrics": {"wmape": 0.09},
     }
 
 
@@ -218,7 +219,7 @@ def _catboost_model(
         "model": _FakeCatBoostModel(value),
         "feature_columns": cols,
         "config": {"depth": 6, "learning_rate": 0.05},
-        "validation_metrics": {"wape": 0.09},
+        "validation_metrics": {"wmape": 0.09},
     }
 
 
@@ -647,12 +648,14 @@ def test_catboost_adapter_produces_canonical_schema():
     assert (f3["horizon_label"] == "3m").all()
 
 
-def test_catboost_adapter_returns_correct_horizon_row_counts():
-    """CatBoost inference must return 3, 6, and 12 rows for the respective horizons."""
+def test_catboost_node_caps_outputs_above_three_months_with_empty_frames():
+    """CatBoost node inference must cap official outputs at the 3-month horizon."""
     f3, f6, f12, _, _ = _run_catboost_node(_catboost_model(), _catboost_metadata())
     assert len(f3) == 3
-    assert len(f6) == 6
-    assert len(f12) == 12
+    assert len(f6) == 0
+    assert len(f12) == 0
+    assert list(f6.columns) == _STANDARD_FORECAST_COLUMNS
+    assert list(f12.columns) == _STANDARD_FORECAST_COLUMNS
 
 
 def test_catboost_adapter_null_intervals():
@@ -722,13 +725,15 @@ def test_catboost_adapter_missing_future_columns_raises_clear_error():
         )
 
 
-def test_catboost_inference_metadata_contains_recursive_note():
-    """CatBoost inference metadata must carry a note about recursive strategy."""
+def test_catboost_inference_metadata_contains_horizon_cap_note():
+    """CatBoost inference metadata must carry a note about the 3-month cap."""
     _, _, _, _, meta = _run_catboost_node(_catboost_model(), _catboost_metadata())
     notes = meta.get("notes", [])
-    assert any("recursive" in n.lower() for n in notes), (
-        f"CatBoost inference metadata should include a recursive-strategy note; got: {notes}"
+    assert any("capped at 3 months" in n.lower() for n in notes), (
+        f"CatBoost inference metadata should include a horizon-cap note; got: {notes}"
     )
+    assert meta["horizons"]["6"]["skipped"] is True
+    assert meta["horizons"]["12"]["skipped"] is True
 
 
 def test_catboost_node_dispatch_routes_correctly():
@@ -736,6 +741,7 @@ def test_catboost_node_dispatch_routes_correctly():
     f3, f6, f12, latest, meta = _run_catboost_node(_catboost_model(), _catboost_metadata())
     assert meta["model_family"] == "catboost"
     assert len(f3) == 3
-    assert len(f6) == 6
-    assert len(f12) == 12
-    assert len(latest) == 12  # default_horizon=12
+    assert len(f6) == 0
+    assert len(f12) == 0
+    assert len(latest) == 3  # default 12 falls back to non-empty 3m output
+    assert meta["default_horizon"] == 3

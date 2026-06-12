@@ -15,8 +15,9 @@ Design invariants (protocol §3, §5, §6):
 - **Last cycle predicts ``[L-2, L-1, L]``** — the origin of the last cycle is
   ``L - horizon`` so that all observed history through ``L`` participates in
   tuning and selection; no months are reserved out of sample.
-- **Macro-average aggregation.** Metrics are computed per cycle and averaged
-  with uniform weight across cycles (no error pooling).
+- **Pooled aggregation where applicable.** WMAPE, per-horizon WMAPE, and BIAS
+  are pooled from cycle-level numerator/denominator totals. MASE and RMSE remain
+  cycle-level summary averages.
 - **MASE** uses a seasonal-naive (``s = season``) denominator computed on
   *each cycle's own train* window.
 
@@ -40,6 +41,7 @@ logger = logging.getLogger(__name__)
 
 # Default epsilon guard for per-horizon WMAPE and BIAS denominators (protocol §5).
 DEFAULT_EPSILON: float = 1.0
+_POOL_PREFIX: str = "_pool_"
 
 
 @dataclass(frozen=True)
@@ -180,21 +182,31 @@ def compute_cycle_metrics(
     y_pred = np.asarray(y_pred, dtype=float)
     y_train = np.asarray(y_train, dtype=float)
 
+    error = y_pred - y_true
+    abs_error = np.abs(error)
+    abs_true = np.abs(y_true)
+
     metrics: dict[str, float] = {
         "wmape": _wape(y_true, y_pred),
         "rmse": _rmse(y_true, y_pred),
         "mase": _mase(y_true, y_pred, y_train, season),
+        f"{_POOL_PREFIX}wmape_num": float(np.sum(abs_error)),
+        f"{_POOL_PREFIX}wmape_den": float(np.sum(abs_true)),
     }
 
     # Per-horizon WMAPE with epsilon guard (single point per horizon).
     for h in range(1, len(y_true) + 1):
-        num = float(abs(y_true[h - 1] - y_pred[h - 1]))
-        den = float(abs(y_true[h - 1])) + epsilon
+        num = float(abs_error[h - 1])
+        den = float(abs_true[h - 1]) + epsilon
         metrics[f"wmape_m{h}"] = num / den if den > 0 else float("nan")
+        metrics[f"{_POOL_PREFIX}wmape_m{h}_num"] = num
+        metrics[f"{_POOL_PREFIX}wmape_m{h}_den"] = den
 
     # Normalised directional BIAS over the block (protocol §5).
-    denom_bias = float(np.sum(np.abs(y_true))) + epsilon
-    metrics["bias"] = float(np.sum(y_pred - y_true)) / denom_bias
+    denom_bias = float(np.sum(abs_true)) + epsilon
+    metrics[f"{_POOL_PREFIX}bias_num"] = float(np.sum(error))
+    metrics[f"{_POOL_PREFIX}bias_den"] = denom_bias
+    metrics["bias"] = metrics[f"{_POOL_PREFIX}bias_num"] / denom_bias
 
     return metrics
 
@@ -202,18 +214,19 @@ def compute_cycle_metrics(
 def aggregate_rolling_origin_metrics(
     per_cycle_records: Sequence[dict[str, float]],
 ) -> dict[str, float]:
-    """Macro-average per-cycle metrics with uniform weight (protocol §4, §5).
+    """Aggregate rolling-origin metrics across successfully evaluated cycles.
 
-    For every metric key present across the cycles, the arithmetic mean and the
-    standard deviation across cycles are returned (``{key}`` and ``{key}_std``).
-    NaN cycle values are ignored so a single failed cycle does not void the trial.
+    WMAPE, per-horizon WMAPE, and BIAS are pooled from their cycle-level
+    numerator/denominator totals. Other public metrics keep arithmetic means.
+    For every public metric, ``{key}_std`` remains the dispersion of the per-cycle
+    metric values and is diagnostic only.
 
     Args:
         per_cycle_records: One metric dict per cycle (output of
             ``compute_cycle_metrics``).
 
     Returns:
-        Dict of macro-averaged metrics plus ``{key}_std`` dispersion and
+        Dict of pooled/averaged metrics plus ``{key}_std`` dispersion and
         ``n_cycles`` / ``n_cycles_evaluated`` counts.
     """
     if not per_cycle_records:
@@ -222,6 +235,8 @@ def aggregate_rolling_origin_metrics(
     keys: list[str] = []
     for record in per_cycle_records:
         for key in record:
+            if key.startswith(_POOL_PREFIX):
+                continue
             if key not in keys:
                 keys.append(key)
 
@@ -238,6 +253,11 @@ def aggregate_rolling_origin_metrics(
             aggregated[key] = float(np.mean(finite))
             aggregated[f"{key}_std"] = float(np.std(finite))
 
+    for key in _pooled_metric_keys(keys):
+        num = _sum_component(per_cycle_records, f"{_POOL_PREFIX}{key}_num")
+        den = _sum_component(per_cycle_records, f"{_POOL_PREFIX}{key}_den")
+        aggregated[key] = float(num / den) if den and den > 0 else float("nan")
+
     aggregated["n_cycles"] = len(per_cycle_records)
     # A cycle counts as evaluated when its primary block metric is finite.
     aggregated["n_cycles_evaluated"] = int(
@@ -246,6 +266,30 @@ def aggregate_rolling_origin_metrics(
         )
     )
     return aggregated
+
+
+def _pooled_metric_keys(public_keys: Sequence[str]) -> list[str]:
+    """Return public metric keys that should be pooled across cycles."""
+    keys = ["wmape", "bias"]
+    keys.extend(
+        sorted(
+            [k for k in public_keys if k.startswith("wmape_m")],
+            key=lambda item: int(item.replace("wmape_m", "")),
+        )
+    )
+    return [k for k in keys if k in public_keys]
+
+
+def _sum_component(records: Sequence[dict[str, float]], key: str) -> float:
+    """Sum a private pooling component, ignoring missing or non-finite values."""
+    values = np.array([rec.get(key, np.nan) for rec in records], dtype=float)
+    finite = values[np.isfinite(values)]
+    return float(np.sum(finite)) if finite.size else float("nan")
+
+
+def _public_metrics(record: dict[str, float]) -> dict[str, float]:
+    """Return only artifact-facing metrics from a cycle metric record."""
+    return {k: v for k, v in record.items() if not k.startswith(_POOL_PREFIX)}
 
 
 def run_rolling_origin(
@@ -286,8 +330,8 @@ def run_rolling_origin(
 
     Returns:
         Tuple ``(per_cycle_df, aggregated_metrics)``. ``per_cycle_df`` has one row
-        per cycle with its origin, targets, status, and metrics; ``aggregated_metrics``
-        is the macro-average (output of ``aggregate_rolling_origin_metrics``).
+        per cycle with its origin, targets, status, and public metrics;
+        ``aggregated_metrics`` uses pooled WMAPE/BIAS where applicable.
     """
     frame = full_df.sort_values(date_col).reset_index(drop=True)
     frame[date_col] = pd.to_datetime(frame[date_col])
@@ -346,7 +390,7 @@ def run_rolling_origin(
             continue
 
         per_cycle_records.append(cycle_metrics)
-        row.update(cycle_metrics)
+        row.update(_public_metrics(cycle_metrics))
         rows.append(row)
 
         # Pruning hook runs outside the try/except so optuna.TrialPruned propagates.

@@ -62,7 +62,7 @@ _SECTIONS = [
     (
         "Evaluation Report",
         "Active",
-        "Champion selection rationale and held-out test performance across model families.",
+        "Champion selection rationale and rolling-origin performance across model families.",
         "success",
     ),
     (

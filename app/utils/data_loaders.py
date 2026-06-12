@@ -188,7 +188,7 @@ def load_model_selection_summary() -> pd.DataFrame:
 
 @st.cache_data
 def load_test_metrics() -> pd.DataFrame:
-    """Load per-candidate test metrics.
+    """Load per-candidate rolling-origin metrics.
 
     Returns:
         DataFrame with evaluation metrics per candidate, or empty DataFrame if missing.

@@ -43,8 +43,8 @@ train_monthly:
 
     tuning:
       optimizer: "optuna"
-      # Primary ranking metric is the 3-month-ahead WMAPE, macro-averaged across
-      # rolling-origin cycles (protocol §3.5).
+      # Primary ranking metric is the 3-month-ahead WMAPE, pooled across
+      # rolling-origin cycles.
       objective:
         metric: "wmape_m3"
         direction: "minimize"

@@ -1,6 +1,6 @@
 """Monthly multi-family model selection pipeline (rolling-origin protocol).
 
-Champions are selected directly from the macro-averaged rolling-origin metrics
+Champions are selected directly from the pooled rolling-origin metrics
 produced by training — there is no separate held-out test stage (protocol §4, §11).
 Phase 1 compares Prophet and SARIMAX; CatBoost is reintroduced in Phase 2.
 

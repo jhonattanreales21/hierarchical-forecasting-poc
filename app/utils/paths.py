@@ -40,9 +40,9 @@ SELECTION_SUMMARY = _first_existing(
 FAMILY_CHAMPION_SUMMARY = (
     DATA_ROOT / "06_models" / "selection" / "monthly_family_champion_summary.parquet"
 )
-# Per-candidate held-out test metrics across all families.
+# Per-candidate rolling-origin metrics across all families.
 TEST_METRICS = _first_existing(
-    DATA_ROOT / "06_models" / "selection" / "monthly_candidate_test_metrics.parquet",
+    DATA_ROOT / "06_models" / "selection" / "monthly_candidate_metrics.parquet",
     DATA_ROOT / "06_models" / "selection" / "monthly_prophet_test_metrics.parquet",
 )
 # Legacy Prophet-specific test-period backtest forecast. Used only as a

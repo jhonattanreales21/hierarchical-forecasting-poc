@@ -2,10 +2,10 @@
 
 Each Optuna trial is scored by a rolling-origin backtest: for every cycle SARIMAX
 is refit on history through the origin and forecasts the next ``H`` months;
-per-cycle metrics are macro-averaged and the objective is ``WMAPE_M3`` (protocol
-§3.5, §4). A Ljung-Box residual test on the full-history (through ``L``) fit marks
-each candidate's eligibility (protocol §3.9); ineligible candidates are kept out of
-the pre-champion shortlist when any eligible candidate exists.
+WMAPE/BIAS metrics are pooled across cycles and the objective is ``WMAPE_M3``
+(protocol §3.5, §4). A Ljung-Box residual test on the last rolling-origin cycle
+fit marks each candidate's eligibility (protocol §3.9); ineligible candidates are
+kept out of the pre-champion shortlist when any eligible candidate exists.
 """
 
 import logging
@@ -50,8 +50,8 @@ def train_and_evaluate_monthly_sarimax_candidates(  # noqa: PLR0915
     """Tune SARIMAX with a rolling-origin backtest and emit candidate artifacts.
 
     Runs an Optuna TPE study over the SARIMAX search space. Each trial is scored by
-    a rolling-origin backtest (objective: macro-averaged ``WMAPE_M3``) and gets a
-    Ljung-Box eligibility flag from its full-history fit. The top-N eligible
+    a rolling-origin backtest (objective: pooled ``WMAPE_M3``) and gets a
+    Ljung-Box eligibility flag from the last cycle fit. The top-N eligible
     candidates are persisted (refit on full history) as pre-champions.
 
     Args:
@@ -176,12 +176,40 @@ def train_and_evaluate_monthly_sarimax_candidates(  # noqa: PLR0915
             )
             raise RuntimeError(f"{trial_id}: all rolling-origin cycles failed")
 
-        # Ljung-Box eligibility on the full-history fit (protocol §3.9).
-        lb_pvalue, excluded, full_result = _ljung_box_eligibility(
-            config, full_y, full_exog, use_exog, lb_lags, lb_threshold, lb_enabled
+        # Ljung-Box eligibility on the last rolling-origin cycle (protocol §3.9).
+        lb_pvalue, excluded, lb_cycle_index = _ljung_box_eligibility_on_last_cycle(
+            config=config,
+            full_df=full_df,
+            cycle=cycles[-1],
+            date_col=date_col,
+            target_col=target_col,
+            exog_cols=exog_cols,
+            use_exog=use_exog,
+            lags=lb_lags,
+            threshold=lb_threshold,
+            enabled=lb_enabled,
         )
-        if full_result is not None:
-            full_history_fits[trial_id] = full_result
+        full_result = _fit_sarimax_result(
+            config=config,
+            endog=full_y,
+            exog=full_exog,
+            use_exog=use_exog,
+            context="full-history candidate refit",
+        )
+        if full_result is None:
+            trial_results.append(
+                _failed_trial_row(
+                    trial_id,
+                    config,
+                    use_exog,
+                    objective_metric,
+                    len(full_y),
+                    elapsed,
+                    "full-history candidate refit failed",
+                )
+            )
+            raise RuntimeError(f"{trial_id}: full-history candidate refit failed")
+        full_history_fits[trial_id] = full_result
 
         trial_results.append(
             {
@@ -200,6 +228,7 @@ def train_and_evaluate_monthly_sarimax_candidates(  # noqa: PLR0915
                 **metric_set,
                 "ljung_box_pvalue": lb_pvalue,
                 "autocorrelation_excluded": excluded,
+                "ljung_box_cycle_index": lb_cycle_index,
                 "n_full_history": len(full_y),
                 "fit_seconds": round(elapsed, 3),
                 "error_message": None,
@@ -236,7 +265,8 @@ def train_and_evaluate_monthly_sarimax_candidates(  # noqa: PLR0915
         tuning_df[tuning_df["status"] == "success"][
             ["trial_id", "rank", "model_family", "granularity", "order",
              "seasonal_order", "trend", "use_exog", *metric_cols,
-             "ljung_box_pvalue", "autocorrelation_excluded", "n_full_history"]
+             "ljung_box_pvalue", "autocorrelation_excluded",
+             "ljung_box_cycle_index", "n_full_history"]
         ]
         .assign(seasonal_period=mase_seasonal_period)
         .reset_index(drop=True)
@@ -267,6 +297,7 @@ def train_and_evaluate_monthly_sarimax_candidates(  # noqa: PLR0915
             "rolling_origin_metrics": _metric_set_from_row(row),
             "ljung_box_pvalue": _safe_float(row["ljung_box_pvalue"]),
             "autocorrelation_excluded": bool(row["autocorrelation_excluded"]),
+            "ljung_box_cycle_index": _safe_int(row["ljung_box_cycle_index"]),
         }
 
     run_ts = datetime.now(tz=UTC).isoformat()
@@ -422,27 +453,18 @@ def _sarimax_cycle_forecast(  # noqa: PLR0913
     return y_pred
 
 
-def _ljung_box_eligibility(  # noqa: PLR0913
+def _fit_sarimax_result(  # noqa: PLR0913
     config: dict,
-    full_y: np.ndarray,
-    full_exog: np.ndarray | None,
+    endog: np.ndarray,
+    exog: np.ndarray | None,
     use_exog: bool,
-    lags: int,
-    threshold: float,
-    enabled: bool,
-) -> tuple[float | None, bool, Any]:
-    """Fit SARIMAX on full history and assess Ljung-Box residual eligibility.
-
-    Returns:
-        Tuple ``(pvalue, excluded, full_result)``. ``excluded`` is True when the
-        residuals show significant autocorrelation (p < threshold) and the filter
-        is enabled. ``full_result`` is the fitted full-history results object
-        (reused as the candidate model), or None when the fit failed.
-    """
+    context: str,
+) -> Any | None:
+    """Fit a SARIMAX result object, returning ``None`` on model-fit failure."""
     try:
         model = SARIMAX(
-            endog=full_y,
-            exog=full_exog if use_exog else None,
+            endog=endog,
+            exog=exog if use_exog else None,
             order=tuple(config["order"]),
             seasonal_order=tuple(config["seasonal_order"]),
             trend=config.get("trend"),
@@ -451,22 +473,56 @@ def _ljung_box_eligibility(  # noqa: PLR0913
         )
         with _warnings.catch_warnings():
             _warnings.simplefilter("ignore")
-            result = model.fit(disp=False)
+            return model.fit(disp=False)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("SARIMAX full-history fit failed for Ljung-Box: %s", exc)
-        return None, True, None
+        logger.warning("SARIMAX %s failed: %s", context, exc)
+        return None
 
+
+def _ljung_box_eligibility_on_last_cycle(  # noqa: PLR0913
+    config: dict,
+    full_df: pd.DataFrame,
+    cycle: RollingOriginCycle,
+    date_col: str,
+    target_col: str,
+    exog_cols: list[str],
+    use_exog: bool,
+    lags: int,
+    threshold: float,
+    enabled: bool,
+) -> tuple[float | None, bool, int | None]:
+    """Assess Ljung-Box residual eligibility on the last rolling-origin cycle.
+
+    Returns:
+        Tuple ``(pvalue, excluded, cycle_index)``. ``excluded`` is True when the
+        residuals show significant autocorrelation (p < threshold) and the filter
+        is enabled. The diagnostic is calculated on the same train window used by
+        the last rolling-origin cycle, not on the production full-history refit.
+    """
     if not enabled:
-        return None, False, result
+        return None, False, cycle.cycle_index
+
+    train_df = full_df[full_df[date_col] <= cycle.origin_date].copy()
+    train_y = train_df[target_col].to_numpy(dtype=float)
+    train_exog = _extract_exog(train_df, exog_cols) if use_exog else None
+    result = _fit_sarimax_result(
+        config=config,
+        endog=train_y,
+        exog=train_exog,
+        use_exog=use_exog,
+        context=f"Ljung-Box cycle {cycle.cycle_index} fit",
+    )
+    if result is None:
+        return None, True, cycle.cycle_index
 
     try:
         lb_df = acorr_ljungbox(result.resid, lags=[lags], return_df=True)
         pvalue = float(lb_df["lb_pvalue"].iloc[-1])
         excluded = pvalue < threshold
-        return pvalue, bool(excluded), result
+        return pvalue, bool(excluded), cycle.cycle_index
     except Exception as exc:  # noqa: BLE001
         logger.warning("Ljung-Box test failed (%s) — keeping candidate eligible.", exc)
-        return None, False, result
+        return None, False, cycle.cycle_index
 
 
 def _failed_trial_row(  # noqa: PLR0913
@@ -499,6 +555,7 @@ def _failed_trial_row(  # noqa: PLR0913
         **null_metrics,
         "ljung_box_pvalue": None,
         "autocorrelation_excluded": False,
+        "ljung_box_cycle_index": None,
         "n_full_history": n_full,
         "fit_seconds": round(elapsed, 3),
         "error_message": error,
@@ -575,6 +632,7 @@ def _build_prechampion_configs(  # noqa: PLR0913
                 "rolling_origin_metrics": _metric_set_from_row(r),
                 "ljung_box_pvalue": _safe_float(r["ljung_box_pvalue"]),
                 "autocorrelation_excluded": bool(r["autocorrelation_excluded"]),
+                "ljung_box_cycle_index": _safe_int(r["ljung_box_cycle_index"]),
             }
         )
 

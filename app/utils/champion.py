@@ -76,7 +76,7 @@ def _summary_value(summary: Optional[pd.DataFrame], column: str) -> Any:
 def standardize_champion_metadata(meta: dict) -> dict:
     """Normalize current and legacy champion metadata keys.
 
-    Current metadata stores held-out metrics under ``metrics``; legacy metadata
+    Current metadata stores rolling-origin metrics under ``metrics``; legacy metadata
     used ``test_metrics``. A model-family-agnostic ``forecast_precision``
     (``1 - WMAPE``) and a ``business_success_flag`` are derived when absent so the
     app's precision KPIs work regardless of which family won.
@@ -92,10 +92,10 @@ def standardize_champion_metadata(meta: dict) -> dict:
     out = dict(meta)
     metrics = dict(out.get("test_metrics") or out.get("metrics") or {})
 
-    wape = metrics.get("wape")
-    if "forecast_precision" not in metrics and wape is not None:
+    wmape = _first_not_none(metrics.get("wmape"), metrics.get("wape"))
+    if "forecast_precision" not in metrics and wmape is not None:
         try:
-            metrics["forecast_precision"] = 1.0 - float(wape)
+            metrics["forecast_precision"] = 1.0 - float(wmape)
         except (TypeError, ValueError):
             pass
 
@@ -103,9 +103,9 @@ def standardize_champion_metadata(meta: dict) -> dict:
 
     precision_threshold = out.get("business_success_precision_threshold", 0.85)
     out["business_success_precision_threshold"] = precision_threshold
-    if "business_success_flag" not in out and wape is not None:
+    if "business_success_flag" not in out and wmape is not None:
         try:
-            out["business_success_flag"] = float(wape) <= (1.0 - precision_threshold)
+            out["business_success_flag"] = float(wmape) <= (1.0 - precision_threshold)
         except (TypeError, ValueError):
             out["business_success_flag"] = False
     return out
@@ -204,6 +204,7 @@ def extract_champion_identity(
             _summary_value(selection_summary, "selection_timestamp"),
         ),
         "test_period": test_period,
+        "evaluation": meta.get("evaluation", {}) or {},
         "test_metrics": metrics,
         "hyperparameters": meta.get("hyperparameters") or {},
         "active_regressors": _first_not_none(

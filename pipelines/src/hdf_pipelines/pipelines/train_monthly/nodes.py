@@ -18,7 +18,7 @@ from shared.rolling_origin import RollingOriginCycle, generate_rolling_origin_cy
 
 logger = logging.getLogger(__name__)
 
-# Metric keys persisted per candidate from the macro-averaged rolling-origin run.
+# Metric keys persisted per candidate from the rolling-origin summary.
 ROLLING_ORIGIN_BASE_METRICS: tuple[str, ...] = ("wmape", "mase", "bias", "rmse")
 
 
@@ -80,7 +80,7 @@ def extract_rolling_origin_metric_set(
     aggregated: dict[str, float],
     horizon: int,
 ) -> dict[str, Any]:
-    """Flatten the macro-averaged metrics into the persisted candidate metric set.
+    """Flatten the rolling-origin metrics into the persisted candidate metric set.
 
     Args:
         aggregated: Output of ``run_rolling_origin`` (means + ``{key}_std``).
