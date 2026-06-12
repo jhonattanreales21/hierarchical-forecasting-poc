@@ -25,6 +25,7 @@ def create_pipeline(**kwargs) -> Pipeline:
         monthly_sarimax_candidate_models
         monthly_sarimax_training_metadata
         candidate_monthly_sarimax          ← rank-1 full-history model for model selection
+        monthly_sarimax_rolling_origin_predictions
     """
     return pipeline(
         [
@@ -42,6 +43,7 @@ def create_pipeline(**kwargs) -> Pipeline:
                     "monthly_sarimax_candidate_models",
                     "monthly_sarimax_training_metadata",
                     "candidate_monthly_sarimax",
+                    "monthly_sarimax_rolling_origin_predictions",
                 ],
                 name="train_and_evaluate_monthly_sarimax_candidates",
             ),

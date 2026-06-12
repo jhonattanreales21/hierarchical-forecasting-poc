@@ -171,6 +171,29 @@ def _get_active_regressors(
     return regressors
 
 
+def _validate_family_regressors_within_pool(
+    family_name: str,
+    family_regressors: Sequence[str],
+    monthly_regressor_pool: Sequence[str],
+) -> None:
+    """Ensure a family-specific regressor list is drawn from the monthly pool."""
+    missing_from_pool = sorted(set(family_regressors) - set(monthly_regressor_pool))
+    if missing_from_pool:
+        raise ValueError(
+            f"model_input_preparation.{family_name} requests regressors outside "
+            "model_input_preparation.monthly.active_regressors: "
+            f"{missing_from_pool}. Add them to the monthly feature pool before "
+            "using them in a family-specific block."
+        )
+
+
+def _get_sarimax_exogenous_columns(sarimax_params: Mapping[str, Any]) -> list[str]:
+    """Return SARIMAX exogenous regressors, preferring the new active_regressors key."""
+    if "active_regressors" in sarimax_params:
+        return list(sarimax_params.get("active_regressors", []))
+    return list(sarimax_params.get("exogenous_columns", []))
+
+
 def _drop_null_modeling_rows(
     df: pd.DataFrame,
     date_column: str,
@@ -455,6 +478,21 @@ def build_monthly_modeling_data(
         monthly_params["active_regressors"],
         "monthly_prophet_features",
     )
+    _validate_family_regressors_within_pool(
+        "monthly_prophet.active_regressors",
+        _get_monthly_prophet_params(parameters).get("active_regressors", []),
+        active_regressors,
+    )
+    _validate_family_regressors_within_pool(
+        "monthly_catboost.active_regressors",
+        _get_monthly_catboost_params(parameters).get("active_regressors", []),
+        active_regressors,
+    )
+    _validate_family_regressors_within_pool(
+        "monthly_sarimax.active_regressors",
+        _get_sarimax_exogenous_columns(_get_monthly_sarimax_params(parameters)),
+        active_regressors,
+    )
 
     _validate_required_columns(
         monthly_prophet_features,
@@ -695,6 +733,8 @@ def adapt_monthly_data_for_prophet(
     target_column = monthly_params["target_column"]
     prophet_date_column = prophet_params["prophet_date_column"]
     prophet_target_column = prophet_params["prophet_target_column"]
+    sku_column = prophet_params["sku_column"]
+    active_regressors = list(prophet_params["active_regressors"])
 
     rename_map = {
         date_column: prophet_date_column,
@@ -702,7 +742,19 @@ def adapt_monthly_data_for_prophet(
     }
 
     def _rename(df: pd.DataFrame) -> pd.DataFrame:
-        return df.rename(columns=rename_map).copy()
+        renamed = df.rename(columns=rename_map).copy()
+        required_columns = [
+            prophet_date_column,
+            prophet_target_column,
+            sku_column,
+            *active_regressors,
+        ]
+        _validate_required_columns(
+            renamed,
+            required_columns,
+            "monthly_prophet adapter input",
+        )
+        return renamed[required_columns].copy()
 
     prophet_modeling_data = _rename(monthly_modeling_data)
     prophet_full_train = _rename(monthly_full_train)
@@ -726,7 +778,7 @@ def adapt_monthly_data_for_prophet(
         "evaluation_mode": monthly_split_metadata.get(
             "evaluation_mode", "rolling_origin"
         ),
-        "active_regressors": list(prophet_params["active_regressors"]),
+        "active_regressors": active_regressors,
         "dropped_rows": monthly_split_metadata["dropped_rows"],
         "modeling_data": _summarize_date_range(
             prophet_modeling_data, prophet_date_column
@@ -887,7 +939,7 @@ def adapt_monthly_data_for_sarimax(
     date_column: str = sarimax_params.get("date_column", "month_start_date")
     target_column: str = sarimax_params.get("target_column", "monthly_demand")
     sku_column: str = sarimax_params.get("sku_column", "sku")
-    exogenous_columns: list[str] = list(sarimax_params.get("exogenous_columns", []))
+    exogenous_columns: list[str] = _get_sarimax_exogenous_columns(sarimax_params)
 
     # Fail early when required columns are missing.
     required_cols = [date_column, target_column, *exogenous_columns]
@@ -922,6 +974,7 @@ def adapt_monthly_data_for_sarimax(
         "sku_column": sku_column,
         "frequency": sarimax_params.get("frequency", "MS"),
         "exogenous_columns": exogenous_columns,
+        "active_regressors": exogenous_columns,
         "allow_empty_exog": bool(sarimax_params.get("allow_empty_exog", True)),
         "splits": {"full_train": info},
         "source_metadata": {"from": "monthly_split_metadata"},

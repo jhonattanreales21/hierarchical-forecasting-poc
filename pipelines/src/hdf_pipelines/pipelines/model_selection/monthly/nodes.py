@@ -217,12 +217,19 @@ def select_monthly_family_champions(
                 "metadata_artifact_key": f"monthly_{family}_prechampion_configs",
             }
         )
+        _m = {k: _safe_float(best.get(k)) for k in _ROLLING_ORIGIN_METRIC_KEYS}
         logger.info(
-            "Family champion (%s): %s  %s=%.4f",
+            "Family champion (%s): %s  wmape=%.4f  wmape_m1=%.4f  wmape_m2=%.4f  "
+            "wmape_m3=%.4f  mase=%s  bias=%s  rmse=%s",
             family,
             best["candidate_id"],
-            primary_metric,
-            _safe_float(best.get(primary_metric)) or float("nan"),
+            _m["wmape"] if _m["wmape"] is not None else float("nan"),
+            _m["wmape_m1"] if _m["wmape_m1"] is not None else float("nan"),
+            _m["wmape_m2"] if _m["wmape_m2"] is not None else float("nan"),
+            _m["wmape_m3"] if _m["wmape_m3"] is not None else float("nan"),
+            f"{_m['mase']:.4f}" if _m["mase"] is not None else "n/a",
+            f"{_m['bias']:+.4f}" if _m["bias"] is not None else "n/a",
+            f"{_m['rmse']:.2f}" if _m["rmse"] is not None else "n/a",
         )
 
     if not champion_rows:
@@ -292,13 +299,7 @@ def select_monthly_production_champion(
         f"families{runner_up_info}"
     )
 
-    logger.info(
-        "Monthly production champion: family=%s  candidate=%s  %s=%.4f",
-        best["family"],
-        best["family_champion_id"],
-        primary_metric,
-        _safe_float(best.get(primary_metric)) or float("nan"),
-    )
+    _log_production_champion_comparison(ranked, primary_metric, tie_breakers)
 
     summary_row = {
         "granularity": "monthly",
@@ -436,7 +437,8 @@ def build_monthly_champion_artifacts(  # noqa: PLR0913
             ``select_monthly_production_champion``.
         monthly_family_champion_summary: Family champions table from
             ``select_monthly_family_champions``.
-        monthly_candidate_test_metrics: Full candidate metrics table.
+        monthly_candidate_metrics: Full candidate metrics table (rolling-origin metrics
+            across all families, produced by ``assemble_monthly_candidate_metrics``).
         monthly_prophet_candidate_models: Dict mapping candidate_id → Prophet model.
         monthly_sarimax_candidate_models: Dict mapping trial_id → SARIMAX candidate
             entry dict (including the ``model`` key).
@@ -1400,6 +1402,59 @@ def _extract_champion_metrics(
         return dict.fromkeys(keys)
     row = subset.iloc[0]
     return {k: _safe_float(row.get(k)) for k in keys}
+
+
+def _log_production_champion_comparison(
+    ranked: pd.DataFrame,
+    primary_metric: str,
+    tie_breakers: list[str],
+) -> None:
+    """Log a ranked side-by-side comparison of all family champions.
+
+    Shows all rolling-origin metrics for every family champion, ranked by the
+    primary metric, so it is unambiguous why the production champion was elected.
+    """
+    best_val = _safe_float(ranked.iloc[0].get(primary_metric)) if not ranked.empty else None
+    tb_str = ", ".join(str(t) for t in tie_breakers)
+    lines = [
+        f"Monthly production champion selection — {len(ranked)} families "
+        f"ranked by {primary_metric}  (tie-breakers: {tb_str}):"
+    ]
+    for pos, (_, row) in enumerate(ranked.iterrows(), start=1):
+        family = str(row.get("family", "?"))
+        cid = str(row.get("family_champion_id", "?"))
+        wmape = _safe_float(row.get("wmape"))
+        wmape_m1 = _safe_float(row.get("wmape_m1"))
+        wmape_m2 = _safe_float(row.get("wmape_m2"))
+        wmape_m3 = _safe_float(row.get("wmape_m3"))
+        mase = _safe_float(row.get("mase"))
+        bias = _safe_float(row.get("bias"))
+        rmse = _safe_float(row.get("rmse"))
+
+        wmape_s = f"{wmape:.4f}" if wmape is not None else "nan"
+        wmape_m1_s = f"{wmape_m1:.4f}" if wmape_m1 is not None else "nan"
+        wmape_m2_s = f"{wmape_m2:.4f}" if wmape_m2 is not None else "nan"
+        wmape_m3_s = f"{wmape_m3:.4f}" if wmape_m3 is not None else "nan"
+        mase_s = f"{mase:.4f}" if mase is not None else "n/a"
+        bias_s = f"{bias:+.4f}" if bias is not None else "n/a"
+        rmse_s = f"{rmse:.2f}" if rmse is not None else "n/a"
+
+        if pos == 1:
+            suffix = "  ★ PRODUCTION CHAMPION"
+        else:
+            cur_val = _safe_float(row.get(primary_metric))
+            if cur_val is not None and best_val is not None:
+                suffix = f"  (Δ{primary_metric}={cur_val - best_val:+.4f})"
+            else:
+                suffix = ""
+
+        lines.append(
+            f"  #{pos} {family:<10} {cid}"
+            f"  wmape={wmape_s}  wmape_m1={wmape_m1_s}  wmape_m2={wmape_m2_s}"
+            f"  wmape_m3={wmape_m3_s}  mase={mase_s}  bias={bias_s}  rmse={rmse_s}"
+            f"{suffix}"
+        )
+    logger.info("\n".join(lines))
 
 
 def _safe_float(value: Any) -> float | None:

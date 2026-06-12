@@ -4,6 +4,8 @@ model_input_preparation:
     target_column: "monthly_demand"
     sku_column: "sku"
 
+    # Shared monthly feature pool. Family-specific blocks below select the
+    # regressors each model family actually consumes from this pool.
     active_regressors:
       - "business_days"
       - "total_tuesdays"
@@ -16,11 +18,11 @@ model_input_preparation:
       - "thursday_holidays"
       - "total_holidays"
       - "pfizer_limited"
-      # - "surgifoam_limited"
+      - "surgifoam_limited"
       - "rebate_target"
       # - "expected_market_share"
       - "pfizer_limited_lag_1"
-      # - "surgifoam_limited_lag_1"
+      - "surgifoam_limited_lag_1"
       - "rebate_target_lag_1"
       # - "expected_market_share_lag_1"
       - "pfizer_limited_lag_2"
@@ -61,37 +63,32 @@ model_input_preparation:
     prophet_date_column: "ds"
     prophet_target_column: "y"
 
+    # Prophet-specific regressors. Keep only columns Prophet should register
+    # through add_regressor(); train_monthly.prophet references this list.
     active_regressors:
       - "business_days"
       # - "total_tuesdays"
       # - "total_thursdays"
-      - "working_tuesdays"
-      - "working_thursdays"
-      # - "has_5_working_tuesdays"
-      # - "has_5_working_thursdays"
-      # - "tuesday_holidays"
-      # - "thursday_holidays"
-      - "total_holidays"
+      # - "working_tuesdays"
+      # - "working_thursdays"
+      - "has_5_working_tuesdays"
+      - "has_5_working_thursdays"
+      - "tuesday_holidays"
+      - "thursday_holidays"
+      # - "total_holidays"
       - "pfizer_limited"
       # - "surgifoam_limited"
       - "rebate_target"
-      # - "expected_market_share"
       - "pfizer_limited_lag_1"
       # - "surgifoam_limited_lag_1"
       - "rebate_target_lag_1"
-      # - "expected_market_share_lag_1"
       - "pfizer_limited_lag_2"
-      - "surgifoam_limited_lag_2"
+      # - "surgifoam_limited_lag_2"
       - "rebate_target_lag_2"
-      # - "pfizer_limited_lag_3"
-      # - "surgifoam_limited_lag_3"
-      # - "rebate_target_lag_3"
-      # - "expected_market_share_lag_2"
-      # - "expected_market_share_lag_3"
       - "market_share_stress"
       - "market_share_stress_lag_1"
       - "market_share_uplift"
-      - "market_share_uplift_lag_1"
+      # - "market_share_uplift_lag_1"
 
     missing_values:
       drop_rows_with_null_target: true
@@ -106,9 +103,9 @@ model_input_preparation:
     target_column: "monthly_demand"
     sku_column: "sku"
 
-    # CatBoost-specific exogenous regressors. When non-empty, only these columns
-    # are kept from the shared monthly split. When empty, all shared active_regressors are used.
-    active_regressors: []
+    # CatBoost-specific exogenous regressors. Target-derived features are still
+    # generated below; this list controls only exogenous/calendar inputs.
+    active_regressors: ${model_input_preparation.monthly.active_regressors}
 
     # Target-derived lag features — computed on full history before re-splitting.
     target_lags: [1, 2, 3, 6]
@@ -136,14 +133,16 @@ model_input_preparation:
     target_column: "monthly_demand"
     sku_column: "sku"
     frequency: "MS"
-    exogenous_columns:
+    # SARIMAX-specific exogenous regressors. ``exogenous_columns`` is kept as a
+    # compatibility alias for existing training code and metadata.
+    active_regressors:
       - pfizer_limited
       - pfizer_limited_lag_1
       - pfizer_limited_lag_2
       # - pfizer_limited_lag_3
-      - surgifoam_limited
-      - surgifoam_limited_lag_1
-      - surgifoam_limited_lag_2
+      # - surgifoam_limited
+      # - surgifoam_limited_lag_1
+      # - surgifoam_limited_lag_2
       # - surgifoam_limited_lag_3
       - rebate_target
       - rebate_target_lag_1
@@ -156,7 +155,8 @@ model_input_preparation:
       - market_share_stress
       - market_share_stress_lag_1
       - market_share_uplift
-      - market_share_uplift_lag_1
+      # - market_share_uplift_lag_1
+    exogenous_columns: ${model_input_preparation.monthly_sarimax.active_regressors}
     allow_empty_exog: true
     require_regular_frequency: true
     sort_by_date: true

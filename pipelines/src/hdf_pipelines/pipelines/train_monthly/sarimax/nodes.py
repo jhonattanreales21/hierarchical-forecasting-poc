@@ -23,6 +23,7 @@ from statsmodels.tsa.statespace.sarimax import SARIMAX
 
 from hdf_pipelines.pipelines.train_monthly.nodes import (
     build_monthly_rolling_origin_cycles,
+    build_rolling_origin_predictions_df,
     extract_rolling_origin_metric_set,
     log_trial_predictions,
     make_pruning_callback,
@@ -47,7 +48,7 @@ def train_and_evaluate_monthly_sarimax_candidates(  # noqa: PLR0915
     monthly_sarimax_full_train: pd.DataFrame,
     monthly_sarimax_split_metadata: dict,
     params: dict,
-) -> tuple[pd.DataFrame, pd.DataFrame, dict, dict, dict, dict]:
+) -> tuple[pd.DataFrame, pd.DataFrame, dict, dict, dict, dict, pd.DataFrame]:
     """Tune SARIMAX with a rolling-origin backtest and emit candidate artifacts.
 
     Runs an Optuna TPE study over the SARIMAX search space. Each trial is scored by
@@ -63,8 +64,9 @@ def train_and_evaluate_monthly_sarimax_candidates(  # noqa: PLR0915
         params: Contents of ``train_monthly.sarimax`` from the parameter file.
 
     Returns:
-        Six-element tuple: tuning_results, rolling_origin_metrics, prechampion_configs,
-        candidate_models, training_metadata, candidate_monthly_sarimax (rank-1).
+        Seven-element tuple: tuning_results, rolling_origin_metrics, prechampion_configs,
+        candidate_models, training_metadata, candidate_monthly_sarimax (rank-1),
+        rolling_origin_predictions.
 
     Raises:
         ValueError: When inputs are invalid or required columns are missing.
@@ -135,6 +137,7 @@ def train_and_evaluate_monthly_sarimax_candidates(  # noqa: PLR0915
     )
     trial_results: list[dict] = []
     full_history_fits: dict[str, Any] = {}
+    all_candidate_preds: dict[str, list[dict]] = {}
     n_failed_count: list[int] = [0]
 
     def _stop_on_max_failures(
@@ -163,8 +166,11 @@ def train_and_evaluate_monthly_sarimax_candidates(  # noqa: PLR0915
                 config, train_df, cycle, full_df, date_col, target_col, exog_cols, use_exog
             )
             _trial_preds.append({
+                "cycle_index": cycle.cycle_index,
+                "origin_date": cycle.origin_date.strftime("%Y-%m-%d"),
                 "target_start": cycle.target_dates[0].strftime("%Y-%m"),
                 "target_end": cycle.target_dates[-1].strftime("%Y-%m"),
+                "target_dates": [d.strftime("%Y-%m-%d") for d in cycle.target_dates],
                 "y_pred": y_pred.tolist(),
             })
             return y_pred
@@ -254,6 +260,7 @@ def train_and_evaluate_monthly_sarimax_candidates(  # noqa: PLR0915
             f"{lb_pvalue:.4f}" if lb_pvalue is not None else "nan", excluded,
         )
         log_trial_predictions(trial_id, _trial_preds)
+        all_candidate_preds[trial_id] = list(_trial_preds)
         return float(objective_value)
 
     callbacks = [_stop_on_max_failures]
@@ -352,10 +359,16 @@ def train_and_evaluate_monthly_sarimax_candidates(  # noqa: PLR0915
         "metadata": training_metadata,
     }
 
+    rolling_origin_predictions = build_rolling_origin_predictions_df(
+        all_candidate_preds, full_df, date_col, target_col, epsilon=epsilon
+    )
+
     logger.info(
-        "SARIMAX training done — trials=%d  successful=%d  failed=%d  best=%s  wmape_m3=%.4f",
+        "SARIMAX training done — trials=%d  successful=%d  failed=%d  best=%s  "
+        "wmape_m3=%.4f  prediction_rows=%d",
         len(trial_results), len(successful), len(failed), rank1_id,
         _safe_float(rank1_row["wmape_m3"]) or float("nan"),
+        len(rolling_origin_predictions),
     )
 
     return (
@@ -365,6 +378,7 @@ def train_and_evaluate_monthly_sarimax_candidates(  # noqa: PLR0915
         candidate_models,
         training_metadata,
         candidate_monthly_sarimax,
+        rolling_origin_predictions,
     )
 
 

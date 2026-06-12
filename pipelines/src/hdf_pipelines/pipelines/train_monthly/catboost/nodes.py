@@ -26,6 +26,7 @@ from shared.rolling_origin import RollingOriginCycle, run_rolling_origin
 
 from hdf_pipelines.pipelines.train_monthly.nodes import (
     build_monthly_rolling_origin_cycles,
+    build_rolling_origin_predictions_df,
     extract_rolling_origin_metric_set,
     log_trial_predictions,
     make_pruning_callback,
@@ -51,7 +52,7 @@ def train_monthly_catboost_candidates(  # noqa: PLR0915
     monthly_catboost_full_train: pd.DataFrame,
     monthly_catboost_split_metadata: dict,
     params: dict,
-) -> tuple[pd.DataFrame, pd.DataFrame, dict, dict, dict]:
+) -> tuple[pd.DataFrame, pd.DataFrame, dict, dict, dict, pd.DataFrame]:
     """Tune CatBoost with a rolling-origin backtest (direct multi-horizon) and persist pre-champions.
 
     Each Optuna trial is evaluated by a **rolling-origin backtest** using the
@@ -84,6 +85,8 @@ def train_monthly_catboost_candidates(  # noqa: PLR0915
            CatBoostRegressors (``model_h1``, ``model_h2``, ``model_h3``) and shared
            ``feature_columns``.
         5. ``training_metadata`` — Dict summarising the Optuna study run.
+        6. ``rolling_origin_predictions`` — Long-form DataFrame with one row per
+           (candidate, cycle, horizon-step) prediction for all successful trials.
 
     Raises:
         ValueError: When inputs are invalid or required columns are missing.
@@ -173,6 +176,7 @@ def train_monthly_catboost_candidates(  # noqa: PLR0915
         pruner=build_rolling_origin_pruner(pruning_cfg),
     )
     trial_results: list[dict] = []
+    all_candidate_preds: dict[str, list[dict]] = {}
     n_failed_count: list[int] = [0]
 
     def _stop_on_max_failures(
@@ -209,8 +213,11 @@ def train_monthly_catboost_candidates(  # noqa: PLR0915
         ) -> np.ndarray:
             y_pred = _base_fit_fn(train_df, cycle)
             _trial_preds.append({
+                "cycle_index": cycle.cycle_index,
+                "origin_date": cycle.origin_date.strftime("%Y-%m-%d"),
                 "target_start": cycle.target_dates[0].strftime("%Y-%m"),
                 "target_end": cycle.target_dates[-1].strftime("%Y-%m"),
+                "target_dates": [d.strftime("%Y-%m-%d") for d in cycle.target_dates],
                 "y_pred": y_pred.tolist(),
             })
             return y_pred
@@ -273,6 +280,7 @@ def train_monthly_catboost_candidates(  # noqa: PLR0915
             metric_set.get("bias") or float("nan"),
         )
         log_trial_predictions(candidate_id, _trial_preds)
+        all_candidate_preds[candidate_id] = list(_trial_preds)
 
         trial_results.append(
             {
@@ -424,15 +432,19 @@ def train_monthly_catboost_candidates(  # noqa: PLR0915
         if (tuning_df["rank"] == 1).any()
         else None
     )
+    rolling_origin_predictions = build_rolling_origin_predictions_df(
+        all_candidate_preds, full_df, date_col, target_col, epsilon=epsilon
+    )
     logger.info(
         "CatBoost training done — trials=%d  successful=%d  failed=%d  "
-        "best=%s  %s=%.4f",
+        "best=%s  %s=%.4f  prediction_rows=%d",
         len(trial_results),
         len(successful),
         len(failed),
         prechampion_ids[0] if prechampion_ids else "none",
         primary_metric,
         best_val or float("nan"),
+        len(rolling_origin_predictions),
     )
     return (
         tuning_df,
@@ -440,6 +452,7 @@ def train_monthly_catboost_candidates(  # noqa: PLR0915
         prechampion_configs,
         candidate_models,
         training_metadata,
+        rolling_origin_predictions,
     )
 
 

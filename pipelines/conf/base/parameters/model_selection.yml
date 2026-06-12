@@ -1,11 +1,4 @@
 model_selection:
-  primary_metric: "WMAPE"
-  secondary_metrics:
-    - "MASE"
-    - "RMSE"
-  selection_strategy: "best_by_horizon"
-  tie_breaker: "RMSE"
-
   # Champions are selected directly on the pooled rolling-origin metrics produced
   # by training; there is no separate held-out evaluation stage.
   monthly:
@@ -14,9 +7,10 @@ model_selection:
       - prophet
       - sarimax
       - catboost
-    primary_metric: wmape_m3
+    primary_metric: wmape
     direction: minimize
     tie_breakers:
+      - wmape_m3
       - wmape_m2
       - wmape_m1
       - mase

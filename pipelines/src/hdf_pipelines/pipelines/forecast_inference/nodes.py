@@ -158,6 +158,9 @@ def generate_monthly_champion_forecasts(  # noqa: PLR0913
                 source_dataset=source_dataset,
             )
             _validate_standard_forecast_output(standardized, horizon)
+            standardized = _check_and_clip_negative_forecasts(
+                standardized, model_family, horizon, params
+            )
 
         forecasts[horizon] = standardized
         horizon_summaries[horizon] = _summarize_forecast(standardized, source_dataset)
@@ -202,6 +205,78 @@ def generate_monthly_champion_forecasts(  # noqa: PLR0913
 
 
 # ── Validation helpers ────────────────────────────────────────────────────────
+
+
+def _check_and_clip_negative_forecasts(
+    forecast_df: pd.DataFrame,
+    model_family: str,
+    horizon: int,
+    params: dict,
+) -> pd.DataFrame:
+    """Detect, log, and handle negative monthly forecast values.
+
+    Negative demand forecasts are physically invalid for this application and must
+    not pass silently to the app layer. By default the negative values are clipped
+    to 0 and a WARNING is emitted so the issue is visible in pipeline logs. Setting
+    ``enforce_non_negative: true`` in ``forecast_inference.monthly`` params causes
+    the pipeline to fail hard instead, which is appropriate for production gates.
+
+    The lower prediction interval bound is also clipped to 0 when present and
+    negative, keeping the interval internally consistent with the clipped point
+    forecast.
+
+    Args:
+        forecast_df: Standardized forecast frame for one horizon.
+        model_family: Champion model family (for log context).
+        horizon: Forecast horizon in months (for log context).
+        params: Contents of ``forecast_inference.monthly``; reads
+            ``enforce_non_negative`` (bool, default ``False``).
+
+    Returns:
+        Forecast frame with negative ``forecast`` values replaced by 0 when
+        ``enforce_non_negative`` is False. Returned unchanged when no negatives
+        are found.
+
+    Raises:
+        ValueError: When ``enforce_non_negative`` is True and at least one
+            negative forecast value is detected.
+    """
+    neg_mask = forecast_df["forecast"] < 0
+    n_neg = int(neg_mask.sum())
+    if n_neg == 0:
+        return forecast_df
+
+    neg_rows = forecast_df.loc[neg_mask, ["date", "forecast"]].copy()
+    neg_dates = pd.to_datetime(neg_rows["date"]).dt.strftime("%Y-%m").tolist()
+    neg_vals = neg_rows["forecast"].tolist()
+    detail = ", ".join(f"{d}={v:.1f}" for d, v in zip(neg_dates, neg_vals))
+
+    enforce = bool(params.get("enforce_non_negative", False))
+
+    if enforce:
+        raise ValueError(
+            f"Monthly {horizon}m forecast produced {n_neg} negative value(s) for "
+            f"model_family={model_family!r}. Negative demand is not valid for this "
+            f"application. Affected periods: [{detail}]. "
+            "Set enforce_non_negative: false in forecast_inference.monthly params "
+            "to clip instead of blocking."
+        )
+
+    logger.warning(
+        "NEGATIVE FORECAST — family=%s  horizon=%dm  n_negative=%d  "
+        "affected_periods=[%s]. Clipping to 0. "
+        "Set enforce_non_negative: true to block the pipeline instead.",
+        model_family,
+        horizon,
+        n_neg,
+        detail,
+    )
+    df = forecast_df.copy()
+    df.loc[neg_mask, "forecast"] = 0.0
+    if "forecast_lower" in df.columns:
+        neg_lower_mask = df["forecast_lower"].notna() & (df["forecast_lower"] < 0)
+        df.loc[neg_lower_mask, "forecast_lower"] = 0.0
+    return df
 
 
 def _validate_monthly_champion_metadata(metadata: dict, params: dict) -> None:
