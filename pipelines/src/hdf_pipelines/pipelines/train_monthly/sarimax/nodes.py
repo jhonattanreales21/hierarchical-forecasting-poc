@@ -24,6 +24,7 @@ from statsmodels.tsa.statespace.sarimax import SARIMAX
 from hdf_pipelines.pipelines.train_monthly.nodes import (
     build_monthly_rolling_origin_cycles,
     extract_rolling_origin_metric_set,
+    log_trial_predictions,
     make_pruning_callback,
 )
 from hdf_pipelines.utils.optuna_helpers import (
@@ -155,10 +156,18 @@ def train_and_evaluate_monthly_sarimax_candidates(  # noqa: PLR0915
         raw_params = suggest_trial_params(trial, search_space, fixed_params)
         config = _build_sarimax_config_from_trial(raw_params, s)
 
+        _trial_preds: list[dict] = []
+
         def _fit_forecast(train_df: pd.DataFrame, cycle: RollingOriginCycle) -> np.ndarray:
-            return _sarimax_cycle_forecast(
+            y_pred = _sarimax_cycle_forecast(
                 config, train_df, cycle, full_df, date_col, target_col, exog_cols, use_exog
             )
+            _trial_preds.append({
+                "target_start": cycle.target_dates[0].strftime("%Y-%m"),
+                "target_end": cycle.target_dates[-1].strftime("%Y-%m"),
+                "y_pred": y_pred.tolist(),
+            })
+            return y_pred
 
         on_cycle_end = make_pruning_callback(trial, pruning_cfg, metric_key=objective_metric)
         _, aggregated = run_rolling_origin(
@@ -235,10 +244,16 @@ def train_and_evaluate_monthly_sarimax_candidates(  # noqa: PLR0915
             }
         )
         logger.info(
-            "%s ✓  wmape_m3=%.4f  wmape=%.4f  bias=%.4f  lb_p=%s  excluded=%s",
-            trial_id, metric_set["wmape_m3"], metric_set["wmape"], metric_set["bias"],
+            "%s ✓  wmape=%.4f  wmape_m1=%.4f  wmape_m2=%.4f  wmape_m3=%.4f  bias=%.4f  lb_p=%s  excluded=%s",
+            trial_id,
+            metric_set["wmape"],
+            metric_set.get("wmape_m1") or float("nan"),
+            metric_set.get("wmape_m2") or float("nan"),
+            metric_set["wmape_m3"],
+            metric_set["bias"],
             f"{lb_pvalue:.4f}" if lb_pvalue is not None else "nan", excluded,
         )
+        log_trial_predictions(trial_id, _trial_preds)
         return float(objective_value)
 
     callbacks = [_stop_on_max_failures]

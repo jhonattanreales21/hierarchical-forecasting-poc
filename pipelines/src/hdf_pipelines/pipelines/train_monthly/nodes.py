@@ -102,6 +102,33 @@ def extract_rolling_origin_metric_set(
     return out
 
 
+def log_trial_predictions(
+    candidate_id: str,
+    trial_preds: list[dict],
+) -> None:
+    """Log all trial predictions as a single flat list at INFO level for auditing.
+
+    Concatenates predictions from all cycles into one list and shows the date
+    range covered (first target date of the first cycle → last target date of
+    the last cycle).
+
+    Args:
+        candidate_id: Trial identifier string (e.g. catboost_trial_003).
+        trial_preds: List of dicts with keys: target_start (str), target_end (str),
+            y_pred (list[float]). One entry per successfully evaluated cycle.
+    """
+    if not trial_preds:
+        return
+    all_preds = [v for p in trial_preds for v in p.get("y_pred", [])]
+    date_from = trial_preds[0].get("target_start", "?")
+    date_to = trial_preds[-1].get("target_end", "?")
+    preds_str = ", ".join(f"{v:.1f}" for v in all_preds)
+    logger.info(
+        "  %s · %d preds [%s → %s]: [%s]",
+        candidate_id, len(all_preds), date_from, date_to, preds_str,
+    )
+
+
 def make_pruning_callback(
     trial: optuna.Trial,
     pruning_cfg: dict[str, Any],

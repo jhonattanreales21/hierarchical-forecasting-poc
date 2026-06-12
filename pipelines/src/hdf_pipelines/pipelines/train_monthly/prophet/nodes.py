@@ -22,6 +22,7 @@ from shared.rolling_origin import RollingOriginCycle, run_rolling_origin
 from hdf_pipelines.pipelines.train_monthly.nodes import (
     build_monthly_rolling_origin_cycles,
     extract_rolling_origin_metric_set,
+    log_trial_predictions,
     make_pruning_callback,
     supported_rolling_origin_metrics,
 )
@@ -172,11 +173,19 @@ def train_and_evaluate_monthly_prophet_candidates(  # noqa: PLR0915
         trial.set_user_attr("config", dict(config))
         trial_configs[candidate_id] = dict(config)
 
+        _trial_preds: list[dict] = []
+
         def _fit_forecast(train_df: pd.DataFrame, cycle: RollingOriginCycle) -> np.ndarray:
-            return _prophet_cycle_forecast(
+            y_pred = _prophet_cycle_forecast(
                 config, train_df, cycle, full_df, date_col, target_col,
                 active_regressors, regressor_mode,
             )
+            _trial_preds.append({
+                "target_start": cycle.target_dates[0].strftime("%Y-%m"),
+                "target_end": cycle.target_dates[-1].strftime("%Y-%m"),
+                "y_pred": y_pred.tolist(),
+            })
+            return y_pred
 
         on_cycle_end = make_pruning_callback(trial, pruning_cfg, metric_key=selection_metric)
         _, aggregated = run_rolling_origin(
@@ -197,12 +206,16 @@ def train_and_evaluate_monthly_prophet_candidates(  # noqa: PLR0915
             {"candidate_id": candidate_id, "trial_number": trial.number, **metric_set}
         )
         logger.info(
-            "[%d/%d] %s → wmape_m3=%.4f  wmape=%.4f  mase=%s  bias=%.4f  (%s/%s cycles)",
+            "[%d/%d] %s → wmape=%.4f  wmape_m1=%.4f  wmape_m2=%.4f  wmape_m3=%.4f  mase=%s  bias=%.4f  (%s/%s cycles)",
             trial.number + 1, max_trials, candidate_id,
-            metric_set["wmape_m3"], metric_set["wmape"],
+            metric_set["wmape"],
+            metric_set.get("wmape_m1") or float("nan"),
+            metric_set.get("wmape_m2") or float("nan"),
+            metric_set["wmape_m3"],
             f"{metric_set['mase']:.4f}" if metric_set["mase"] is not None else "nan",
             metric_set["bias"], metric_set["n_cycles_evaluated"], metric_set["n_cycles"],
         )
+        log_trial_predictions(candidate_id, _trial_preds)
         return float(selection_value)
 
     study.optimize(objective, n_trials=max_trials, catch=(Exception,))

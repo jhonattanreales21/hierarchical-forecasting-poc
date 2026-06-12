@@ -27,6 +27,7 @@ from shared.rolling_origin import RollingOriginCycle, run_rolling_origin
 from hdf_pipelines.pipelines.train_monthly.nodes import (
     build_monthly_rolling_origin_cycles,
     extract_rolling_origin_metric_set,
+    log_trial_predictions,
     make_pruning_callback,
 )
 from hdf_pipelines.utils.optuna_helpers import (
@@ -194,13 +195,26 @@ def train_monthly_catboost_candidates(  # noqa: PLR0915
         config = suggest_trial_params(trial, search_space, fixed_params)
         config["random_seed"] = random_seed
 
-        fit_fn = _make_direct_fit_forecast_fn(
+        _trial_preds: list[dict] = []
+        _base_fit_fn = _make_direct_fit_forecast_fn(
             config=config,
             feature_cols=feature_columns,
             target_col=target_col,
             sku_col=sku_col,
             horizons=list(range(1, horizon + 1)),
         )
+
+        def _fit_and_capture(
+            train_df: pd.DataFrame, cycle: RollingOriginCycle
+        ) -> np.ndarray:
+            y_pred = _base_fit_fn(train_df, cycle)
+            _trial_preds.append({
+                "target_start": cycle.target_dates[0].strftime("%Y-%m"),
+                "target_end": cycle.target_dates[-1].strftime("%Y-%m"),
+                "y_pred": y_pred.tolist(),
+            })
+            return y_pred
+
         on_cycle_end = make_pruning_callback(
             trial, pruning_cfg, metric_key=primary_metric
         )
@@ -210,7 +224,7 @@ def train_monthly_catboost_candidates(  # noqa: PLR0915
                 date_col,
                 target_col,
                 cycles,
-                fit_fn,
+                _fit_and_capture,
                 season=mase_seasonal_period,
                 epsilon=epsilon,
                 on_cycle_end=on_cycle_end,
@@ -244,11 +258,13 @@ def train_monthly_catboost_candidates(  # noqa: PLR0915
             raise RuntimeError(msg)
 
         logger.info(
-            "%s \u2713 (%.2fs) wmape_m3=%.4f  wmape=%.4f  mase=%s  bias=%.4f",
+            "%s \u2713 (%.2fs) wmape=%.4f  wmape_m1=%.4f  wmape_m2=%.4f  wmape_m3=%.4f  mase=%s  bias=%.4f",
             candidate_id,
             elapsed,
-            metric_set.get("wmape_m3") or float("nan"),
             metric_set.get("wmape") or float("nan"),
+            metric_set.get("wmape_m1") or float("nan"),
+            metric_set.get("wmape_m2") or float("nan"),
+            metric_set.get("wmape_m3") or float("nan"),
             (
                 f"{metric_set['mase']:.4f}"
                 if metric_set.get("mase") is not None
@@ -256,6 +272,7 @@ def train_monthly_catboost_candidates(  # noqa: PLR0915
             ),
             metric_set.get("bias") or float("nan"),
         )
+        log_trial_predictions(candidate_id, _trial_preds)
 
         trial_results.append(
             {
