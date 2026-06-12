@@ -17,6 +17,7 @@ from utils.champion import (
 from utils.descriptive import normalize_demand_frame, normalize_exogenous_frame
 from utils.paths import (
     ACTUALS,
+    CANDIDATE_METRICS,
     CHAMPION_META,
     DEMAND_DAILY,
     DEMAND_MONTHLY,
@@ -26,10 +27,8 @@ from utils.paths import (
     FAMILY_CHAMPION_IMPORTANCE,
     FAMILY_CHAMPION_SUMMARY,
     INFERENCE_META,
-    LEGACY_TEST_FORECAST,
     RAW_EXOGENOUS,
     SELECTION_SUMMARY,
-    TEST_METRICS,
     forecast_parquet,
 )
 
@@ -135,26 +134,6 @@ def load_exogenous_monthly_primary() -> pd.DataFrame:
 
 
 @st.cache_data
-def load_legacy_test_forecast() -> pd.DataFrame:
-    """Load the legacy Prophet test-period backtest forecast, if present.
-
-    This is a model-specific (Prophet) artifact retained only as a historical
-    test-window overlay. It must not be used to infer the current production
-    champion family.
-
-    Returns:
-        DataFrame with all candidates, sorted by ds, or empty if missing.
-    """
-    if not LEGACY_TEST_FORECAST.exists():
-        return pd.DataFrame()
-    df = pd.read_parquet(LEGACY_TEST_FORECAST)
-    df = standardize_forecast_columns(df)
-    if "ds" not in df.columns:
-        return df
-    return df.sort_values("ds").reset_index(drop=True)
-
-
-@st.cache_data
 def load_monthly_forecast(horizon_months: int) -> pd.DataFrame:
     """Load a horizon-specific future forecast with ds parsed as datetime.
 
@@ -187,15 +166,15 @@ def load_model_selection_summary() -> pd.DataFrame:
 
 
 @st.cache_data
-def load_test_metrics() -> pd.DataFrame:
-    """Load per-candidate test metrics.
+def load_candidate_metrics() -> pd.DataFrame:
+    """Load per-candidate rolling-origin metrics.
 
     Returns:
         DataFrame with evaluation metrics per candidate, or empty DataFrame if missing.
     """
-    if not TEST_METRICS.exists():
+    if not CANDIDATE_METRICS.exists():
         return pd.DataFrame()
-    return pd.read_parquet(TEST_METRICS)
+    return pd.read_parquet(CANDIDATE_METRICS)
 
 
 @st.cache_data

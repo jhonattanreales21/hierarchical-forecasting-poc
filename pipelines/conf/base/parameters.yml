@@ -1,3 +1,16 @@
 project_name: hdf_pipelines
 random_seed: 42
 target_sku: "SKU_PLACEHOLDER"
+
+# --- Rolling-origin evaluation globals (monthly layer) -----------------------
+# Single source of truth for the rolling-origin backtesting settings, consumed
+# (via OmegaConf interpolation) by model_input_preparation and train_monthly.
+forecast_horizon: 3            # months predicted per cycle
+n_cycles: 5                    # rolling-origin cycles (tuning + selection)
+rolling_window: "expanding"    # only "expanding" is supported
+step_months: 1                 # origin advance between consecutive cycles
+# Minimum training months required for the earliest cycle. The window generator
+# fails loudly if the first cycle's train is shorter.
+min_train_periods: 24
+# Seasonal period for the naive MASE denominator (computed per cycle's train).
+mase_seasonal_period: 12

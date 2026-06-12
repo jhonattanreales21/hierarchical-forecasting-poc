@@ -1,13 +1,15 @@
-"""Monthly Prophet training and tuning nodes.
+"""Monthly Prophet training and tuning nodes (rolling-origin protocol).
 
-Implements Optuna Bayesian hyperparameter tuning for Prophet on monthly demand
-data. Trials are trained on the training split, evaluated on the validation
-split, ranked by the configured objective metric, and the top-N pre-champions
-are persisted for the model-selection stage.
+Implements Optuna Bayesian hyperparameter tuning for Prophet on monthly demand.
+Each trial is scored by a **rolling-origin backtest**: for every cycle the model
+is refit on history through the cycle origin and forecasts the next ``horizon`` months;
+WMAPE and BIAS metrics are pooled where applicable. The Optuna objective is
+pooled ``WMAPE_M3``. The top-N pre-champions are persisted (refit on
+full history) for the model-selection stage, which chooses champions directly from
+these rolling-origin metrics — there is no separate hold-out test stage.
 """
 
 import logging
-import warnings
 from datetime import UTC, datetime
 from typing import Any
 
@@ -15,10 +17,16 @@ import numpy as np
 import optuna
 import pandas as pd
 from prophet import Prophet
-from shared.metrics import mase as _shared_mase
-from shared.metrics import wape as _shared_wape
+from shared.rolling_origin import RollingOriginCycle, run_rolling_origin
 
+from hdf_pipelines.pipelines.train_monthly.nodes import (
+    build_monthly_rolling_origin_cycles,
+    extract_rolling_origin_metric_set,
+    make_pruning_callback,
+    supported_rolling_origin_metrics,
+)
 from hdf_pipelines.utils import (
+    build_rolling_origin_pruner,
     create_optuna_study,
     serialize_optuna_trial,
     suggest_trial_params,
@@ -37,24 +45,22 @@ logger = logging.getLogger(__name__)
 
 
 def train_and_evaluate_monthly_prophet_candidates(  # noqa: PLR0915
-    monthly_prophet_train: pd.DataFrame,
-    monthly_prophet_validation: pd.DataFrame,
+    monthly_prophet_full_train: pd.DataFrame,
     monthly_prophet_split_metadata: dict,
     params: dict,
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict, dict, dict, Any]:
-    """Train and evaluate Prophet Optuna trials on the validation set.
+    """Tune Prophet with a rolling-origin backtest and persist pre-champions.
 
-    Runs one ephemeral Optuna study, fits each sampled trial on the training
-    split, forecasts the validation period, and computes validation metrics.
-    The top-N pre-champion trials (ranked by the configured objective metric)
-    are persisted for the downstream model-selection stage.
+    Runs one ephemeral Optuna study. Each trial is evaluated by refitting Prophet
+    at every rolling-origin cycle and forecasting the next ``horizon`` months; the
+    objective is pooled ``WMAPE_M3``. The top-N pre-champions are refit
+    on full history (full history) and persisted for model selection.
 
     Args:
-        monthly_prophet_train: Prophet-ready training data with columns ds, y, sku,
-            and all active regressor columns.
-        monthly_prophet_validation: Held-out validation data with the same schema.
+        monthly_prophet_full_train: Prophet-ready full history (full history) with
+            columns ds, y, sku, and all active regressor columns.
         monthly_prophet_split_metadata: Metadata from model_input_preparation
-            (date ranges, active_regressors). Used for cross-checking regressors;
+            (date range, active_regressors). Used for cross-checking regressors;
             params is the authoritative source for pipeline configuration.
         params: Contents of ``train_monthly.prophet`` from the parameter file.
 
@@ -62,18 +68,16 @@ def train_and_evaluate_monthly_prophet_candidates(  # noqa: PLR0915
         Six-element tuple:
 
         1. ``tuning_results`` — DataFrame, one row per candidate (ranked).
-        2. ``validation_metrics`` — DataFrame, detailed per-candidate metrics.
+        2. ``rolling_origin_metrics`` — DataFrame, per-candidate rolling-origin metrics.
         3. ``prechampion_configs`` — Dict with top-N pre-champion configurations.
-        4. ``candidate_models`` — Dict mapping candidate_id → fitted Prophet model
+        4. ``candidate_models`` — Dict mapping candidate_id → full-history Prophet model
            (top-N only).
         5. ``training_metadata`` — Dict summarizing the Optuna study and trials.
-        6. ``best_prophet_model`` — Rank-1 Prophet model for downstream compatibility
-           with the model-selection stage.
+        6. ``best_prophet_model`` — Rank-1 full-history Prophet model.
 
     Raises:
-        ValueError: When inputs are invalid, required columns are missing, or the
-            Optuna configuration is invalid.
-        RuntimeError: When every trial fails to train.
+        ValueError: When inputs or the Optuna configuration are invalid.
+        RuntimeError: When every trial fails to evaluate.
     """
     # ── extract configuration ─────────────────────────────────────────────────────
     date_col: str = params.get("date_column", "ds")
@@ -84,11 +88,14 @@ def train_and_evaluate_monthly_prophet_candidates(  # noqa: PLR0915
     tuning_cfg: dict = params.get("tuning", {})
     optimizer: str = str(tuning_cfg.get("optimizer", "optuna")).lower()
     objective_cfg: dict = tuning_cfg.get("objective", {})
-    selection_metric: str = str(objective_cfg.get("metric", "mape"))
+    selection_metric: str = str(objective_cfg.get("metric", "wmape_m3"))
     objective_direction: str = str(objective_cfg.get("direction", "minimize")).lower()
     max_trials: int = int(tuning_cfg.get("max_trials", 30))
     top_n: int = int(tuning_cfg.get("top_n_prechampions", 3))
     sampler_cfg: dict = dict(tuning_cfg.get("sampler", {}))
+    pruning_cfg: dict = dict(tuning_cfg.get("pruning", {}))
+    rolling_origin_cfg: dict = dict(tuning_cfg.get("rolling_origin", {}))
+    horizon: int = int(rolling_origin_cfg.get("horizon", 3))
     search_space = validate_optuna_search_space(
         dict(tuning_cfg.get("search_space", {}))
     )
@@ -97,16 +104,8 @@ def train_and_evaluate_monthly_prophet_candidates(  # noqa: PLR0915
     metrics_cfg: dict = params.get("metrics", {})
     epsilon: float = float(metrics_cfg.get("epsilon", 1.0))
     mase_seasonal_period: int = int(metrics_cfg.get("mase_seasonal_period", 12))
-    precision_threshold: float = float(
-        metrics_cfg.get("business_success_precision_threshold", 0.85)
-    )
-    horizon_metrics_cfg: dict = metrics_cfg.get("horizon_metrics", {})
-    horizons: list[int] = (
-        [int(h) for h in horizon_metrics_cfg.get("horizons", [2, 3])]
-        if horizon_metrics_cfg.get("enabled", True)
-        else []
-    )
-    supported_metrics = _build_supported_metrics(horizons)
+
+    supported_metrics = supported_rolling_origin_metrics(horizon)
     selection_metric, objective_direction = validate_objective_metric_direction(
         selection_metric,
         objective_direction,
@@ -124,167 +123,103 @@ def train_and_evaluate_monthly_prophet_candidates(  # noqa: PLR0915
 
     # ── validate inputs ───────────────────────────────────────────────────────────
     _validate_prophet_training_inputs(
-        monthly_prophet_train,
-        monthly_prophet_validation,
-        active_regressors,
-        date_col,
-        target_col,
+        monthly_prophet_full_train, active_regressors, date_col, target_col
     )
 
-    # Cross-check regressors against split metadata (informational only)
     metadata_regressors = monthly_prophet_split_metadata.get("active_regressors", [])
     if set(active_regressors) != set(metadata_regressors):
         logger.warning(
             "Active regressors in params differ from split metadata. "
-            "Using params as the authoritative source. "
-            "Params: %s | Metadata: %s",
-            active_regressors,
-            metadata_regressors,
+            "Using params as the authoritative source. Params: %s | Metadata: %s",
+            active_regressors, metadata_regressors,
         )
 
-    # ── prepare dataframes ────────────────────────────────────────────────────────
-    train_df = monthly_prophet_train.copy()
-    val_df = monthly_prophet_validation.copy()
-    train_df[date_col] = pd.to_datetime(train_df[date_col])
-    val_df[date_col] = pd.to_datetime(val_df[date_col])
-    train_df = train_df.sort_values(date_col).reset_index(drop=True)
-    val_df = val_df.sort_values(date_col).reset_index(drop=True)
+    # ── prepare full-history frame and rolling-origin cycles ──────────────────────
+    full_df = monthly_prophet_full_train.copy()
+    full_df[date_col] = pd.to_datetime(full_df[date_col])
+    full_df = full_df.sort_values(date_col).reset_index(drop=True)
 
+    cycles = build_monthly_rolling_origin_cycles(full_df, date_col, rolling_origin_cfg)
     logger.info(
-        "Train  : %d rows | %s → %s",
-        len(train_df),
-        train_df[date_col].min().date(),
-        train_df[date_col].max().date(),
+        "Full history: %d rows | %s → %s | %d rolling-origin cycles (H=%d), "
+        "last cycle targets %s",
+        len(full_df),
+        full_df[date_col].min().date(),
+        full_df[date_col].max().date(),
+        len(cycles), horizon,
+        [d.strftime("%Y-%m-%d") for d in cycles[-1].target_dates],
     )
     logger.info(
-        "Val    : %d rows | %s → %s",
-        len(val_df),
-        val_df[date_col].min().date(),
-        val_df[date_col].max().date(),
+        "Optuna study — metric=%s  direction=%s  max_trials=%d  pruning=%s",
+        selection_metric, objective_direction, max_trials,
+        bool(pruning_cfg.get("enabled", False)),
     )
-    logger.info("Active regressors (%d): %s", len(active_regressors), active_regressors)
-
-    logger.info(
-        "Optuna study configuration — metric=%s  direction=%s  max_trials=%d",
-        selection_metric,
-        objective_direction,
-        max_trials,
-    )
-
-    # Prophet requires columns named exactly 'ds' and 'y'
-    train_fit_df = train_df[[date_col, target_col] + active_regressors].rename(
-        columns={date_col: "ds", target_col: "y"}
-    )
-    # Prediction input must include 'ds' and regressors but NOT 'y'
-    val_pred_df = val_df[[date_col] + active_regressors].rename(
-        columns={date_col: "ds"}
-    )
-    y_true = val_df[target_col].values.astype(float)
 
     # ── train and evaluate each candidate ────────────────────────────────────────
     metrics_rows: list[dict] = []
-    trained_models: dict[str, Prophet] = {}
-    study = create_optuna_study(objective_direction, sampler_cfg)
+    trial_configs: dict[str, dict] = {}
+    study = create_optuna_study(
+        objective_direction,
+        sampler_cfg,
+        pruner=build_rolling_origin_pruner(pruning_cfg),
+    )
 
     def objective(trial: optuna.Trial) -> float:
         candidate_id = f"prophet_candidate_{trial.number + 1:03d}"
-        trained_at = datetime.now(tz=UTC).isoformat()
         config = suggest_trial_params(trial, search_space, fixed_params)
-
         trial.set_user_attr("candidate_id", candidate_id)
-        trial.set_user_attr("trained_at", trained_at)
+        trial.set_user_attr("trained_at", datetime.now(tz=UTC).isoformat())
         trial.set_user_attr("config", dict(config))
+        trial_configs[candidate_id] = dict(config)
 
-        logger.info(
-            "[%d/%d] Training %s …",
-            trial.number + 1,
-            max_trials,
-            candidate_id,
+        def _fit_forecast(train_df: pd.DataFrame, cycle: RollingOriginCycle) -> np.ndarray:
+            return _prophet_cycle_forecast(
+                config, train_df, cycle, full_df, date_col, target_col,
+                active_regressors, regressor_mode,
+            )
+
+        on_cycle_end = make_pruning_callback(trial, pruning_cfg, metric_key=selection_metric)
+        _, aggregated = run_rolling_origin(
+            full_df, date_col, target_col, cycles, _fit_forecast,
+            season=mase_seasonal_period, epsilon=epsilon, on_cycle_end=on_cycle_end,
         )
+        metric_set = extract_rolling_origin_metric_set(aggregated, horizon)
+        selection_value = metric_set.get(selection_metric)
 
-        try:
-            model = _create_prophet_model(config, active_regressors, regressor_mode)
-            model.fit(train_fit_df)
-
-            forecast = _forecast_validation_period(
-                model, val_pred_df, active_regressors
-            )
-            y_pred = forecast["yhat"].values.astype(float)
-            y_train_vals = train_fit_df["y"].values.astype(float)
-
-            base = _compute_forecast_metrics(
-                y_true,
-                y_pred,
-                epsilon,
-                precision_threshold,
-                y_train=y_train_vals,
-                mase_seasonal_period=mase_seasonal_period,
-            )
-            horiz = _compute_horizon_metrics(
-                val_df,
-                y_pred,
-                date_col,
-                target_col,
-                horizons,
-                epsilon,
-                precision_threshold,
-            )
-            all_metrics = {**base, **horiz}
-            selection_value = all_metrics[selection_metric]
-
-            logger.info(
-                "%s → wape=%.4f  mase=%.4f  rmse=%.2f  mape=%.4f",
-                candidate_id,
-                base["wape"],
-                base["mase"] if base["mase"] is not None else float("nan"),
-                base["rmse"],
-                base["mape"],
-            )
-
-            trained_models[candidate_id] = model
-            trial.set_user_attr("status", "success")
-            trial.set_user_attr("metrics", all_metrics)
-
-            metrics_rows.append(
-                {
-                    "candidate_id": candidate_id,
-                    "trial_number": trial.number,
-                    **all_metrics,
-                    "validation_start_date": str(val_df[date_col].min().date()),
-                    "validation_end_date": str(val_df[date_col].max().date()),
-                    "validation_rows": len(val_df),
-                }
-            )
-            return float(selection_value)
-
-        except Exception as exc:  # noqa: BLE001 — intentional per-trial isolation
+        if selection_value is None:
             trial.set_user_attr("status", "failed")
-            trial.set_user_attr("error_message", str(exc))
-            logger.error(
-                "Candidate %s failed: %s | config=%s", candidate_id, exc, config
-            )
-            raise
+            trial.set_user_attr("error_message", "all rolling-origin cycles failed")
+            raise RuntimeError(f"{candidate_id}: all rolling-origin cycles failed")
+
+        trial.set_user_attr("status", "success")
+        trial.set_user_attr("metrics", metric_set)
+        metrics_rows.append(
+            {"candidate_id": candidate_id, "trial_number": trial.number, **metric_set}
+        )
+        logger.info(
+            "[%d/%d] %s → wmape_m3=%.4f  wmape=%.4f  mase=%s  bias=%.4f  (%s/%s cycles)",
+            trial.number + 1, max_trials, candidate_id,
+            metric_set["wmape_m3"], metric_set["wmape"],
+            f"{metric_set['mase']:.4f}" if metric_set["mase"] is not None else "nan",
+            metric_set["bias"], metric_set["n_cycles_evaluated"], metric_set["n_cycles"],
+        )
+        return float(selection_value)
 
     study.optimize(objective, n_trials=max_trials, catch=(Exception,))
 
     tuning_rows = _build_tuning_rows(
-        study,
-        selection_metric,
-        objective_direction,
-        optimizer,
-        fixed_params,
-        active_regressors,
+        study, selection_metric, objective_direction, optimizer,
+        fixed_params, active_regressors,
     )
-
     if not any(r["status"] == "success" for r in tuning_rows):
         raise RuntimeError(
-            "All Prophet Optuna trials failed during training. Check logs for details."
+            "All Prophet Optuna trials failed during rolling-origin evaluation. "
+            "Check logs for details."
         )
 
     # ── rank candidates and select pre-champions ──────────────────────────────────
     tuning_df = pd.DataFrame(tuning_rows)
     metrics_df = pd.DataFrame(metrics_rows) if metrics_rows else pd.DataFrame()
-
     ranked_df = _rank_candidates(tuning_df, objective_direction, top_n)
 
     prechampion_ids: list[str] = ranked_df.loc[
@@ -292,56 +227,35 @@ def train_and_evaluate_monthly_prophet_candidates(  # noqa: PLR0915
     ].tolist()
     logger.info("Pre-champion candidates (rank 1–%d): %s", top_n, prechampion_ids)
 
-    # Report whether any pre-champion clears the business success threshold
-    prechampion_precisions = ranked_df.loc[
-        ranked_df["is_prechampion"].eq(True), "forecast_precision"
-    ].dropna()
-    if (
-        not prechampion_precisions.empty
-        and (prechampion_precisions >= precision_threshold).any()
-    ):
-        logger.info(
-            "At least one pre-champion meets the business success threshold "
-            "(≥%.0f%% precision).",
-            precision_threshold * 100,
+    # ── refit pre-champions on full history and build artifacts ───────────────────
+    candidate_models: dict[str, Prophet] = {}
+    for cid in prechampion_ids:
+        cfg = trial_configs.get(cid)
+        if cfg is None:
+            continue
+        model = _create_prophet_model(cfg, active_regressors, regressor_mode)
+        model.fit(
+            full_df[[date_col, target_col, *active_regressors]].rename(
+                columns={date_col: "ds", target_col: "y"}
+            )
         )
-    else:
-        logger.warning(
-            "No pre-champion exceeds the %.0f%% precision threshold. "
-            "Best precision among pre-champions: %.4f",
-            precision_threshold * 100,
-            prechampion_precisions.max() if not prechampion_precisions.empty else 0.0,
-        )
+        candidate_models[cid] = model
 
-    # ── build output artifacts ────────────────────────────────────────────────────
     prechampion_configs = _build_prechampion_configs(
         ranked_df, metrics_df, active_regressors, selection_metric, top_n
     )
     training_metadata = _build_training_metadata(
-        study,
-        ranked_df,
-        selection_metric,
-        objective_direction,
-        optimizer,
-        sampler_cfg,
-        max_trials,
-        top_n,
-        fixed_params,
+        study, ranked_df, selection_metric, objective_direction, optimizer,
+        sampler_cfg, max_trials, top_n, fixed_params, rolling_origin_cfg,
     )
-    # Save only top-N pre-champion models to keep the artifact lightweight
-    candidate_models = {
-        cid: trained_models[cid] for cid in prechampion_ids if cid in trained_models
-    }
-    best_model = trained_models.get(prechampion_ids[0]) if prechampion_ids else None
+    best_model = candidate_models.get(prechampion_ids[0]) if prechampion_ids else None
 
     logger.info(
-        "Outputs — tuning_results=%s  validation_metrics=%s  "
-        "prechampions=%d  saved_models=%d  trials=%d",
-        ranked_df.shape,
-        metrics_df.shape,
+        "Outputs — tuning_results=%s  rolling_origin_metrics=%s  prechampions=%d  "
+        "saved_models=%d  trials=%d",
+        ranked_df.shape, metrics_df.shape,
         len(prechampion_configs.get("prechampions", [])),
-        len(candidate_models),
-        len(study.trials),
+        len(candidate_models), len(study.trials),
     )
 
     return (
@@ -358,59 +272,68 @@ def train_and_evaluate_monthly_prophet_candidates(  # noqa: PLR0915
 
 
 def _validate_prophet_training_inputs(
-    train_df: pd.DataFrame,
-    val_df: pd.DataFrame,
+    full_df: pd.DataFrame,
     active_regressors: list[str],
     date_col: str,
     target_col: str,
 ) -> None:
-    """Raise a descriptive error for any invalid training or validation input.
+    """Raise a descriptive error for any invalid full-history training input."""
+    if full_df.empty:
+        raise ValueError("Prophet full-history DataFrame is empty.")
 
-    Args:
-        train_df: Training DataFrame to validate.
-        val_df: Validation DataFrame to validate.
-        active_regressors: Regressor columns that must exist in both DataFrames.
-        date_col: Name of the date column.
-        target_col: Name of the target column (required in train, not in val).
-    """
-    if train_df.empty:
-        raise ValueError("Training DataFrame is empty.")
-    if val_df.empty:
-        raise ValueError("Validation DataFrame is empty.")
+    required = [date_col, target_col] + active_regressors
+    missing = [c for c in required if c not in full_df.columns]
+    if missing:
+        raise ValueError(f"Required columns missing from full-history data: {missing}")
 
-    required_train = [date_col, target_col] + active_regressors
-    missing_train = [c for c in required_train if c not in train_df.columns]
-    if missing_train:
-        raise ValueError(
-            f"Required columns missing from training data: {missing_train}"
-        )
-
-    # Validation needs date + regressors for prediction; y is not required
-    required_val = [date_col] + active_regressors
-    missing_val = [c for c in required_val if c not in val_df.columns]
-    if missing_val:
-        raise ValueError(
-            f"Required columns missing from validation data: {missing_val}"
-        )
-
-    if not pd.api.types.is_numeric_dtype(train_df[target_col]):
+    if not pd.api.types.is_numeric_dtype(full_df[target_col]):
         raise ValueError(
             f"Target column {target_col!r} must be numeric; "
-            f"found dtype {train_df[target_col].dtype}."
+            f"found dtype {full_df[target_col].dtype}."
         )
-
-    # Null checks on active regressors
     for col in active_regressors:
-        null_train = int(train_df[col].isnull().sum())
-        if null_train > 0:
+        n_null = int(full_df[col].isnull().sum())
+        if n_null > 0:
             raise ValueError(
-                f"Active regressor {col!r} has {null_train} null value(s) in training data."
+                f"Active regressor {col!r} has {n_null} null value(s) in full history."
             )
-        null_val = int(val_df[col].isnull().sum())
-        if null_val > 0:
-            raise ValueError(
-                f"Active regressor {col!r} has {null_val} null value(s) in validation data."
-            )
+
+
+def _prophet_cycle_forecast(  # noqa: PLR0913
+    config: dict,
+    train_df: pd.DataFrame,
+    cycle: RollingOriginCycle,
+    full_df: pd.DataFrame,
+    date_col: str,
+    target_col: str,
+    active_regressors: list[str],
+    regressor_mode: str,
+) -> np.ndarray:
+    """Refit Prophet on a cycle's train window and forecast its target months.
+
+    Future regressor values for the (observed) target months are taken from the
+    full-history frame, so the forecast uses exactly the known exogenous inputs.
+
+    Returns:
+        Array of ``len(cycle.target_dates)`` point forecasts in chronological order.
+    """
+    fit_df = train_df[[date_col, target_col, *active_regressors]].rename(
+        columns={date_col: "ds", target_col: "y"}
+    )
+    model = _create_prophet_model(config, active_regressors, regressor_mode)
+    model.fit(fit_df)
+
+    target_set = pd.DatetimeIndex(cycle.target_dates)
+    target_rows = (
+        full_df[full_df[date_col].isin(target_set)]
+        .sort_values(date_col)
+        .reset_index(drop=True)
+    )
+    future_df = target_rows[[date_col, *active_regressors]].rename(
+        columns={date_col: "ds"}
+    )
+    forecast = model.predict(future_df)
+    return forecast["yhat"].to_numpy(dtype=float)
 
 
 def _create_prophet_model(
@@ -452,150 +375,14 @@ def _create_prophet_model(
     return model
 
 
-def _forecast_validation_period(
-    model: Prophet,
-    val_df: pd.DataFrame,
-    active_regressors: list[str],
-) -> pd.DataFrame:
-    """Generate validation-period forecasts from a fitted Prophet model.
-
-    Args:
-        model: Fitted Prophet model.
-        val_df: Validation input with columns 'ds' and all active regressors.
-            Must not contain the target column 'y'.
-        active_regressors: Regressor column names registered with the model.
-
-    Returns:
-        Prophet forecast DataFrame with yhat, yhat_lower, yhat_upper, etc.
-    """
-    predict_cols = ["ds"] + active_regressors
-    return model.predict(val_df[predict_cols])
-
-
-def _compute_forecast_metrics(
-    y_true: np.ndarray,
-    y_pred: np.ndarray,
-    epsilon: float,
-    precision_threshold: float,
-    y_train: np.ndarray | None = None,
-    mase_seasonal_period: int = 12,
-) -> dict:
-    """Compute scalar forecast accuracy metrics for a single candidate.
-
-    WAPE (primary) uses a sum-based aggregate to avoid instability from small
-    denominators. MASE requires y_train and returns NaN when history is too short.
-    MAPE is retained as a secondary diagnostic. forecast_precision = 1 - mape.
-
-    Args:
-        y_true: Observed values.
-        y_pred: Forecasted values, same shape as y_true.
-        epsilon: Small constant added to |y_true| in the epsilon-guarded MAPE denominator.
-        precision_threshold: Threshold above which business_success_flag is True.
-        y_train: Training series used for the MASE naive denominator. If None, MASE is NaN.
-        mase_seasonal_period: Seasonal period for the MASE naive benchmark.
-
-    Returns:
-        Dict with wape, mase, mae, rmse, mape, wmape, forecast_precision, business_success_flag.
-    """
-    y_true = np.asarray(y_true, dtype=float)
-    y_pred = np.asarray(y_pred, dtype=float)
-    abs_errors = np.abs(y_true - y_pred)
-
-    mae = float(np.mean(abs_errors))
-    rmse_val = float(np.sqrt(np.mean((y_true - y_pred) ** 2)))
-    mape_val = float(np.mean(abs_errors / (np.abs(y_true) + epsilon)))
-    wmape = float(np.sum(abs_errors) / (np.sum(np.abs(y_true)) + epsilon))
-    wape_val = _shared_wape(y_true, y_pred)
-    forecast_precision = 1.0 - mape_val
-    business_success_flag = bool(forecast_precision >= precision_threshold)
-
-    mase_val: float | None = None
-    if y_train is not None:
-        with warnings.catch_warnings():
-            warnings.simplefilter("always")
-            mase_val = _shared_mase(y_true, y_pred, y_train, mase_seasonal_period)
-        if mase_val is not None and not np.isfinite(mase_val):
-            mase_val = None
-
-    return {
-        "wape": wape_val,
-        "mase": mase_val,
-        "mae": mae,
-        "rmse": rmse_val,
-        "mape": mape_val,
-        "wmape": wmape,
-        "forecast_precision": forecast_precision,
-        "business_success_flag": business_success_flag,
-    }
-
-
-def _compute_horizon_metrics(  # noqa: PLR0913
-    val_df: pd.DataFrame,
-    y_pred: np.ndarray,
-    date_col: str,
-    target_col: str,
-    horizons: list[int],
-    epsilon: float,
-    precision_threshold: float,
-) -> dict:
-    """Compute point metrics at specified forecast horizons.
-
-    Horizon h is the h-th validation month when sorted ascending by date
-    (horizon 1 = first month, horizon 2 = second, …).  Single-point metrics are
-    computed by treating that month as both y_true and y_pred (length-1 arrays).
-
-    Args:
-        val_df: Validation DataFrame with date and target columns (sorted).
-        y_pred: Forecasted values aligned positionally with val_df sorted by date.
-        date_col: Date column name in val_df.
-        target_col: Target column name in val_df.
-        horizons: List of 1-based horizon integers to evaluate.
-        epsilon: Division guard for percentage metrics.
-        precision_threshold: Threshold for business success flag.
-
-    Returns:
-        Dict with horizon_{h}_mae/mape/wmape/forecast_precision for each h in horizons.
-    """
-    val_sorted = val_df.sort_values(date_col).reset_index(drop=True)
-    y_true_all = val_sorted[target_col].values.astype(float)
-    result: dict = {}
-
-    for h in horizons:
-        idx = h - 1  # convert 1-based horizon to 0-based index
-        if idx >= len(val_sorted):
-            logger.warning(
-                "Validation set has %d rows; horizon-%d metrics unavailable.",
-                len(val_sorted),
-                h,
-            )
-            result[f"horizon_{h}_mae"] = None
-            result[f"horizon_{h}_mape"] = None
-            result[f"horizon_{h}_wmape"] = None
-            result[f"horizon_{h}_forecast_precision"] = None
-        else:
-            pt_metrics = _compute_forecast_metrics(
-                np.array([y_true_all[idx]]),
-                np.array([y_pred[idx]]),
-                epsilon,
-                precision_threshold,
-            )
-            result[f"horizon_{h}_mae"] = pt_metrics["mae"]
-            result[f"horizon_{h}_mape"] = pt_metrics["mape"]
-            result[f"horizon_{h}_wmape"] = pt_metrics["wmape"]
-            result[f"horizon_{h}_forecast_precision"] = pt_metrics["forecast_precision"]
-
-    return result
-
-
 def _rank_candidates(
     tuning_df: pd.DataFrame,
     objective_direction: str,
     top_n: int,
 ) -> pd.DataFrame:
-    """Rank successful candidates by selection metric and mark top-N as pre-champions.
+    """Rank successful candidates by selection metric and mark top-N pre-champions.
 
-    Ranking direction follows the validated Optuna objective direction.
-    Failed candidates are appended last with rank=None and is_prechampion=False.
+    Failed/pruned candidates are appended last with rank=None and is_prechampion=False.
 
     Args:
         tuning_df: DataFrame with one row per candidate including a 'status' column.
@@ -603,11 +390,11 @@ def _rank_candidates(
         top_n: Number of candidates to flag as pre-champions.
 
     Returns:
-        Updated DataFrame with 'rank' (int, nullable) and 'is_prechampion' (bool) columns.
+        Updated DataFrame with 'rank' (int, nullable) and 'is_prechampion' (bool).
     """
     success_mask = tuning_df["status"] == "success"
     success_df = tuning_df[success_mask].copy()
-    failed_df = tuning_df[~success_mask].copy()
+    other_df = tuning_df[~success_mask].copy()
 
     ascending = objective_direction == "minimize"
     success_df = success_df.sort_values(
@@ -616,10 +403,10 @@ def _rank_candidates(
     success_df["rank"] = list(range(1, len(success_df) + 1))
     success_df["is_prechampion"] = success_df["rank"] <= top_n
 
-    failed_df["rank"] = None
-    failed_df["is_prechampion"] = False
+    other_df["rank"] = None
+    other_df["is_prechampion"] = False
 
-    return pd.concat([success_df, failed_df], ignore_index=True)
+    return pd.concat([success_df, other_df], ignore_index=True)
 
 
 def _build_prechampion_configs(
@@ -629,14 +416,10 @@ def _build_prechampion_configs(
     selection_metric: str,
     top_n: int,
 ) -> dict:
-    """Build the prechampion_configs artifact consumed by the model-selection stage.
+    """Build the prechampion_configs artifact consumed by model selection.
 
-    Args:
-        ranked_df: Ranked tuning results with is_prechampion flags.
-        metrics_df: Detailed per-candidate validation metrics.
-        active_regressors: Ordered list of regressor column names.
-        selection_metric: Metric used for ranking.
-        top_n: Configured number of pre-champions.
+    Stores each pre-champion's hyperparameters and rolling-origin
+    metrics so selection can rank families directly on these metrics.
 
     Returns:
         Nested dict ready for JSON serialisation.
@@ -648,8 +431,6 @@ def _build_prechampion_configs(
     prechampions = []
     for _, row in prechampions_df.iterrows():
         cid = str(row["candidate_id"])
-
-        # Convert metrics row to plain dict for safe JSON serialisation
         if not metrics_df.empty and cid in metrics_df["candidate_id"].values:
             m: dict = metrics_df[metrics_df["candidate_id"] == cid].iloc[0].to_dict()
         else:
@@ -664,17 +445,7 @@ def _build_prechampion_configs(
             {
                 "candidate_id": cid,
                 "rank": _safe_int(row.get("rank")),
-                "validation_metrics": {
-                    "wape": _safe_float(m.get("wape")),
-                    "mase": _safe_float(m.get("mase")),
-                    "mae": _safe_float(m.get("mae")),
-                    "rmse": _safe_float(m.get("rmse")),
-                    "mape": _safe_float(m.get("mape")),
-                    "wmape": _safe_float(m.get("wmape")),
-                    "forecast_precision": _safe_float(m.get("forecast_precision")),
-                    "horizon_2_mape": _safe_float(m.get("horizon_2_mape")),
-                    "horizon_3_mape": _safe_float(m.get("horizon_3_mape")),
-                },
+                "rolling_origin_metrics": _metric_set_from_row(m),
                 "model_params": {
                     "changepoint_prior_scale": _safe_float(
                         row.get("changepoint_prior_scale")
@@ -699,25 +470,20 @@ def _build_prechampion_configs(
     return {
         "model_family": "prophet",
         "granularity": "monthly",
+        "selection_stage": "rolling_origin",
         "selection_metric": selection_metric,
         "top_n_prechampions": top_n,
         "prechampions": prechampions,
     }
 
 
-def _build_supported_metrics(horizons: list[int]) -> set[str]:
-    """List all metrics that can be optimized by the monthly Prophet tuner."""
-    metrics = {"wape", "mase", "mae", "rmse", "mape", "wmape", "forecast_precision"}
-    for horizon in horizons:
-        metrics.update(
-            {
-                f"horizon_{horizon}_mae",
-                f"horizon_{horizon}_mape",
-                f"horizon_{horizon}_wmape",
-                f"horizon_{horizon}_forecast_precision",
-            }
-        )
-    return metrics
+def _metric_set_from_row(m: dict) -> dict:
+    """Extract the rolling-origin metric set from a metrics row dict."""
+    keys = [
+        "wmape", "wmape_m1", "wmape_m2", "wmape_m3", "mase", "bias", "rmse",
+        "wmape_m3_std", "wmape_std", "n_cycles", "n_cycles_evaluated",
+    ]
+    return {k: _safe_float(m.get(k)) for k in keys}
 
 
 def _build_tuning_rows(  # noqa: PLR0913
@@ -745,11 +511,7 @@ def _build_tuning_rows(  # noqa: PLR0913
             {
                 "candidate_id": candidate_id,
                 "trial_number": int(trial.number),
-                "status": (
-                    "success"
-                    if trial.state == optuna.trial.TrialState.COMPLETE
-                    else "failed"
-                ),
+                "status": _trial_status(trial),
                 "error_message": trial.user_attrs.get("error_message"),
                 "optimizer": optimizer,
                 "objective_direction": objective_direction,
@@ -764,6 +526,15 @@ def _build_tuning_rows(  # noqa: PLR0913
     return rows
 
 
+def _trial_status(trial: optuna.trial.FrozenTrial) -> str:
+    """Map an Optuna trial state to a status label."""
+    if trial.state == optuna.trial.TrialState.COMPLETE:
+        return "success"
+    if trial.state == optuna.trial.TrialState.PRUNED:
+        return "pruned"
+    return "failed"
+
+
 def _build_training_metadata(  # noqa: PLR0913
     study: optuna.study.Study,
     ranked_df: pd.DataFrame,
@@ -774,16 +545,15 @@ def _build_training_metadata(  # noqa: PLR0913
     max_trials: int,
     top_n: int,
     fixed_params: dict[str, Any],
+    rolling_origin_cfg: dict[str, Any],
 ) -> dict:
     """Summarize the Optuna study into a Kedro JSON artifact."""
-    completed_trials = [
-        trial
-        for trial in study.trials
-        if trial.state == optuna.trial.TrialState.COMPLETE
+    completed = [
+        t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE
     ]
-    failed_trials = [
-        trial for trial in study.trials if trial.state == optuna.trial.TrialState.FAIL
-    ]
+    pruned = [t for t in study.trials if t.state == optuna.trial.TrialState.PRUNED]
+    failed = [t for t in study.trials if t.state == optuna.trial.TrialState.FAIL]
+
     best_candidate_id = None
     best_trial_number = None
     best_value = None
@@ -797,10 +567,14 @@ def _build_training_metadata(  # noqa: PLR0913
     return {
         "model_family": "prophet",
         "granularity": "monthly",
+        "evaluation_mode": "rolling_origin",
         "optimizer": optimizer,
-        "objective": {
-            "metric": selection_metric,
-            "direction": objective_direction,
+        "objective": {"metric": selection_metric, "direction": objective_direction},
+        "rolling_origin": {
+            "horizon": int(rolling_origin_cfg.get("horizon", 3)),
+            "n_cycles": int(rolling_origin_cfg.get("n_cycles", 5)),
+            "window": str(rolling_origin_cfg.get("window", "expanding")),
+            "step_months": int(rolling_origin_cfg.get("step_months", 1)),
         },
         "sampler": {
             "name": str(sampler_cfg.get("name", "tpe")).lower(),
@@ -808,8 +582,9 @@ def _build_training_metadata(  # noqa: PLR0913
         },
         "max_trials": max_trials,
         "top_n_prechampions": top_n,
-        "completed_trials": len(completed_trials),
-        "failed_trials": len(failed_trials),
+        "completed_trials": len(completed),
+        "pruned_trials": len(pruned),
+        "failed_trials": len(failed),
         "best_trial_number": best_trial_number,
         "best_candidate_id": best_candidate_id,
         "best_value": best_value,

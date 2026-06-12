@@ -1,6 +1,7 @@
 """Shared utility helpers for the hdf_pipelines package."""
 
 from .optuna_helpers import (
+    build_rolling_origin_pruner,
     create_optuna_study,
     serialize_optuna_trial,
     suggest_trial_params,
@@ -9,6 +10,7 @@ from .optuna_helpers import (
 )
 
 __all__ = [
+    "build_rolling_origin_pruner",
     "create_optuna_study",
     "serialize_optuna_trial",
     "suggest_trial_params",

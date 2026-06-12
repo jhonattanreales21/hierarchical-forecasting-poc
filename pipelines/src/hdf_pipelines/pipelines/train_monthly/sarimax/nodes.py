@@ -1,4 +1,12 @@
-"""Monthly SARIMAX training nodes: Optuna TPE search, validation, and artifact emission."""
+"""Monthly SARIMAX training nodes (rolling-origin protocol).
+
+Each Optuna trial is scored by a rolling-origin backtest: for every cycle SARIMAX
+is refit on history through the origin and forecasts the next ``horizon`` months;
+WMAPE/BIAS metrics are pooled across cycles and the objective is ``WMAPE_M3``. A
+Ljung-Box residual test on the last rolling-origin cycle fit marks each candidate's
+eligibility; ineligible candidates are kept out of the pre-champion shortlist when
+any eligible candidate exists.
+"""
 
 import logging
 import time
@@ -9,11 +17,17 @@ from typing import Any
 import numpy as np
 import optuna
 import pandas as pd
-from shared.metrics import mase as _shared_mase
-from shared.metrics import wape as _shared_wape
+from shared.rolling_origin import RollingOriginCycle, run_rolling_origin
+from statsmodels.stats.diagnostic import acorr_ljungbox
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 
+from hdf_pipelines.pipelines.train_monthly.nodes import (
+    build_monthly_rolling_origin_cycles,
+    extract_rolling_origin_metric_set,
+    make_pruning_callback,
+)
 from hdf_pipelines.utils.optuna_helpers import (
+    build_rolling_origin_pruner,
     create_optuna_study,
     suggest_trial_params,
     validate_optuna_search_space,
@@ -28,45 +42,38 @@ optuna.logging.set_verbosity(optuna.logging.WARNING)
 # ── Public node ───────────────────────────────────────────────────────────────
 
 
-def train_and_evaluate_monthly_sarimax_candidates(
-    monthly_sarimax_train: pd.DataFrame,
-    monthly_sarimax_validation: pd.DataFrame,
+def train_and_evaluate_monthly_sarimax_candidates(  # noqa: PLR0915
+    monthly_sarimax_full_train: pd.DataFrame,
     monthly_sarimax_split_metadata: dict,
     params: dict,
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict, dict, dict, dict]:
-    """Train, validate, rank, and emit monthly SARIMAX candidate artifacts.
+    """Tune SARIMAX with a rolling-origin backtest and emit candidate artifacts.
 
-    Runs an Optuna TPE study over the configured SARIMAX search space. Each trial
-    is fit on the training split and evaluated on the validation split. Successful
-    candidates are ranked by the configured objective metric and the top-N are
-    persisted as pre-champion artifacts.
+    Runs an Optuna TPE study over the SARIMAX search space. Each trial is scored by
+    a rolling-origin backtest (objective: pooled ``WMAPE_M3``) and gets a
+    Ljung-Box eligibility flag from the last cycle fit. The top-N eligible
+    candidates are persisted (refit on full history) as pre-champions.
 
     Args:
-        monthly_sarimax_train: SARIMAX-ready training DataFrame with date and target columns.
-        monthly_sarimax_validation: SARIMAX-ready validation DataFrame with the same schema.
-        monthly_sarimax_split_metadata: Metadata from the SARIMAX input adapter (date ranges,
-            column names, exogenous columns).
+        monthly_sarimax_full_train: SARIMAX-ready full history (full history) with
+            date, target, and exogenous columns.
+        monthly_sarimax_split_metadata: Metadata from the SARIMAX input adapter
+            (column names, exogenous columns).
         params: Contents of ``train_monthly.sarimax`` from the parameter file.
 
     Returns:
-        Six-element tuple:
-
-        1. ``tuning_results`` — DataFrame, one row per trial (ranked).
-        2. ``validation_metrics`` — DataFrame, detailed per-candidate metrics.
-        3. ``prechampion_configs`` — Dict with top-N pre-champion configurations.
-        4. ``candidate_models`` — Dict mapping trial_id → fitted SARIMAX result (top-N).
-        5. ``training_metadata`` — Dict summarising the Optuna study run.
-        6. ``candidate_monthly_sarimax`` — Rank-1 SARIMAX candidate dict.
+        Six-element tuple: tuning_results, rolling_origin_metrics, prechampion_configs,
+        candidate_models, training_metadata, candidate_monthly_sarimax (rank-1).
 
     Raises:
         ValueError: When inputs are invalid or required columns are missing.
-        RuntimeError: When every configured trial fails to train.
+        RuntimeError: When every configured trial fails to evaluate.
     """
     # ── extract configuration ─────────────────────────────────────────────────
     date_col: str = params.get("date_column", "month_start_date")
     target_col: str = params.get("target_column", "monthly_demand")
     objective_cfg: dict = params.get("objective", {})
-    objective_metric: str = str(objective_cfg.get("metric", "wape"))
+    objective_metric: str = str(objective_cfg.get("metric", "wmape_m3"))
     objective_direction: str = str(objective_cfg.get("direction", "minimize")).lower()
     top_n: int = int(params.get("top_n_prechampions", 3))
     metrics_cfg: dict = params.get("metrics", {})
@@ -80,19 +87,24 @@ def train_and_evaluate_monthly_sarimax_candidates(
         else None
     )
 
-    # Optuna-specific config
-    max_trials: int = int(tuning_cfg.get("max_trials", 50))
+    ljung_cfg: dict = dict(params.get("ljung_box", {}))
+    lb_enabled: bool = bool(ljung_cfg.get("enabled", True))
+    lb_lags: int = int(ljung_cfg.get("lags", 10))
+    lb_threshold: float = float(ljung_cfg.get("pvalue_threshold", 0.05))
+
+    rolling_origin_cfg: dict = dict(tuning_cfg.get("rolling_origin", {}))
+    pruning_cfg: dict = dict(tuning_cfg.get("pruning", {}))
+    horizon: int = int(rolling_origin_cfg.get("horizon", 3))
+
+    max_trials: int = int(tuning_cfg.get("max_trials", 40))
     sampler_cfg: dict = dict(tuning_cfg.get("sampler", {}))
     search_space: dict = validate_optuna_search_space(dict(tuning_cfg.get("search_space", {})))
     fixed_params: dict = dict(tuning_cfg.get("fixed_params", {}))
     s: int = int(fixed_params.get("s", mase_seasonal_period))
 
     # ── validate inputs ───────────────────────────────────────────────────────
-    _validate_sarimax_training_inputs(
-        monthly_sarimax_train, monthly_sarimax_validation, date_col, target_col
-    )
+    _validate_sarimax_training_inputs(monthly_sarimax_full_train, date_col, target_col)
 
-    # ── extract series and exogenous matrices ─────────────────────────────────
     exog_cols: list[str] = list(monthly_sarimax_split_metadata.get("exogenous_columns", []))
     if use_exog and not exog_cols:
         logger.info(
@@ -100,38 +112,29 @@ def train_and_evaluate_monthly_sarimax_candidates(
         )
         use_exog = False
 
-    train_df = monthly_sarimax_train.copy()
-    val_df = monthly_sarimax_validation.copy()
-    train_df[date_col] = pd.to_datetime(train_df[date_col])
-    val_df[date_col] = pd.to_datetime(val_df[date_col])
-    train_df = train_df.sort_values(date_col).reset_index(drop=True)
-    val_df = val_df.sort_values(date_col).reset_index(drop=True)
+    full_df = monthly_sarimax_full_train.copy()
+    full_df[date_col] = pd.to_datetime(full_df[date_col])
+    full_df = full_df.sort_values(date_col).reset_index(drop=True)
 
-    train_y = train_df[target_col].values.astype(float)
-    val_y = val_df[target_col].values.astype(float)
-    train_exog = _extract_exog(train_df, exog_cols) if use_exog else None
-    val_exog = _extract_exog(val_df, exog_cols) if use_exog else None
+    full_y = full_df[target_col].to_numpy(dtype=float)
+    full_exog = _extract_exog(full_df, exog_cols) if use_exog else None
 
-    forecast_steps: int = int(
-        params.get("validation", {}).get("forecast_steps") or len(val_y)
-    )
-
+    cycles = build_monthly_rolling_origin_cycles(full_df, date_col, rolling_origin_cfg)
     logger.info(
-        "SARIMAX training — train=%d rows  val=%d rows  exog_cols=%s  "
-        "objective=%s  direction=%s  max_trials=%d",
-        len(train_y),
-        len(val_y),
-        exog_cols if use_exog else "(none)",
-        objective_metric,
-        objective_direction,
-        max_trials,
+        "SARIMAX training — %d rows | %s → %s | %d cycles (H=%d)  exog=%s  "
+        "objective=%s  max_trials=%d  ljung_box=%s",
+        len(full_df), full_df[date_col].min().date(), full_df[date_col].max().date(),
+        len(cycles), horizon, exog_cols if use_exog else "(none)",
+        objective_metric, max_trials, lb_enabled,
     )
 
     # ── Optuna study setup ────────────────────────────────────────────────────
-    study = create_optuna_study(objective_direction, sampler_cfg)
+    study = create_optuna_study(
+        objective_direction, sampler_cfg, pruner=build_rolling_origin_pruner(pruning_cfg)
+    )
     trial_results: list[dict] = []
-    fitted_models: dict[str, Any] = {}
-    n_failed_count: list[int] = [0]  # mutable container for callback closure
+    full_history_fits: dict[str, Any] = {}
+    n_failed_count: list[int] = [0]
 
     def _stop_on_max_failures(
         _study: optuna.Study, trial: optuna.trial.FrozenTrial
@@ -141,197 +144,142 @@ def train_and_evaluate_monthly_sarimax_candidates(
             if max_failed_trials is not None and n_failed_count[0] >= max_failed_trials:
                 logger.warning(
                     "SARIMAX Optuna search: max_failed_trials=%d reached after %d "
-                    "total trial(s). Stopping search early.",
-                    max_failed_trials,
-                    trial.number + 1,
+                    "trial(s). Stopping early.",
+                    max_failed_trials, trial.number + 1,
                 )
                 _study.stop()
 
-    # ── Optuna objective closure ──────────────────────────────────────────────
-    def objective(trial: optuna.Trial) -> float:  # noqa: PLR0912
+    def objective(trial: optuna.Trial) -> float:
         trial_id = f"sarimax_trial_{trial.number + 1:03d}"
         t0 = time.perf_counter()
-
         raw_params = suggest_trial_params(trial, search_space, fixed_params)
         config = _build_sarimax_config_from_trial(raw_params, s)
 
-        logger.info(
-            "[%d] %s order=%s seasonal_order=%s trend=%s use_exog=%s",
-            trial.number + 1,
-            trial_id,
-            config["order"],
-            config["seasonal_order"],
-            config.get("trend"),
-            use_exog,
+        def _fit_forecast(train_df: pd.DataFrame, cycle: RollingOriginCycle) -> np.ndarray:
+            return _sarimax_cycle_forecast(
+                config, train_df, cycle, full_df, date_col, target_col, exog_cols, use_exog
+            )
+
+        on_cycle_end = make_pruning_callback(trial, pruning_cfg, metric_key=objective_metric)
+        _, aggregated = run_rolling_origin(
+            full_df, date_col, target_col, cycles, _fit_forecast,
+            season=mase_seasonal_period, epsilon=epsilon, on_cycle_end=on_cycle_end,
         )
+        metric_set = extract_rolling_origin_metric_set(aggregated, horizon)
+        objective_value = metric_set.get(objective_metric)
+        elapsed = time.perf_counter() - t0
 
-        try:
-            model = SARIMAX(
-                endog=train_y,
-                exog=train_exog,
-                order=tuple(config["order"]),
-                seasonal_order=tuple(config["seasonal_order"]),
-                trend=config.get("trend"),
-                enforce_stationarity=bool(config.get("enforce_stationarity", False)),
-                enforce_invertibility=bool(config.get("enforce_invertibility", False)),
+        if objective_value is None:
+            trial_results.append(
+                _failed_trial_row(trial_id, config, use_exog, objective_metric,
+                                  len(full_y), elapsed, "all rolling-origin cycles failed")
             )
-            with _warnings.catch_warnings(record=True) as _caught:
-                _warnings.simplefilter("always")
-                result = model.fit(disp=False)
-            fit_warnings_list = [str(w.message) for w in _caught]
+            raise RuntimeError(f"{trial_id}: all rolling-origin cycles failed")
 
-            forecast_out = result.get_forecast(steps=forecast_steps, exog=val_exog)
-            y_pred = np.asarray(forecast_out.predicted_mean, dtype=float)
-
-            n_eval = min(len(y_pred), len(val_y))
-            y_pred_eval = y_pred[:n_eval]
-
-            if not np.isfinite(y_pred_eval).all():
-                n_nonfinite = int((~np.isfinite(y_pred_eval)).sum())
-                raise ValueError(
-                    f"Forecast produced {n_nonfinite} non-finite value(s); "
-                    "this configuration is recorded as a failed trial."
+        # Ljung-Box eligibility on the last rolling-origin cycle.
+        lb_pvalue, excluded, lb_cycle_index = _ljung_box_eligibility_on_last_cycle(
+            config=config,
+            full_df=full_df,
+            cycle=cycles[-1],
+            date_col=date_col,
+            target_col=target_col,
+            exog_cols=exog_cols,
+            use_exog=use_exog,
+            lags=lb_lags,
+            threshold=lb_threshold,
+            enabled=lb_enabled,
+        )
+        full_result = _fit_sarimax_result(
+            config=config,
+            endog=full_y,
+            exog=full_exog,
+            use_exog=use_exog,
+            context="full-history candidate refit",
+        )
+        if full_result is None:
+            trial_results.append(
+                _failed_trial_row(
+                    trial_id,
+                    config,
+                    use_exog,
+                    objective_metric,
+                    len(full_y),
+                    elapsed,
+                    "full-history candidate refit failed",
                 )
+            )
+            raise RuntimeError(f"{trial_id}: full-history candidate refit failed")
+        full_history_fits[trial_id] = full_result
 
-            metrics = _compute_validation_metrics(
-                val_y[:n_eval], y_pred_eval, train_y, mase_seasonal_period, epsilon
-            )
-            elapsed = time.perf_counter() - t0
-            objective_value = metrics[objective_metric]
+        trial_results.append(
+            {
+                "trial_id": trial_id,
+                "status": "success",
+                "model_family": "sarimax",
+                "granularity": "monthly",
+                "order": config["order"],
+                "seasonal_order": config["seasonal_order"],
+                "trend": config.get("trend"),
+                "enforce_stationarity": config.get("enforce_stationarity", False),
+                "enforce_invertibility": config.get("enforce_invertibility", False),
+                "use_exog": use_exog,
+                "objective_metric": objective_metric,
+                "objective_value": objective_value,
+                **metric_set,
+                "ljung_box_pvalue": lb_pvalue,
+                "autocorrelation_excluded": excluded,
+                "ljung_box_cycle_index": lb_cycle_index,
+                "n_full_history": len(full_y),
+                "fit_seconds": round(elapsed, 3),
+                "error_message": None,
+            }
+        )
+        logger.info(
+            "%s ✓  wmape_m3=%.4f  wmape=%.4f  bias=%.4f  lb_p=%s  excluded=%s",
+            trial_id, metric_set["wmape_m3"], metric_set["wmape"], metric_set["bias"],
+            f"{lb_pvalue:.4f}" if lb_pvalue is not None else "nan", excluded,
+        )
+        return float(objective_value)
 
-            fitted_models[trial_id] = result
-            trial_results.append(
-                {
-                    "trial_id": trial_id,
-                    "status": "success",
-                    "model_family": "sarimax",
-                    "granularity": "monthly",
-                    "order": config["order"],
-                    "seasonal_order": config["seasonal_order"],
-                    "trend": config.get("trend"),
-                    "enforce_stationarity": config.get("enforce_stationarity", False),
-                    "enforce_invertibility": config.get("enforce_invertibility", False),
-                    "use_exog": use_exog,
-                    "objective_metric": objective_metric,
-                    "objective_value": objective_value,
-                    **metrics,
-                    "n_train": len(train_y),
-                    "n_validation": n_eval,
-                    "train_start": str(train_df[date_col].min().date()),
-                    "train_end": str(train_df[date_col].max().date()),
-                    "validation_start": str(val_df[date_col].min().date()),
-                    "validation_end": str(val_df[date_col].max().date()),
-                    "fit_seconds": round(elapsed, 3),
-                    "fit_warnings": fit_warnings_list[:5],
-                    "error_message": None,
-                }
-            )
-            logger.info(
-                "%s ✓  wape=%.4f  mase=%.4f  rmse=%.2f  bias=%.4f",
-                trial_id,
-                metrics["wape"],
-                metrics["mase"] if metrics["mase"] is not None else float("nan"),
-                metrics["rmse"],
-                metrics["bias"],
-            )
-            return float(objective_value)
-
-        except Exception as exc:  # noqa: BLE001
-            elapsed = time.perf_counter() - t0
-            logger.warning(
-                "%s FAILED (%.2fs): %s | config=%s", trial_id, elapsed, exc, config
-            )
-            trial_results.append(
-                {
-                    "trial_id": trial_id,
-                    "status": "failed",
-                    "model_family": "sarimax",
-                    "granularity": "monthly",
-                    "order": config["order"],
-                    "seasonal_order": config["seasonal_order"],
-                    "trend": config.get("trend"),
-                    "enforce_stationarity": config.get("enforce_stationarity", False),
-                    "enforce_invertibility": config.get("enforce_invertibility", False),
-                    "use_exog": use_exog,
-                    "objective_metric": objective_metric,
-                    "objective_value": None,
-                    "wape": None,
-                    "mase": None,
-                    "rmse": None,
-                    "bias": None,
-                    "mae": None,
-                    "n_train": len(train_y),
-                    "n_validation": len(val_y),
-                    "train_start": str(train_df[date_col].min().date()),
-                    "train_end": str(train_df[date_col].max().date()),
-                    "validation_start": str(val_df[date_col].min().date()),
-                    "validation_end": str(val_df[date_col].max().date()),
-                    "fit_seconds": round(elapsed, 3),
-                    "fit_warnings": [],
-                    "error_message": f"{type(exc).__name__}: {exc}",
-                }
-            )
-            raise  # Let Optuna record this as TrialState.FAIL
-
-    # ── run Optuna study ──────────────────────────────────────────────────────
     callbacks = [_stop_on_max_failures]
     study.optimize(objective, n_trials=max_trials, catch=(Exception,), callbacks=callbacks)
 
-    # ── validate at least one success ─────────────────────────────────────────
     successful = [r for r in trial_results if r["status"] == "success"]
     failed = [r for r in trial_results if r["status"] == "failed"]
     if not successful:
         summaries = [f"{r['trial_id']}: {r['error_message']}" for r in failed]
         raise RuntimeError(
-            "All SARIMAX trials failed during monthly training.\n" + "\n".join(summaries)
+            "All SARIMAX trials failed during rolling-origin evaluation.\n"
+            + "\n".join(summaries)
         )
 
-    # ── rank and select pre-champions ─────────────────────────────────────────
+    # ── rank and select eligible pre-champions ────────────────────────────────
     tuning_df = _rank_candidates(
         pd.DataFrame(trial_results), objective_metric, objective_direction
     )
+    prechampion_ids = _select_prechampion_ids(tuning_df, top_n)
+    logger.info("Pre-champion SARIMAX candidates (top-%d eligible): %s", top_n, prechampion_ids)
 
-    ranked_mask = tuning_df["rank"].notna()
-    prechampion_ids: list[str] = (
-        tuning_df[ranked_mask]
-        .assign(_rank_float=tuning_df.loc[ranked_mask, "rank"].astype(float))
-        .nsmallest(top_n, "_rank_float")["trial_id"]
-        .tolist()
-    )
-    logger.info("Pre-champion SARIMAX candidates (top-%d): %s", top_n, prechampion_ids)
-
-    # ── build validation metrics table (successful candidates only) ───────────
-    val_metrics_df = tuning_df[tuning_df["status"] == "success"][
-        [
-            "trial_id",
-            "rank",
-            "model_family",
-            "granularity",
-            "order",
-            "seasonal_order",
-            "trend",
-            "use_exog",
-            "wape",
-            "mase",
-            "rmse",
-            "bias",
-            "mae",
-            "n_train",
-            "n_validation",
-            "validation_start",
-            "validation_end",
+    metric_cols = ["wmape", "wmape_m1", "wmape_m2", "wmape_m3", "mase", "bias", "rmse"]
+    ro_metrics_df = (
+        tuning_df[tuning_df["status"] == "success"][
+            ["trial_id", "rank", "model_family", "granularity", "order",
+             "seasonal_order", "trend", "use_exog", *metric_cols,
+             "ljung_box_pvalue", "autocorrelation_excluded",
+             "ljung_box_cycle_index", "n_full_history"]
         ]
-    ].assign(seasonal_period=mase_seasonal_period).reset_index(drop=True)
+        .assign(seasonal_period=mase_seasonal_period)
+        .reset_index(drop=True)
+    )
 
-    # ── build prechampion_configs artifact ────────────────────────────────────
     prechampion_configs = _build_prechampion_configs(
         tuning_df, prechampion_ids, objective_metric, top_n, mase_seasonal_period, exog_cols
     )
 
-    # ── persist top-N fitted models ───────────────────────────────────────────
+    # ── persist top-N full-history-refit models ───────────────────────────────
     candidate_models: dict[str, Any] = {}
     for cid in prechampion_ids:
-        if cid not in fitted_models:
+        if cid not in full_history_fits:
             continue
         row = tuning_df[tuning_df["trial_id"] == cid].iloc[0]
         candidate_models[cid] = {
@@ -345,17 +293,13 @@ def train_and_evaluate_monthly_sarimax_candidates(
                 "use_exog": row["use_exog"],
             },
             "exogenous_columns": exog_cols if use_exog else [],
-            "model": fitted_models[cid],
-            "validation_metrics": {
-                "wape": _safe_float(row["wape"]),
-                "mase": _safe_float(row["mase"]),
-                "rmse": _safe_float(row["rmse"]),
-                "bias": _safe_float(row["bias"]),
-                "mae": _safe_float(row["mae"]),
-            },
+            "model": full_history_fits[cid],
+            "rolling_origin_metrics": _metric_set_from_row(row),
+            "ljung_box_pvalue": _safe_float(row["ljung_box_pvalue"]),
+            "autocorrelation_excluded": bool(row["autocorrelation_excluded"]),
+            "ljung_box_cycle_index": _safe_int(row["ljung_box_cycle_index"]),
         }
 
-    # ── build training metadata ───────────────────────────────────────────────
     run_ts = datetime.now(tz=UTC).isoformat()
     best_row = (
         tuning_df[tuning_df["rank"] == 1].iloc[0]
@@ -363,24 +307,14 @@ def train_and_evaluate_monthly_sarimax_candidates(
         else None
     )
     training_metadata = _build_training_metadata(
-        trial_results=trial_results,
-        study=study,
-        best_row=best_row,
-        objective_metric=objective_metric,
-        objective_direction=objective_direction,
-        top_n=top_n,
-        mase_seasonal_period=mase_seasonal_period,
-        use_exog=use_exog,
-        exog_cols=exog_cols,
-        target_col=target_col,
-        date_col=date_col,
-        train_df=train_df,
-        val_df=val_df,
-        run_ts=run_ts,
-        prechampion_ids=prechampion_ids,
+        trial_results=trial_results, study=study, best_row=best_row,
+        objective_metric=objective_metric, objective_direction=objective_direction,
+        top_n=top_n, mase_seasonal_period=mase_seasonal_period, use_exog=use_exog,
+        exog_cols=exog_cols, target_col=target_col, date_col=date_col,
+        full_df=full_df, run_ts=run_ts, prechampion_ids=prechampion_ids,
+        rolling_origin_cfg=rolling_origin_cfg,
     )
 
-    # ── build rank-1 candidate artifact ──────────────────────────────────────
     if not prechampion_ids or prechampion_ids[0] not in candidate_models:
         raise RuntimeError("Rank-1 SARIMAX candidate model was not persisted correctly.")
 
@@ -398,30 +332,20 @@ def train_and_evaluate_monthly_sarimax_candidates(
             "use_exog": rank1_row["use_exog"],
         },
         "exogenous_columns": exog_cols if use_exog else [],
-        "model": fitted_models[rank1_id],
-        "validation_metrics": {
-            "wape": _safe_float(rank1_row["wape"]),
-            "mase": _safe_float(rank1_row["mase"]),
-            "rmse": _safe_float(rank1_row["rmse"]),
-            "bias": _safe_float(rank1_row["bias"]),
-            "mae": _safe_float(rank1_row["mae"]),
-        },
+        "model": full_history_fits[rank1_id],
+        "rolling_origin_metrics": _metric_set_from_row(rank1_row),
         "metadata": training_metadata,
     }
 
     logger.info(
-        "SARIMAX training done — trials=%d  successful=%d  failed=%d  "
-        "best=%s  wape=%.4f",
-        len(trial_results),
-        len(successful),
-        len(failed),
-        rank1_id,
-        _safe_float(rank1_row["wape"]) or float("nan"),
+        "SARIMAX training done — trials=%d  successful=%d  failed=%d  best=%s  wmape_m3=%.4f",
+        len(trial_results), len(successful), len(failed), rank1_id,
+        _safe_float(rank1_row["wmape_m3"]) or float("nan"),
     )
 
     return (
         tuning_df,
-        val_metrics_df,
+        ro_metrics_df,
         prechampion_configs,
         candidate_models,
         training_metadata,
@@ -433,25 +357,20 @@ def train_and_evaluate_monthly_sarimax_candidates(
 
 
 def _validate_sarimax_training_inputs(
-    train_df: pd.DataFrame,
-    val_df: pd.DataFrame,
+    full_df: pd.DataFrame,
     date_col: str,
     target_col: str,
 ) -> None:
-    """Raise a descriptive error for invalid training or validation inputs."""
-    if train_df.empty:
-        raise ValueError("SARIMAX training DataFrame is empty.")
-    if val_df.empty:
-        raise ValueError("SARIMAX validation DataFrame is empty.")
+    """Raise a descriptive error for an invalid full-history input."""
+    if full_df.empty:
+        raise ValueError("SARIMAX full-history DataFrame is empty.")
     for col in (date_col, target_col):
-        if col not in train_df.columns:
-            raise ValueError(f"Required column {col!r} missing from training data.")
-        if col not in val_df.columns:
-            raise ValueError(f"Required column {col!r} missing from validation data.")
-    if not pd.api.types.is_numeric_dtype(train_df[target_col]):
+        if col not in full_df.columns:
+            raise ValueError(f"Required column {col!r} missing from full-history data.")
+    if not pd.api.types.is_numeric_dtype(full_df[target_col]):
         raise ValueError(
             f"Target column {target_col!r} must be numeric; "
-            f"found dtype {train_df[target_col].dtype}."
+            f"found dtype {full_df[target_col].dtype}."
         )
 
 
@@ -479,45 +398,167 @@ def _build_sarimax_config_from_trial(params: dict, s: int) -> dict:
     big_q = int(params["Q"])
     trend_raw = params.get("trend", "none")
     trend = None if str(trend_raw).lower() == "none" else str(trend_raw)
-    enforce_stationarity = bool(params.get("enforce_stationarity", False))
-    enforce_invertibility = bool(params.get("enforce_invertibility", False))
     return {
         "order": [p, d, q],
         "seasonal_order": [big_p, big_d, big_q, s],
         "trend": trend,
-        "enforce_stationarity": enforce_stationarity,
-        "enforce_invertibility": enforce_invertibility,
+        "enforce_stationarity": bool(params.get("enforce_stationarity", False)),
+        "enforce_invertibility": bool(params.get("enforce_invertibility", False)),
     }
 
 
-def _compute_validation_metrics(
-    y_true: np.ndarray,
-    y_pred: np.ndarray,
-    y_train: np.ndarray,
-    mase_seasonal_period: int,
-    epsilon: float,
+def _sarimax_cycle_forecast(  # noqa: PLR0913
+    config: dict,
+    train_df: pd.DataFrame,
+    cycle: RollingOriginCycle,
+    full_df: pd.DataFrame,
+    date_col: str,
+    target_col: str,
+    exog_cols: list[str],
+    use_exog: bool,
+) -> np.ndarray:
+    """Refit SARIMAX on a cycle's train window and forecast its target months.
+
+    Future exogenous values for the (observed) target months come from the
+    full-history frame, mirroring production multi-step forecasting.
+
+    Returns:
+        Array of ``len(cycle.target_dates)`` point forecasts in chronological order.
+    """
+    train_y = train_df[target_col].to_numpy(dtype=float)
+    train_exog = _extract_exog(train_df, exog_cols) if use_exog else None
+
+    target_set = pd.DatetimeIndex(cycle.target_dates)
+    target_rows = full_df[full_df[date_col].isin(target_set)].sort_values(date_col)
+    future_exog = _extract_exog(target_rows, exog_cols) if use_exog else None
+
+    model = SARIMAX(
+        endog=train_y,
+        exog=train_exog,
+        order=tuple(config["order"]),
+        seasonal_order=tuple(config["seasonal_order"]),
+        trend=config.get("trend"),
+        enforce_stationarity=bool(config.get("enforce_stationarity", False)),
+        enforce_invertibility=bool(config.get("enforce_invertibility", False)),
+    )
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("ignore")
+        result = model.fit(disp=False)
+
+    steps = len(cycle.target_dates)
+    forecast_out = result.get_forecast(steps=steps, exog=future_exog)
+    y_pred = np.asarray(forecast_out.predicted_mean, dtype=float)
+    if not np.isfinite(y_pred).all():
+        raise ValueError("SARIMAX forecast produced non-finite value(s).")
+    return y_pred
+
+
+def _fit_sarimax_result(  # noqa: PLR0913
+    config: dict,
+    endog: np.ndarray,
+    exog: np.ndarray | None,
+    use_exog: bool,
+    context: str,
+) -> Any | None:
+    """Fit a SARIMAX result object, returning ``None`` on model-fit failure."""
+    try:
+        model = SARIMAX(
+            endog=endog,
+            exog=exog if use_exog else None,
+            order=tuple(config["order"]),
+            seasonal_order=tuple(config["seasonal_order"]),
+            trend=config.get("trend"),
+            enforce_stationarity=bool(config.get("enforce_stationarity", False)),
+            enforce_invertibility=bool(config.get("enforce_invertibility", False)),
+        )
+        with _warnings.catch_warnings():
+            _warnings.simplefilter("ignore")
+            return model.fit(disp=False)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("SARIMAX %s failed: %s", context, exc)
+        return None
+
+
+def _ljung_box_eligibility_on_last_cycle(  # noqa: PLR0913
+    config: dict,
+    full_df: pd.DataFrame,
+    cycle: RollingOriginCycle,
+    date_col: str,
+    target_col: str,
+    exog_cols: list[str],
+    use_exog: bool,
+    lags: int,
+    threshold: float,
+    enabled: bool,
+) -> tuple[float | None, bool, int | None]:
+    """Assess Ljung-Box residual eligibility on the last rolling-origin cycle.
+
+    Returns:
+        Tuple ``(pvalue, excluded, cycle_index)``. ``excluded`` is True when the
+        residuals show significant autocorrelation (p < threshold) and the filter
+        is enabled. The diagnostic is calculated on the same train window used by
+        the last rolling-origin cycle, not on the production full-history refit.
+    """
+    if not enabled:
+        return None, False, cycle.cycle_index
+
+    train_df = full_df[full_df[date_col] <= cycle.origin_date].copy()
+    train_y = train_df[target_col].to_numpy(dtype=float)
+    train_exog = _extract_exog(train_df, exog_cols) if use_exog else None
+    result = _fit_sarimax_result(
+        config=config,
+        endog=train_y,
+        exog=train_exog,
+        use_exog=use_exog,
+        context=f"Ljung-Box cycle {cycle.cycle_index} fit",
+    )
+    if result is None:
+        return None, True, cycle.cycle_index
+
+    try:
+        lb_df = acorr_ljungbox(result.resid, lags=[lags], return_df=True)
+        pvalue = float(lb_df["lb_pvalue"].iloc[-1])
+        excluded = pvalue < threshold
+        return pvalue, bool(excluded), cycle.cycle_index
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Ljung-Box test failed (%s) — keeping candidate eligible.", exc)
+        return None, False, cycle.cycle_index
+
+
+def _failed_trial_row(  # noqa: PLR0913
+    trial_id: str,
+    config: dict,
+    use_exog: bool,
+    objective_metric: str,
+    n_full: int,
+    elapsed: float,
+    error: str,
 ) -> dict:
-    """Compute WAPE, MASE, RMSE, bias, and MAE for a single SARIMAX candidate."""
-    y_true = np.asarray(y_true, dtype=float)
-    y_pred = np.asarray(y_pred, dtype=float)
-
-    wape_val = _shared_wape(y_true, y_pred)
-    rmse_val = float(np.sqrt(np.mean((y_true - y_pred) ** 2)))
-    mae_val = float(np.mean(np.abs(y_true - y_pred)))
-    denom = float(np.sum(np.abs(y_true)))
-    bias_val = float(np.sum(y_pred - y_true)) / (denom + epsilon)
-
-    mase_val: float | None = None
-    if y_train is not None and len(y_train) > mase_seasonal_period:
-        raw = _shared_mase(y_true, y_pred, y_train, mase_seasonal_period)
-        mase_val = raw if (raw is not None and np.isfinite(raw)) else None
-
+    """Build a failed-trial record with the rolling-origin metric columns nulled."""
+    null_metrics = {
+        k: None
+        for k in ["wmape", "wmape_m1", "wmape_m2", "wmape_m3", "mase", "bias", "rmse"]
+    }
     return {
-        "wape": wape_val,
-        "mase": mase_val,
-        "rmse": rmse_val,
-        "bias": bias_val,
-        "mae": mae_val,
+        "trial_id": trial_id,
+        "status": "failed",
+        "model_family": "sarimax",
+        "granularity": "monthly",
+        "order": config["order"],
+        "seasonal_order": config["seasonal_order"],
+        "trend": config.get("trend"),
+        "enforce_stationarity": config.get("enforce_stationarity", False),
+        "enforce_invertibility": config.get("enforce_invertibility", False),
+        "use_exog": use_exog,
+        "objective_metric": objective_metric,
+        "objective_value": None,
+        **null_metrics,
+        "ljung_box_pvalue": None,
+        "autocorrelation_excluded": False,
+        "ljung_box_cycle_index": None,
+        "n_full_history": n_full,
+        "fit_seconds": round(elapsed, 3),
+        "error_message": error,
     }
 
 
@@ -534,10 +575,33 @@ def _rank_candidates(
         "objective_value", ascending=ascending, na_position="last"
     ).reset_index(drop=True)
     success_df["rank"] = list(range(1, len(success_df) + 1))
-
     failed_df["rank"] = None
-
     return pd.concat([success_df, failed_df], ignore_index=True)
+
+
+def _select_prechampion_ids(tuning_df: pd.DataFrame, top_n: int) -> list[str]:
+    """Select the top-N eligible pre-champion trial ids (Ljung-Box aware).
+
+    Prefers candidates not flagged by the Ljung-Box filter; falls back to all
+    successful candidates (ordered by rank) when none are eligible.
+    """
+    success = tuning_df[tuning_df["status"] == "success"].copy()
+    success = success[success["rank"].notna()].sort_values("rank")
+
+    eligible = success[~success["autocorrelation_excluded"].fillna(False)]
+    pool = eligible if not eligible.empty else success
+    if eligible.empty and not success.empty:
+        logger.warning(
+            "All SARIMAX candidates were Ljung-Box excluded; falling back to the "
+            "full ranking for the pre-champion shortlist."
+        )
+    return pool["trial_id"].head(top_n).tolist()
+
+
+def _metric_set_from_row(row: "pd.Series") -> dict:
+    """Extract the rolling-origin metric set from a tuning row."""
+    keys = ["wmape", "wmape_m1", "wmape_m2", "wmape_m3", "mase", "bias", "rmse"]
+    return {k: _safe_float(row.get(k)) for k in keys}
 
 
 def _build_prechampion_configs(  # noqa: PLR0913
@@ -565,20 +629,17 @@ def _build_prechampion_configs(  # noqa: PLR0913
                 "trend": r["trend"],
                 "use_exog": use_exog_entry,
                 "exogenous_columns": exog_cols if use_exog_entry else [],
-                "metrics": {
-                    "wape": _safe_float(r["wape"]),
-                    "mase": _safe_float(r["mase"]),
-                    "rmse": _safe_float(r["rmse"]),
-                    "bias": _safe_float(r["bias"]),
-                    "mae": _safe_float(r["mae"]),
-                },
+                "rolling_origin_metrics": _metric_set_from_row(r),
+                "ljung_box_pvalue": _safe_float(r["ljung_box_pvalue"]),
+                "autocorrelation_excluded": bool(r["autocorrelation_excluded"]),
+                "ljung_box_cycle_index": _safe_int(r["ljung_box_cycle_index"]),
             }
         )
 
     return {
         "model_family": "sarimax",
         "granularity": "monthly",
-        "selection_stage": "validation",
+        "selection_stage": "rolling_origin",
         "objective_metric": objective_metric,
         "top_n": top_n,
         "seasonal_period": seasonal_period,
@@ -598,14 +659,15 @@ def _build_training_metadata(  # noqa: PLR0913
     exog_cols: list[str],
     target_col: str,
     date_col: str,
-    train_df: pd.DataFrame,
-    val_df: pd.DataFrame,
+    full_df: pd.DataFrame,
     run_ts: str,
     prechampion_ids: list[str] | None = None,
+    rolling_origin_cfg: dict | None = None,
 ) -> dict:
     """Build the training_metadata JSON artifact."""
     successful = [r for r in trial_results if r["status"] == "success"]
     failed = [r for r in trial_results if r["status"] == "failed"]
+    ro_cfg = rolling_origin_cfg or {}
 
     best_trial_id = str(best_row["trial_id"]) if best_row is not None else None
     best_val = _safe_float(best_row[objective_metric]) if best_row is not None else None
@@ -627,12 +689,19 @@ def _build_training_metadata(  # noqa: PLR0913
         "model_family": "sarimax",
         "model_class": "statsmodels.tsa.statespace.sarimax.SARIMAX",
         "granularity": "monthly",
-        "training_stage": "validation",
+        "training_stage": "rolling_origin",
+        "evaluation_mode": "rolling_origin",
         "run_timestamp": run_ts,
         "optimizer": "optuna",
         "study_direction": objective_direction,
         "objective_metric": objective_metric,
         "objective_direction": objective_direction,
+        "rolling_origin": {
+            "horizon": int(ro_cfg.get("horizon", 3)),
+            "n_cycles": int(ro_cfg.get("n_cycles", 5)),
+            "window": str(ro_cfg.get("window", "expanding")),
+            "step_months": int(ro_cfg.get("step_months", 1)),
+        },
         "top_n_prechampions": top_n,
         "n_trials_configured": len(study.trials),
         "n_trials_attempted": len(trial_results),
@@ -642,7 +711,7 @@ def _build_training_metadata(  # noqa: PLR0913
         "n_trials_failed": len(failed),
         "best_trial_id": best_trial_id,
         "best_rank": 1 if best_row is not None else None,
-        "best_validation_metric": best_val,
+        "best_objective_value": best_val,
         "seasonal_period": mase_seasonal_period,
         "uses_exogenous_features": use_exog,
         "exogenous_columns": exog_cols,
@@ -650,10 +719,8 @@ def _build_training_metadata(  # noqa: PLR0913
         "selected_prechampion_ids": list(prechampion_ids) if prechampion_ids else [],
         "target_column": target_col,
         "date_column": date_col,
-        "train_start": str(train_df[date_col].min().date()),
-        "train_end": str(train_df[date_col].max().date()),
-        "validation_start": str(val_df[date_col].min().date()),
-        "validation_end": str(val_df[date_col].max().date()),
+        "full_history_start": str(full_df[date_col].min().date()),
+        "full_history_end": str(full_df[date_col].max().date()),
         "warnings": warnings_list,
         "failed_trials": [
             {"trial_id": r["trial_id"], "error": r["error_message"]} for r in failed

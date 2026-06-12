@@ -214,21 +214,21 @@ def test_node_skips_when_disabled() -> None:
 
     importance, explainer, shap_values, metadata = (
         nodes.generate_monthly_family_champion_explanations(
-            summary,
-            {},
-            {},
-            {},
-            prophet_ft,
-            sarimax_ft,
-            catboost_ft,
-            {},
-            {},
-            {"explainability": {"enabled": False}},
+            monthly_family_champion_summary=summary,
+            monthly_prophet_candidate_models={},
+            monthly_sarimax_candidate_models={},
+            monthly_prophet_full_train=prophet_ft,
+            monthly_sarimax_full_train=sarimax_ft,
+            monthly_sarimax_training_metadata={},
+            params_monthly={"explainability": {"enabled": False}},
+            monthly_catboost_candidate_models={},
+            monthly_catboost_full_train=catboost_ft,
+            monthly_catboost_split_metadata={},
         )
     )
 
     assert importance.empty
-    assert explainer is None
+    assert explainer == {}
     assert shap_values.empty
     assert metadata["enabled"] is False
 
@@ -237,20 +237,20 @@ def test_node_handles_empty_summary() -> None:
     prophet_ft, sarimax_ft, catboost_ft = _empty_frames()
     importance, explainer, shap_values, metadata = (
         nodes.generate_monthly_family_champion_explanations(
-            pd.DataFrame(),
-            {},
-            {},
-            {},
-            prophet_ft,
-            sarimax_ft,
-            catboost_ft,
-            {},
-            {},
-            {"explainability": {"enabled": True}},
+            monthly_family_champion_summary=pd.DataFrame(),
+            monthly_prophet_candidate_models={},
+            monthly_sarimax_candidate_models={},
+            monthly_prophet_full_train=prophet_ft,
+            monthly_sarimax_full_train=sarimax_ft,
+            monthly_sarimax_training_metadata={},
+            params_monthly={"explainability": {"enabled": True}},
+            monthly_catboost_candidate_models={},
+            monthly_catboost_full_train=catboost_ft,
+            monthly_catboost_split_metadata={},
         )
     )
     assert importance.empty
-    assert explainer is None
+    assert explainer == {}
     assert metadata["n_families_explained"] == 0
 
 
@@ -272,21 +272,23 @@ def test_node_builds_sarimax_importance() -> None:
         ),
     ):
         importance, explainer, shap_values, metadata = (
-            nodes.generate_monthly_family_champion_explanations(
-                summary,
-                {},
-                {"sarimax_trial_001": {"config": {}}},
-                {},
-                prophet_ft,
-                sarimax_ft,
-                catboost_ft,
-                {},
-                {},
-                {"explainability": {"enabled": True}},
-            )
+                nodes.generate_monthly_family_champion_explanations(
+                    monthly_family_champion_summary=summary,
+                    monthly_prophet_candidate_models={},
+                    monthly_sarimax_candidate_models={
+                        "sarimax_trial_001": {"config": {}}
+                    },
+                    monthly_prophet_full_train=prophet_ft,
+                    monthly_sarimax_full_train=sarimax_ft,
+                    monthly_sarimax_training_metadata={},
+                    params_monthly={"explainability": {"enabled": True}},
+                    monthly_catboost_candidate_models={},
+                    monthly_catboost_full_train=catboost_ft,
+                    monthly_catboost_split_metadata={},
+                )
         )
 
-    assert explainer is None
+    assert explainer == {}
     assert shap_values.empty
     sarimax_rows = importance[importance["family"] == "sarimax"]
     assert set(sarimax_rows["feature"]) == {"promo", "price"}
@@ -305,16 +307,16 @@ def test_node_records_error_and_continues_on_family_failure() -> None:
     ):
         importance, explainer, shap_values, metadata = (
             nodes.generate_monthly_family_champion_explanations(
-                summary,
-                {},
-                {},
-                {},
-                prophet_ft,
-                sarimax_ft,
-                catboost_ft,
-                {},
-                {},
-                {"explainability": {"enabled": True}},
+                monthly_family_champion_summary=summary,
+                monthly_prophet_candidate_models={},
+                monthly_sarimax_candidate_models={},
+                monthly_prophet_full_train=prophet_ft,
+                monthly_sarimax_full_train=sarimax_ft,
+                monthly_sarimax_training_metadata={},
+                params_monthly={"explainability": {"enabled": True}},
+                monthly_catboost_candidate_models={},
+                monthly_catboost_full_train=catboost_ft,
+                monthly_catboost_split_metadata={},
             )
         )
 

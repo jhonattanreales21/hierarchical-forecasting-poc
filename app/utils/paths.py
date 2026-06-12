@@ -40,18 +40,9 @@ SELECTION_SUMMARY = _first_existing(
 FAMILY_CHAMPION_SUMMARY = (
     DATA_ROOT / "06_models" / "selection" / "monthly_family_champion_summary.parquet"
 )
-# Per-candidate held-out test metrics across all families.
-TEST_METRICS = _first_existing(
-    DATA_ROOT / "06_models" / "selection" / "monthly_candidate_test_metrics.parquet",
-    DATA_ROOT / "06_models" / "selection" / "monthly_prophet_test_metrics.parquet",
-)
-# Legacy Prophet-specific test-period backtest forecast. Used only as a
-# historical/test visualization overlay; must not drive the champion narrative.
-LEGACY_TEST_FORECAST = (
-    DATA_ROOT
-    / "06_models"
-    / "selection"
-    / "monthly_prophet_champion_test_forecast.parquet"
+# Per-candidate rolling-origin metrics across all families.
+CANDIDATE_METRICS = (
+    DATA_ROOT / "06_models" / "selection" / "monthly_candidate_metrics.parquet"
 )
 
 # Explainability artifacts (08_reporting + 06_models/explainability/)

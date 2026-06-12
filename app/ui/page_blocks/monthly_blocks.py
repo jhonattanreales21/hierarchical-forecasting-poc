@@ -65,15 +65,15 @@ def render_monthly_kpi_summary(identity: dict) -> None:
     """
     render_section_header("Production Champion Summary")
 
-    test_metrics = identity.get("test_metrics", {})
-    wape = test_metrics.get("wape")
-    rmse = test_metrics.get("rmse")
-    precision = test_metrics.get("forecast_precision")
-    business_flag = wape is not None and wape <= 0.15
+    evaluation_metrics = identity.get("evaluation_metrics", {})
+    wmape = evaluation_metrics.get("wmape")
+    rmse = evaluation_metrics.get("rmse")
+    precision = evaluation_metrics.get("forecast_precision")
+    business_flag = wmape is not None and wmape <= 0.15
     family = family_label(identity.get("model_family"))
     champion_id = identity.get("champion_id")
 
-    wape_status = "success" if (wape is not None and wape < 0.15) else "warning"
+    wmape_status = "success" if (wmape is not None and wmape < 0.15) else "warning"
     precision_status = "success" if business_flag else "warning"
 
     cols = st.columns(4)
@@ -85,20 +85,20 @@ def render_monthly_kpi_summary(identity: dict) -> None:
         )
     with cols[1]:
         render_kpi_card(
-            label="Test WMAPE",
-            value=format_percentage(wape) if wape is not None else "N/A",
-            help_text="Weighted Mean Absolute % Error on test set (primary metric)",
-            status=wape_status,
+            label="WMAPE",
+            value=format_percentage(wmape) if wmape is not None else "N/A",
+            help_text="Weighted Mean Absolute % Error from rolling-origin evaluation",
+            status=wmape_status,
         )
     with cols[2]:
         render_kpi_card(
-            label="Test RMSE",
+            label="RMSE",
             value=(
                 format_metric(rmse, decimals=1, suffix=" units")
                 if rmse is not None
                 else "N/A"
             ),
-            help_text="Root Mean Squared Error on test set",
+            help_text="Root Mean Squared Error from rolling-origin evaluation",
         )
     with cols[3]:
         render_kpi_card(
@@ -215,18 +215,13 @@ def render_forecast_chart_panel(
         has_intervals: Whether the current champion exposes prediction intervals.
     """
     refit = identity.get("refit", {}) or {}
-    test_period = identity.get("test_period", {}) or {}
     refit_start = format_date(refit.get("start_date", ""))
     refit_end = format_date(refit.get("end_date", ""))
-    test_start = format_date(test_period.get("start_date", ""))
-    test_end = format_date(test_period.get("end_date", ""))
 
     caption_parts: list[str] = []
     if refit_start != "N/A" and refit_end != "N/A":
         scope = refit.get("data_scope", "history").replace("_", " ")
         caption_parts.append(f"Refit ({scope}): {refit_start} → {refit_end}")
-    if test_start != "N/A" and test_end != "N/A":
-        caption_parts.append(f"Test: {test_start} → {test_end}")
     caption_parts.append(f"Horizon: {horizon_months} months forward")
 
     interval_copy = (
@@ -330,7 +325,7 @@ def render_future_forecast_table(
 
 
 _METRIC_DISPLAY_SPECS: tuple[tuple[str, str, str], ...] = (
-    ("wape", "WMAPE", "percentage"),
+    ("wmape", "WMAPE", "percentage"),
     ("mase", "MASE", "decimal"),
     ("rmse", "RMSE", "units"),
     ("bias", "Bias", "percentage"),
@@ -372,7 +367,7 @@ def _format_hyperparameter_value(value: Any) -> str:
 def render_champion_model_details(identity: dict) -> None:
     """Render a collapsible panel with the champion's hyperparameters and metrics.
 
-    Surfaces the held-out test metrics, the family-specific hyperparameters, and
+    Surfaces the rolling-origin metrics, the family-specific hyperparameters, and
     the active exogenous regressors behind the current production champion. All
     values are read from the normalized identity, so the panel stays
     model-family-agnostic.
@@ -382,7 +377,7 @@ def render_champion_model_details(identity: dict) -> None:
     """
     family = family_label(identity.get("model_family"))
     champion_id = identity.get("champion_id")
-    metrics = identity.get("test_metrics", {}) or {}
+    metrics = identity.get("evaluation_metrics", {}) or {}
     hyperparameters = dict(identity.get("hyperparameters", {}) or {})
     # Per-regressor prior scales are nested; surface them in a dedicated table so
     # they do not clutter (or break) the scalar hyperparameter table.
@@ -406,13 +401,13 @@ def render_champion_model_details(identity: dict) -> None:
             )
             st.caption(
                 f"Selected as production champion on {selected_metric_label} "
-                f"({value_text} on the held-out test set)."
+                f"({value_text} from rolling-origin evaluation)."
             )
 
         col_metrics, col_params = st.columns(2)
 
         with col_metrics:
-            st.markdown("**Key test metrics**")
+            st.markdown("**Key evaluation metrics**")
             metric_rows = [
                 {"Metric": label, "Value": _format_metric_value(metrics.get(key), kind)}
                 for key, label, kind in _METRIC_DISPLAY_SPECS
@@ -425,7 +420,7 @@ def render_champion_model_details(identity: dict) -> None:
                     hide_index=True,
                 )
             else:
-                st.caption("No test metrics recorded for this champion.")
+                st.caption("No evaluation metrics recorded for this champion.")
 
         with col_params:
             st.markdown("**Model hyperparameters**")
