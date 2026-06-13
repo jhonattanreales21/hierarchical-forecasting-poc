@@ -24,6 +24,7 @@ def create_pipeline(**kwargs) -> Pipeline:
         monthly_prophet_candidate_models
         monthly_prophet_training_metadata
         candidate_monthly_prophet          ← rank-1 full-history model for model selection
+        monthly_prophet_rolling_origin_predictions
     """
     return pipeline(
         [
@@ -41,6 +42,7 @@ def create_pipeline(**kwargs) -> Pipeline:
                     "monthly_prophet_candidate_models",
                     "monthly_prophet_training_metadata",
                     "candidate_monthly_prophet",
+                    "monthly_prophet_rolling_origin_predictions",
                 ],
                 name="train_and_evaluate_monthly_prophet_candidates",
             ),

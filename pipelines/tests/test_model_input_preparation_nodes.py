@@ -10,6 +10,7 @@ import pandas as pd
 import pytest
 
 from hdf_pipelines.pipelines.model_input_preparation.nodes import (
+    adapt_monthly_data_for_catboost,
     adapt_monthly_data_for_prophet,
     adapt_monthly_data_for_sarimax,
     build_monthly_modeling_data,
@@ -60,12 +61,28 @@ def _model_input_parameters() -> dict:
             "target_column": "monthly_demand",
             "sku_column": "sku",
             "frequency": "MS",
+            "active_regressors": ["pfizer_limited", "pfizer_limited_lag_1"],
             "exogenous_columns": ["pfizer_limited", "pfizer_limited_lag_1"],
             "allow_empty_exog": True,
             "require_regular_frequency": True,
             "sort_by_date": True,
             "drop_rows_with_null_target": True,
             "output_format": "tabular",
+        },
+        "monthly_catboost": {
+            "date_column": "month_start_date",
+            "target_column": "monthly_demand",
+            "sku_column": "sku",
+            "active_regressors": regressors,
+            "target_lags": [1, 2],
+            "rolling_windows": [3],
+            "include_rolling_std": True,
+            "include_rolling_min_max": False,
+            "trend_diffs": [1],
+            "trend_pct_changes": [1],
+            "drop_rows_with_null_target_features": True,
+            "include_missingness_flags": False,
+            "missingness_flag_columns": [],
         },
     }
 
@@ -118,6 +135,16 @@ def test_build_monthly_modeling_data_drops_null_regressor_rows():
     )
     assert len(modeling_df) == 3
     assert metadata["dropped_rows"]["null_active_regressors"] == 1
+
+
+def test_family_regressor_outside_monthly_pool_raises():
+    """Family-specific regressors must be selected from the monthly feature pool."""
+    feature_df = _modeling_df_generic(6)
+    params = _model_input_parameters()
+    params["monthly_prophet"]["active_regressors"] = ["business_days", "unknown_reg"]
+
+    with pytest.raises(ValueError, match="outside"):
+        build_monthly_modeling_data(feature_df, params)
 
 
 # ── Full history + rolling-origin windows ─────────────────────────────────────
@@ -184,6 +211,40 @@ def test_adapt_monthly_data_for_prophet_renames_and_collapses():
     assert len(prophet_full_train) == 24
     assert adapter_meta["evaluation_mode"] == "rolling_origin"
     assert {"ds", "y"}.issubset(modeling_data.columns)
+
+
+def test_family_specific_regressor_subsets_are_applied_by_adapters():
+    """Prophet, SARIMAX, and CatBoost can each consume a different regressor subset."""
+    params = _model_input_parameters()
+    params["monthly_prophet"]["active_regressors"] = ["business_days"]
+    params["monthly_sarimax"]["active_regressors"] = ["pfizer_limited_lag_1"]
+    params["monthly_sarimax"]["exogenous_columns"] = ["pfizer_limited_lag_1"]
+    params["monthly_catboost"]["active_regressors"] = ["pfizer_limited"]
+
+    full_train = _modeling_df_generic(24)
+    split_meta = build_monthly_split_metadata(
+        full_train, _preparation_metadata_stub(), params
+    )
+
+    _, prophet_full_train, prophet_meta = adapt_monthly_data_for_prophet(
+        full_train, full_train, split_meta, params
+    )
+    sarimax_full_train, sarimax_meta = adapt_monthly_data_for_sarimax(
+        full_train, split_meta, params
+    )
+    catboost_full_train, catboost_meta = adapt_monthly_data_for_catboost(
+        full_train, split_meta, params
+    )
+
+    assert prophet_meta["active_regressors"] == ["business_days"]
+    assert "business_days" in prophet_full_train.columns
+    assert "pfizer_limited" not in prophet_full_train.columns
+    assert sarimax_meta["exogenous_columns"] == ["pfizer_limited_lag_1"]
+    assert "pfizer_limited_lag_1" in sarimax_full_train.columns
+    assert "pfizer_limited" not in sarimax_full_train.columns
+    assert catboost_meta["base_feature_columns"] == ["pfizer_limited"]
+    assert "pfizer_limited" in catboost_full_train.columns
+    assert "business_days" not in catboost_full_train.columns
 
 
 def test_adapt_monthly_data_for_sarimax_returns_tabular_full_history():

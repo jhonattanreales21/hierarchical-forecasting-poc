@@ -11,44 +11,18 @@ train_monthly:
     target_column: "y"
     sku_column: "sku"
 
-    active_regressors:
-      - "business_days"
-      - "total_tuesdays"
-      - "total_thursdays"
-      - "working_tuesdays"
-      - "working_thursdays"
-      - "has_5_working_tuesdays"
-      - "has_5_working_thursdays"
-      - "tuesday_holidays"
-      - "thursday_holidays"
-      - "total_holidays"
-      - "pfizer_limited"
-      - "surgifoam_limited"
-      - "rebate_target"
-      # - "expected_market_share"
-      - "pfizer_limited_lag_1"
-      - "surgifoam_limited_lag_1"
-      - "rebate_target_lag_1"
-      # - "expected_market_share_lag_1"
-      - "pfizer_limited_lag_2"
-      - "surgifoam_limited_lag_2"
-      - "rebate_target_lag_2"
-      # - "pfizer_limited_lag_3"
-      # - "surgifoam_limited_lag_3"
-      # - "rebate_target_lag_3"
-      - "market_share_stress"
-      - "market_share_stress_lag_1"
-      - "market_share_uplift"
-      - "market_share_uplift_lag_1"
+    # Single source of truth for Prophet training: this must match the
+    # model-input Prophet adapter and future frames.
+    active_regressors: ${model_input_preparation.monthly_prophet.active_regressors}
 
     tuning:
       optimizer: "optuna"
       # Primary ranking metric is the 3-month-ahead WMAPE, pooled across
       # rolling-origin cycles.
       objective:
-        metric: "wmape_m3"
+        metric: "wmape"
         direction: "minimize"
-      max_trials: 50
+      max_trials: 100
       top_n_prechampions: 10
       # Rolling-origin backtest run inside every Optuna trial.
       rolling_origin:
@@ -61,8 +35,8 @@ train_monthly:
       # Optuna pruning over the per-cycle running objective.
       pruning:
         enabled: true
-        n_startup_trials: 10
-        n_warmup_cycles: 1
+        n_startup_trials: 20
+        n_warmup_cycles: 2
       sampler:
         name: "tpe"
         seed: ${random_seed}
@@ -87,31 +61,61 @@ train_monthly:
           log: true
         seasonality_mode:
           type: "categorical"
-          choices: ["additive", "multiplicative"]
+          choices: ["additive"]
+        # Calendar/count regressors: conservative priors to avoid letting
+        # deterministic calendar structure dominate the monthly signal.
+        prior_scale_business_days:
+          type: "categorical"
+          choices: [0.01, 0.05, 0.1, 0.5, 1, 5]
+        prior_scale_has_5_working_tuesdays:
+          type: "categorical"
+          choices: [0.01, 0.05, 0.1, 0.5, 1, 5]
+        prior_scale_has_5_working_thursdays:
+          type: "categorical"
+          choices: [0.01, 0.05, 0.1, 0.5, 1, 5]
+        prior_scale_tuesday_holidays:
+          type: "categorical"
+          choices: [0.01, 0.05, 0.1, 0.5, 1, 5]
+        prior_scale_thursday_holidays:
+          type: "categorical"
+          choices: [0.01, 0.05, 0.1, 0.5, 1, 5]
+
+        # Commercial limitation regressors: same range already used for the
+        # existing Pfizer limitation lags.
+        prior_scale_pfizer_limited:
+          type: "categorical"
+          choices: [3, 5, 10, 15]
         prior_scale_pfizer_limited_lag_1:
           type: "categorical"
-          choices: [5, 10, 20, 25]
+          choices: [3, 5, 10, 15]
         prior_scale_pfizer_limited_lag_2:
           type: "categorical"
-          choices: [5, 10, 20, 25]
-        prior_scale_surgifoam_limited_lag_1:
-          type: "categorical"
-          choices: [0.01, 0.1, 0.5, 1, 5, 10]
-        prior_scale_surgifoam_limited_lag_2:
-          type: "categorical"
-          choices: [0.01, 0.1, 0.5, 1, 5, 10]
+          choices: [3, 5, 10, 15]
+        # Rebate regressors keep a low-to-moderate range because they may carry
+        # direct business signal but should still be regularized.
         prior_scale_rebate_target:
           type: "categorical"
-          choices: [0.01, 0.1, 0.5, 1, 5]
+          choices: [0.01, 0.1, 0.5, 1, 5, 10]
         prior_scale_rebate_target_lag_1:
           type: "categorical"
-          choices: [0.01, 0.1, 0.5, 1, 5]
+          choices: [0.01, 0.1, 0.5, 1, 5, 10]
+        prior_scale_rebate_target_lag_2:
+          type: "categorical"
+          choices: [0.01, 0.1, 0.5, 1, 5, 10]
+        # Market-share transformed features: deliberately low priors because
+        # these are scenario/derived variables and can otherwise over-explain.
         prior_scale_market_share_stress:
           type: "categorical"
-          choices: [5, 10, 20]
+          choices: [0.01, 0.05, 0.1, 0.5, 1, 5, 10]
+        prior_scale_market_share_stress_lag_1:
+          type: "categorical"
+          choices: [0.01, 0.05, 0.1, 0.5, 1, 5, 10]
         prior_scale_market_share_uplift:
           type: "categorical"
-          choices: [5, 10, 20]
+          choices: [0.01, 0.05, 0.1, 0.5, 1, 5, 10]
+        # prior_scale_market_share_uplift_lag_1:
+        #   type: "categorical"
+        #   choices: [0.01, 0.05, 0.1, 0.5, 1, 5, 10]
       fixed_params:
         yearly_seasonality: false
         weekly_seasonality: false
@@ -128,18 +132,18 @@ train_monthly:
 
   catboost:
     enabled: true
-    primary_metric: "wmape_m3"
+    primary_metric: "wmape"
     selection_direction: "minimize"
     random_seed: ${random_seed}
     prechampion_count: 10
     mase_seasonal_period: ${mase_seasonal_period}
     epsilon: 1.0
-    max_trials: 100
-    max_failed_trials: 25
+    max_trials: 40
+    max_failed_trials: 20
     sampler:
       name: "tpe"
       seed: ${random_seed}
-      n_startup_trials: 50
+      n_startup_trials: 10
       multivariate: true
       gamma: 0.40
     # Rolling-origin backtest run inside every Optuna trial.
@@ -161,25 +165,25 @@ train_monthly:
         high: 8
       learning_rate:
         type: "float"
-        low: 0.005
-        high: 0.5
+        low: 0.01
+        high: 0.2
         log: true
       iterations:
         type: "int"
-        low: 100
-        high: 1000
+        low: 400
+        high: 1200
       l2_leaf_reg:
         type: "float"
-        low: 1.0
-        high: 10.0
+        low: 3.0
+        high: 8.0
         log: true
       subsample:
         type: "float"
-        low: 0.75
+        low: 0.85
         high: 1.0
       colsample_bylevel:
         type: "float"
-        low: 0.75
+        low: 0.85
         high: 1.0
       min_data_in_leaf:
         type: "int"
@@ -193,7 +197,7 @@ train_monthly:
     date_column: "month_start_date"
     target_column: "monthly_demand"
     objective:
-      metric: "wmape_m3"
+      metric: "wmape"
       direction: "minimize"
     top_n_prechampions: 10
     max_failed_trials: 30
@@ -208,7 +212,7 @@ train_monthly:
       pvalue_threshold: 0.05
     tuning:
       optimizer: "optuna"
-      max_trials: 40
+      max_trials: 30
       use_exog: true
       # Rolling-origin backtest run inside every Optuna trial.
       rolling_origin:
@@ -221,11 +225,11 @@ train_monthly:
       pruning:
         enabled: true
         n_startup_trials: 10
-        n_warmup_cycles: 1
+        n_warmup_cycles: 2
       sampler:
         name: "tpe"
         seed: ${random_seed}
-        n_startup_trials: 40
+        n_startup_trials: 10
         multivariate: true
         gamma: 0.40
       search_space:

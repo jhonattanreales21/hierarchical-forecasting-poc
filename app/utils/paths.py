@@ -58,7 +58,11 @@ EXPLAINABILITY_META = (
 )
 
 # Model input (05_model_input/)
-ACTUALS = DATA_ROOT / "05_model_input" / "monthly_prophet_modeling_data.parquet"
+# Prefer the family-agnostic artifact; fall back to the legacy Prophet-specific file.
+ACTUALS = _first_existing(
+    DATA_ROOT / "05_model_input" / "monthly_modeling_data.parquet",
+    DATA_ROOT / "05_model_input" / "monthly_prophet_modeling_data.parquet",
+)
 RAW_EXOGENOUS = DATA_ROOT / "01_raw" / "exogenous_variables.csv"
 
 # Primary descriptive-analysis artifacts (03_primary/)

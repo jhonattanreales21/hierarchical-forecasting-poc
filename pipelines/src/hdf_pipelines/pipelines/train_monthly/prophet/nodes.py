@@ -21,7 +21,9 @@ from shared.rolling_origin import RollingOriginCycle, run_rolling_origin
 
 from hdf_pipelines.pipelines.train_monthly.nodes import (
     build_monthly_rolling_origin_cycles,
+    build_rolling_origin_predictions_df,
     extract_rolling_origin_metric_set,
+    log_trial_predictions,
     make_pruning_callback,
     supported_rolling_origin_metrics,
 )
@@ -48,7 +50,7 @@ def train_and_evaluate_monthly_prophet_candidates(  # noqa: PLR0915
     monthly_prophet_full_train: pd.DataFrame,
     monthly_prophet_split_metadata: dict,
     params: dict,
-) -> tuple[pd.DataFrame, pd.DataFrame, dict, dict, dict, Any]:
+) -> tuple[pd.DataFrame, pd.DataFrame, dict, dict, dict, Any, pd.DataFrame]:
     """Tune Prophet with a rolling-origin backtest and persist pre-champions.
 
     Runs one ephemeral Optuna study. Each trial is evaluated by refitting Prophet
@@ -74,6 +76,8 @@ def train_and_evaluate_monthly_prophet_candidates(  # noqa: PLR0915
            (top-N only).
         5. ``training_metadata`` — Dict summarizing the Optuna study and trials.
         6. ``best_prophet_model`` — Rank-1 full-history Prophet model.
+        7. ``rolling_origin_predictions`` — Long-form DataFrame with one row per
+           (candidate, cycle, horizon-step) prediction for all successful trials.
 
     Raises:
         ValueError: When inputs or the Optuna configuration are invalid.
@@ -158,6 +162,7 @@ def train_and_evaluate_monthly_prophet_candidates(  # noqa: PLR0915
     # ── train and evaluate each candidate ────────────────────────────────────────
     metrics_rows: list[dict] = []
     trial_configs: dict[str, dict] = {}
+    all_candidate_preds: dict[str, list[dict]] = {}
     study = create_optuna_study(
         objective_direction,
         sampler_cfg,
@@ -172,11 +177,22 @@ def train_and_evaluate_monthly_prophet_candidates(  # noqa: PLR0915
         trial.set_user_attr("config", dict(config))
         trial_configs[candidate_id] = dict(config)
 
+        _trial_preds: list[dict] = []
+
         def _fit_forecast(train_df: pd.DataFrame, cycle: RollingOriginCycle) -> np.ndarray:
-            return _prophet_cycle_forecast(
+            y_pred = _prophet_cycle_forecast(
                 config, train_df, cycle, full_df, date_col, target_col,
                 active_regressors, regressor_mode,
             )
+            _trial_preds.append({
+                "cycle_index": cycle.cycle_index,
+                "origin_date": cycle.origin_date.strftime("%Y-%m-%d"),
+                "target_start": cycle.target_dates[0].strftime("%Y-%m"),
+                "target_end": cycle.target_dates[-1].strftime("%Y-%m"),
+                "target_dates": [d.strftime("%Y-%m-%d") for d in cycle.target_dates],
+                "y_pred": y_pred.tolist(),
+            })
+            return y_pred
 
         on_cycle_end = make_pruning_callback(trial, pruning_cfg, metric_key=selection_metric)
         _, aggregated = run_rolling_origin(
@@ -197,12 +213,17 @@ def train_and_evaluate_monthly_prophet_candidates(  # noqa: PLR0915
             {"candidate_id": candidate_id, "trial_number": trial.number, **metric_set}
         )
         logger.info(
-            "[%d/%d] %s → wmape_m3=%.4f  wmape=%.4f  mase=%s  bias=%.4f  (%s/%s cycles)",
+            "[%d/%d] %s → wmape=%.4f  wmape_m1=%.4f  wmape_m2=%.4f  wmape_m3=%.4f  mase=%s  bias=%.4f  (%s/%s cycles)",
             trial.number + 1, max_trials, candidate_id,
-            metric_set["wmape_m3"], metric_set["wmape"],
+            metric_set["wmape"],
+            metric_set.get("wmape_m1") or float("nan"),
+            metric_set.get("wmape_m2") or float("nan"),
+            metric_set["wmape_m3"],
             f"{metric_set['mase']:.4f}" if metric_set["mase"] is not None else "nan",
             metric_set["bias"], metric_set["n_cycles_evaluated"], metric_set["n_cycles"],
         )
+        log_trial_predictions(candidate_id, _trial_preds)
+        all_candidate_preds[candidate_id] = list(_trial_preds)
         return float(selection_value)
 
     study.optimize(objective, n_trials=max_trials, catch=(Exception,))
@@ -249,13 +270,17 @@ def train_and_evaluate_monthly_prophet_candidates(  # noqa: PLR0915
         sampler_cfg, max_trials, top_n, fixed_params, rolling_origin_cfg,
     )
     best_model = candidate_models.get(prechampion_ids[0]) if prechampion_ids else None
+    rolling_origin_predictions = build_rolling_origin_predictions_df(
+        all_candidate_preds, full_df, date_col, target_col, epsilon=epsilon
+    )
 
     logger.info(
         "Outputs — tuning_results=%s  rolling_origin_metrics=%s  prechampions=%d  "
-        "saved_models=%d  trials=%d",
+        "saved_models=%d  trials=%d  prediction_rows=%d",
         ranked_df.shape, metrics_df.shape,
         len(prechampion_configs.get("prechampions", [])),
         len(candidate_models), len(study.trials),
+        len(rolling_origin_predictions),
     )
 
     return (
@@ -265,6 +290,7 @@ def train_and_evaluate_monthly_prophet_candidates(  # noqa: PLR0915
         candidate_models,
         training_metadata,
         best_model,
+        rolling_origin_predictions,
     )
 
 

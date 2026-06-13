@@ -1,7 +1,18 @@
-"""Lightweight contract inspector for the monthly Prophet MVP artifacts.
+"""Lightweight contract inspector for the monthly forecasting artifacts.
 
 Loads catalog datasets, prints schema summaries, and writes a Markdown report
 to pipelines/docs/monthly_mvp_contract_snapshot.md.
+
+Active artifact sources (as of the rolling-origin champion protocol):
+  - monthly_candidate_metrics          (replaces monthly_candidate_test_metrics)
+  - monthly_family_champion_summary    (replaces monthly_prophet_test_metrics / per-family tables)
+  - monthly_model_selection_summary    (replaces monthly_prophet_model_selection_summary)
+  - champion_monthly_metadata.json     (replaces monthly_prophet_champion_metadata)
+
+Legacy files that may still exist on disk from old runs (do NOT use):
+  - data/06_models/selection/monthly_candidate_test_metrics.parquet
+  - data/06_models/selection/monthly_prophet_test_metrics.parquet
+  - data/06_models/selection/monthly_prophet_champion_test_forecast.parquet
 
 Usage (from pipelines/ directory):
     uv run python scripts/inspect_monthly_mvp_contracts.py
@@ -9,6 +20,7 @@ Usage (from pipelines/ directory):
 
 import json
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -30,13 +42,16 @@ TABULAR_DATASETS = [
     ("monthly_prophet_future_3m", "model_input"),
     ("monthly_prophet_future_6m", "model_input"),
     ("monthly_prophet_future_12m", "model_input"),
-    # 06_models — tuning
+    # 06_models — tuning (per-family rolling-origin metrics)
     ("monthly_prophet_tuning_results", "training"),
-    ("monthly_prophet_validation_metrics", "training"),
-    ("monthly_prophet_test_metrics", "selection"),
-    ("monthly_prophet_model_selection_summary", "selection"),
-    ("monthly_prophet_champion_test_forecast", "selection"),
-    # 08_reporting
+    ("monthly_prophet_rolling_origin_metrics", "training"),
+    ("monthly_sarimax_rolling_origin_metrics", "training"),
+    ("monthly_catboost_rolling_origin_metrics", "training"),
+    # 06_models — multi-family model selection (active artifacts)
+    ("monthly_candidate_metrics", "selection"),
+    ("monthly_family_champion_summary", "selection"),
+    ("monthly_model_selection_summary", "selection"),
+    # 07_model_output / 08_reporting
     ("monthly_operational_test_forecasts", "reporting"),
     ("monthly_operational_lead_time_metrics", "reporting"),
     ("monthly_model_selection_audit", "reporting"),
@@ -51,14 +66,20 @@ JSON_DATASETS = [
     ("monthly_prophet_split_metadata", "model_input"),
     ("monthly_prophet_prechampion_configs", "training"),
     ("monthly_prophet_training_metadata", "training"),
-    ("monthly_prophet_champion_metadata", "selection"),
+    ("monthly_sarimax_training_metadata", "training"),
+    ("monthly_catboost_training_metadata", "training"),
+    # Active champion metadata — family-agnostic
+    ("champion_monthly_metadata", "selection"),
     ("monthly_inference_metadata", "inference"),
 ]
 
 PICKLE_DATASETS = [
     ("monthly_prophet_candidate_models", "training"),
     ("candidate_monthly_prophet", "training"),
-    ("monthly_prophet_champion_model", "selection"),
+    ("candidate_monthly_sarimax", "training"),
+    ("candidate_monthly_catboost", "training"),
+    # Active production champion
+    ("champion_monthly_model", "selection"),
 ]
 
 
@@ -128,8 +149,8 @@ def main() -> None:
     bootstrap_project(PROJECT_ROOT)
 
     sections: list[str] = [
-        "# Monthly MVP — Contract Snapshot\n\n",
-        f"**Generated:** 2026-05-31  \n**Pipeline:** `monthly_mvp`  \n**Branch:** `refactor/phase-0-safety-baseline`\n\n",
+        "# Monthly Forecasting — Contract Snapshot\n\n",
+        f"**Generated:** {datetime.now().strftime('%Y-%m-%d')}  \n**Pipeline:** `monthly_training_comparison + monthly_model_selection`  \n**Protocol:** rolling-origin champion selection\n\n",
         "---\n\n",
         "## Tabular Datasets\n\n",
     ]

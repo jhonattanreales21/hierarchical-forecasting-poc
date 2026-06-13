@@ -102,6 +102,65 @@ def extract_rolling_origin_metric_set(
     return out
 
 
+def log_trial_predictions(
+    candidate_id: str,
+    trial_preds: list[dict],
+) -> None:
+    """Log trial predictions deduplicated by target month at INFO level.
+
+    Rolling-origin cycles overlap by design, so the raw cycle-step prediction
+    count is ``n_cycles * horizon``. For human-facing training/tuning logs we
+    show one prediction per unique target month, keeping the value from the
+    latest cycle that predicted that month.
+
+    Args:
+        candidate_id: Trial identifier string (e.g. catboost_trial_003).
+        trial_preds: List of dicts with keys: target_dates (list[str]) and
+            y_pred (list[float]). ``target_start``/``target_end`` are accepted
+            for legacy callers and range display.
+    """
+    if not trial_preds:
+        return
+
+    flat_preds: list[float] = []
+    unique_by_month: dict[str, float] = {}
+    for p in trial_preds:
+        y_pred = [float(v) for v in p.get("y_pred", [])]
+        flat_preds.extend(y_pred)
+
+        target_dates = p.get("target_dates") or []
+        if len(target_dates) != len(y_pred):
+            continue
+
+        for raw_date, value in zip(target_dates, y_pred, strict=True):
+            month = pd.to_datetime(raw_date).strftime("%Y-%m")
+            unique_by_month[month] = value
+
+    date_from = trial_preds[0].get("target_start", "?")
+    date_to = trial_preds[-1].get("target_end", "?")
+
+    if unique_by_month:
+        preds_str = ", ".join(
+            f"{month}={value:.1f}" for month, value in sorted(unique_by_month.items())
+        )
+        logger.info(
+            "  %s · %d unique-month preds (%d cycle-step preds) [%s → %s]: [%s]",
+            candidate_id,
+            len(unique_by_month),
+            len(flat_preds),
+            date_from,
+            date_to,
+            preds_str,
+        )
+        return
+
+    preds_str = ", ".join(f"{v:.1f}" for v in flat_preds)
+    logger.info(
+        "  %s · %d preds [%s → %s]: [%s]",
+        candidate_id, len(flat_preds), date_from, date_to, preds_str,
+    )
+
+
 def make_pruning_callback(
     trial: optuna.Trial,
     pruning_cfg: dict[str, Any],
@@ -134,6 +193,79 @@ def make_pruning_callback(
             raise optuna.TrialPruned()
 
     return _on_cycle_end
+
+
+def build_rolling_origin_predictions_df(
+    all_candidate_preds: dict[str, list[dict]],
+    full_df: pd.DataFrame,
+    date_col: str,
+    target_col: str,
+    epsilon: float = 1.0,
+) -> pd.DataFrame:
+    """Build the long-form rolling-origin predictions artifact for all candidates.
+
+    Each row represents one horizon-step prediction from one rolling-origin cycle of
+    one candidate. Storing these allows direct inspection of per-period errors (e.g.
+    to identify a single month where a model systematically diverges).
+
+    Args:
+        all_candidate_preds: Mapping of ``candidate_id`` → list of per-cycle dicts.
+            Each cycle dict must have ``cycle_index`` (int), ``origin_date`` (str),
+            ``target_dates`` (list[str] in ``YYYY-MM-DD`` format), and ``y_pred``
+            (list[float]).
+        full_df: Full-history modeling frame; used as the ground-truth lookup.
+        date_col: Month-start date column in ``full_df``.
+        target_col: Demand target column in ``full_df``.
+        epsilon: Guard added to the APE denominator to avoid division by zero.
+
+    Returns:
+        DataFrame with columns: ``candidate_id``, ``cycle_index``, ``origin_date``,
+        ``horizon_step``, ``target_date``, ``y_true``, ``y_pred``, ``error``,
+        ``abs_error``, ``ape``.  Empty DataFrame (same columns) when no predictions
+        were captured.
+    """
+    _COLUMNS = [
+        "candidate_id", "cycle_index", "origin_date", "horizon_step",
+        "target_date", "y_true", "y_pred", "error", "abs_error", "ape",
+    ]
+    if not all_candidate_preds:
+        return pd.DataFrame(columns=_COLUMNS)
+
+    ts_map: dict[pd.Timestamp, float] = (
+        full_df.assign(**{date_col: pd.to_datetime(full_df[date_col])})
+        .set_index(date_col)[target_col]
+        .to_dict()
+    )
+
+    rows: list[dict] = []
+    for candidate_id, cycle_preds in all_candidate_preds.items():
+        for pred_dict in cycle_preds:
+            cycle_index = pred_dict.get("cycle_index")
+            origin_date = pred_dict.get("origin_date")
+            target_dates: list[str] = pred_dict.get("target_dates", [])
+            y_preds: list[float] = pred_dict.get("y_pred", [])
+            for h, (td, yp) in enumerate(zip(target_dates, y_preds), start=1):
+                ts = pd.to_datetime(td)
+                yt = ts_map.get(ts, float("nan"))
+                err = float(yp) - float(yt) if not np.isnan(yt) else float("nan")
+                abs_err = abs(err) if not np.isnan(err) else float("nan")
+                ape = abs_err / (abs(float(yt)) + epsilon) if not np.isnan(yt) else float("nan")
+                rows.append({
+                    "candidate_id": candidate_id,
+                    "cycle_index": cycle_index,
+                    "origin_date": origin_date,
+                    "horizon_step": h,
+                    "target_date": ts.strftime("%Y-%m-%d"),
+                    "y_true": float(yt),
+                    "y_pred": float(yp),
+                    "error": err,
+                    "abs_error": abs_err,
+                    "ape": ape,
+                })
+
+    if not rows:
+        return pd.DataFrame(columns=_COLUMNS)
+    return pd.DataFrame(rows)
 
 
 def _safe_float(value: Any) -> float | None:

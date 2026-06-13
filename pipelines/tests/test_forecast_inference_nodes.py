@@ -379,6 +379,16 @@ def test_prophet_tolerates_missing_interval_columns():
     assert (~f3["has_prediction_interval"]).all()
 
 
+def test_prophet_missing_declared_future_regressor_raises():
+    """Prophet future frames must contain every regressor declared by metadata."""
+    future = _make_future_df(3).drop(columns=["business_days"])
+
+    with pytest.raises(ValueError, match="business_days"):
+        dispatch_monthly_prediction(
+            _FakeProphet(), _prophet_metadata(), future, _params(), 3
+        )
+
+
 def test_sarimax_output_maps_to_standard_schema():
     """SARIMAX inference must produce numeric forecasts and the canonical schema."""
     f3, _, _, _, _ = _run_node(_sarimax_model(), _sarimax_metadata())

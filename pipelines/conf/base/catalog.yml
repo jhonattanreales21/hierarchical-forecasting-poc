@@ -182,6 +182,10 @@ monthly_prophet_training_metadata:
   type: json.JSONDataset
   filepath: data/06_models/tuning/monthly_prophet_training_metadata.json
 
+monthly_prophet_rolling_origin_predictions:
+  type: pandas.ParquetDataset
+  filepath: data/06_models/tuning/monthly_prophet_rolling_origin_predictions.parquet
+
 # 06_models — Monthly SARIMAX training and tuning artifacts
 monthly_sarimax_tuning_results:
   type: pandas.ParquetDataset
@@ -203,6 +207,10 @@ monthly_sarimax_training_metadata:
   type: json.JSONDataset
   filepath: data/06_models/tuning/monthly_sarimax_training_metadata.json
 
+monthly_sarimax_rolling_origin_predictions:
+  type: pandas.ParquetDataset
+  filepath: data/06_models/tuning/monthly_sarimax_rolling_origin_predictions.parquet
+
 # 06_models — Monthly CatBoost training and tuning artifacts
 monthly_catboost_tuning_results:
   type: pandas.ParquetDataset
@@ -223,6 +231,10 @@ monthly_catboost_candidate_models:
 monthly_catboost_training_metadata:
   type: json.JSONDataset
   filepath: data/06_models/tuning/monthly_catboost_training_metadata.json
+
+monthly_catboost_rolling_origin_predictions:
+  type: pandas.ParquetDataset
+  filepath: data/06_models/tuning/monthly_catboost_rolling_origin_predictions.parquet
 
 # 06_models — candidate models per granularity × family
 candidate_monthly_prophet:

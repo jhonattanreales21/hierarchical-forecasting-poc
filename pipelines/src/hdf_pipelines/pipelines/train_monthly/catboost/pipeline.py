@@ -25,6 +25,7 @@ def create_pipeline(**kwargs) -> Pipeline:
         monthly_catboost_prechampion_configs
         monthly_catboost_candidate_models
         monthly_catboost_training_metadata
+        monthly_catboost_rolling_origin_predictions
     """
     return pipeline(
         [
@@ -41,6 +42,7 @@ def create_pipeline(**kwargs) -> Pipeline:
                     "monthly_catboost_prechampion_configs",
                     "monthly_catboost_candidate_models",
                     "monthly_catboost_training_metadata",
+                    "monthly_catboost_rolling_origin_predictions",
                 ],
                 name="train_monthly_catboost_candidates",
             ),

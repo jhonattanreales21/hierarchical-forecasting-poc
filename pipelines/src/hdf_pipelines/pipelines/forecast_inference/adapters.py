@@ -162,11 +162,11 @@ def predict_monthly_prophet(
         future_df, [prophet_cfg.get("date_column", "ds"), "ds", "month_start_date"]
     )
     active_regressors = _resolve_prophet_regressors(model, metadata, prophet_cfg)
+    _validate_prophet_future_regressors(future_df, active_regressors, horizon)
 
     predict_input = pd.DataFrame({"ds": pd.to_datetime(future_df[date_col].to_numpy())})
     for regressor in active_regressors:
-        if regressor in future_df.columns:
-            predict_input[regressor] = future_df[regressor].to_numpy()
+        predict_input[regressor] = future_df[regressor].to_numpy()
 
     raw = model.predict(predict_input)
     if pred_col not in raw.columns:
@@ -725,6 +725,23 @@ def _resolve_prophet_regressors(
         return list(extra.keys())
 
     return list(prophet_cfg.get("active_regressors", []) or [])
+
+
+def _validate_prophet_future_regressors(
+    future_df: pd.DataFrame,
+    active_regressors: list[str],
+    horizon: int,
+) -> None:
+    """Fail clearly when a Prophet future frame misses declared regressors."""
+    missing = sorted(set(active_regressors) - set(future_df.columns))
+    if missing:
+        raise ValueError(
+            "Prophet monthly inference is missing active regressor columns in the "
+            f"{horizon}-month future frame: {missing}. Regenerar "
+            "monthly_future_*m/monthly_prophet_future_*m from the unified "
+            "model_input_preparation.monthly.active_regressors contract before "
+            "running inference."
+        )
 
 
 def _attach_sku(

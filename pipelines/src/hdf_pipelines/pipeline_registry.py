@@ -16,9 +16,6 @@ from hdf_pipelines.pipelines import (
 from hdf_pipelines.pipelines.model_selection.monthly.pipeline import (
     create_pipeline as create_monthly_model_selection_pipeline,
 )
-from hdf_pipelines.pipelines.model_selection.prophet.pipeline import (
-    create_pipeline as create_prophet_monthly_selection_pipeline,
-)
 from hdf_pipelines.pipelines.train_monthly.catboost.pipeline import (
     create_pipeline as create_catboost_monthly_pipeline,
 )
@@ -55,9 +52,6 @@ def register_pipelines() -> dict[str, Pipeline]:
 
     # Standalone CatBoost-only training pipeline
     catboost_monthly_training = create_catboost_monthly_pipeline()
-
-    # Standalone Monthly Prophet model-selection pipeline (Prophet-specific champion)
-    prophet_monthly_selection = create_prophet_monthly_selection_pipeline()
 
     # Monthly multi-family model selection: Prophet vs SARIMAX vs CatBoost
     monthly_model_selection = create_monthly_model_selection_pipeline()
