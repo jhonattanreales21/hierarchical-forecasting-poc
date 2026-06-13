@@ -100,7 +100,7 @@ def render_monthly_kpi_summary(identity: dict) -> None:
             value=format_percentage(wmape) if wmape is not None else "N/A",
             help_text=(
                 "Pooled Weighted Mean Absolute % Error across all rolling-origin "
-                "windows. Champion selection uses WMAPE at the M+3 horizon (wmape_m3)."
+                "windows."
             ),
             status=wmape_status,
         )
