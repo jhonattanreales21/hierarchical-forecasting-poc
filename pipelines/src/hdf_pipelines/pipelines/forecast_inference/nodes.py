@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 # Champion metadata fields required before dispatch can proceed.
 _REQUIRED_METADATA_KEYS: tuple[str, ...] = ("model_family", "champion_id")
+_CATBOOST_MAX_DIRECT_HORIZON: int = 3
 
 # Canonical monthly forecast output schema, shared by every supported family.
 _STANDARD_FORECAST_COLUMNS: list[str] = [
@@ -129,24 +130,37 @@ def generate_monthly_champion_forecasts(  # noqa: PLR0913
     for horizon, (future_df, source_dataset) in horizon_futures.items():
         _validate_future_frame(future_df, horizon, source_dataset)
 
-        core = dispatch_monthly_prediction(
-            model=champion_monthly_model,
-            metadata=champion_monthly_metadata,
-            future_df=future_df,
-            params=params,
-            horizon=horizon,
-            history_df=monthly_catboost_full_train,
-            catboost_split_metadata=monthly_catboost_split_metadata,
-        )
-        standardized = _standardize_forecast_schema(
-            core_df=core,
-            metadata=champion_monthly_metadata,
-            table_horizon=horizon,
-            run_id=run_id,
-            created_at=created_at,
-            source_dataset=source_dataset,
-        )
-        _validate_standard_forecast_output(standardized, horizon)
+        if model_family == "catboost" and horizon > _CATBOOST_MAX_DIRECT_HORIZON:
+            standardized = _empty_standard_forecast_schema(
+                metadata=champion_monthly_metadata,
+                table_horizon=horizon,
+                run_id=run_id,
+                created_at=created_at,
+                source_dataset=source_dataset,
+                reason="catboost_direct_multi_horizon_cap_3m",
+            )
+        else:
+            core = dispatch_monthly_prediction(
+                model=champion_monthly_model,
+                metadata=champion_monthly_metadata,
+                future_df=future_df,
+                params=params,
+                horizon=horizon,
+                history_df=monthly_catboost_full_train,
+                catboost_split_metadata=monthly_catboost_split_metadata,
+            )
+            standardized = _standardize_forecast_schema(
+                core_df=core,
+                metadata=champion_monthly_metadata,
+                table_horizon=horizon,
+                run_id=run_id,
+                created_at=created_at,
+                source_dataset=source_dataset,
+            )
+            _validate_standard_forecast_output(standardized, horizon)
+            standardized = _check_and_clip_negative_forecasts(
+                standardized, model_family, horizon, params
+            )
 
         forecasts[horizon] = standardized
         horizon_summaries[horizon] = _summarize_forecast(standardized, source_dataset)
@@ -158,7 +172,10 @@ def generate_monthly_champion_forecasts(  # noqa: PLR0913
             horizon_summaries[horizon]["end_date"],
         )
 
-    default_horizon = _resolve_default_horizon(params, available=list(forecasts))
+    latest_candidates = [h for h, forecast in forecasts.items() if not forecast.empty]
+    default_horizon = _resolve_default_horizon(
+        params, available=latest_candidates or list(forecasts)
+    )
     forecast_latest = forecasts[default_horizon].copy()
 
     inference_metadata = _build_inference_metadata(
@@ -188,6 +205,78 @@ def generate_monthly_champion_forecasts(  # noqa: PLR0913
 
 
 # ── Validation helpers ────────────────────────────────────────────────────────
+
+
+def _check_and_clip_negative_forecasts(
+    forecast_df: pd.DataFrame,
+    model_family: str,
+    horizon: int,
+    params: dict,
+) -> pd.DataFrame:
+    """Detect, log, and handle negative monthly forecast values.
+
+    Negative demand forecasts are physically invalid for this application and must
+    not pass silently to the app layer. By default the negative values are clipped
+    to 0 and a WARNING is emitted so the issue is visible in pipeline logs. Setting
+    ``enforce_non_negative: true`` in ``forecast_inference.monthly`` params causes
+    the pipeline to fail hard instead, which is appropriate for production gates.
+
+    The lower prediction interval bound is also clipped to 0 when present and
+    negative, keeping the interval internally consistent with the clipped point
+    forecast.
+
+    Args:
+        forecast_df: Standardized forecast frame for one horizon.
+        model_family: Champion model family (for log context).
+        horizon: Forecast horizon in months (for log context).
+        params: Contents of ``forecast_inference.monthly``; reads
+            ``enforce_non_negative`` (bool, default ``False``).
+
+    Returns:
+        Forecast frame with negative ``forecast`` values replaced by 0 when
+        ``enforce_non_negative`` is False. Returned unchanged when no negatives
+        are found.
+
+    Raises:
+        ValueError: When ``enforce_non_negative`` is True and at least one
+            negative forecast value is detected.
+    """
+    neg_mask = forecast_df["forecast"] < 0
+    n_neg = int(neg_mask.sum())
+    if n_neg == 0:
+        return forecast_df
+
+    neg_rows = forecast_df.loc[neg_mask, ["date", "forecast"]].copy()
+    neg_dates = pd.to_datetime(neg_rows["date"]).dt.strftime("%Y-%m").tolist()
+    neg_vals = neg_rows["forecast"].tolist()
+    detail = ", ".join(f"{d}={v:.1f}" for d, v in zip(neg_dates, neg_vals))
+
+    enforce = bool(params.get("enforce_non_negative", False))
+
+    if enforce:
+        raise ValueError(
+            f"Monthly {horizon}m forecast produced {n_neg} negative value(s) for "
+            f"model_family={model_family!r}. Negative demand is not valid for this "
+            f"application. Affected periods: [{detail}]. "
+            "Set enforce_non_negative: false in forecast_inference.monthly params "
+            "to clip instead of blocking."
+        )
+
+    logger.warning(
+        "NEGATIVE FORECAST — family=%s  horizon=%dm  n_negative=%d  "
+        "affected_periods=[%s]. Clipping to 0. "
+        "Set enforce_non_negative: true to block the pipeline instead.",
+        model_family,
+        horizon,
+        n_neg,
+        detail,
+    )
+    df = forecast_df.copy()
+    df.loc[neg_mask, "forecast"] = 0.0
+    if "forecast_lower" in df.columns:
+        neg_lower_mask = df["forecast_lower"].notna() & (df["forecast_lower"] < 0)
+        df.loc[neg_lower_mask, "forecast_lower"] = 0.0
+    return df
 
 
 def _validate_monthly_champion_metadata(metadata: dict, params: dict) -> None:
@@ -347,6 +436,48 @@ def _standardize_forecast_schema(  # noqa: PLR0913
     return df[_STANDARD_FORECAST_COLUMNS]
 
 
+def _empty_standard_forecast_schema(  # noqa: PLR0913
+    metadata: dict,
+    table_horizon: int,
+    run_id: str,
+    created_at: str,
+    source_dataset: str,
+    reason: str,
+) -> pd.DataFrame:
+    """Return a schema-valid empty monthly forecast table for unsupported horizons."""
+    selection_metric, selection_value = _extract_selection_metric(metadata)
+    dtypes: dict[str, str] = {
+        "date": "datetime64[ns]",
+        "forecast": "float64",
+        "forecast_lower": "float64",
+        "forecast_upper": "float64",
+        "model_family": "object",
+        "granularity": "object",
+        "horizon": "int64",
+        "horizon_label": "object",
+        "forecast_generated_at": "object",
+        "champion_id": "object",
+        "selection_metric": "object",
+        "selection_metric_value": "float64",
+        "sku": "object",
+        "has_prediction_interval": "bool",
+        "interval_method": "object",
+        "run_id": "object",
+        "source_dataset": "object",
+    }
+    frame = pd.DataFrame({col: pd.Series(dtype=dtypes[col]) for col in _STANDARD_FORECAST_COLUMNS})
+    frame.attrs["skip_reason"] = reason
+    frame.attrs["model_family"] = str(metadata.get("model_family", "")).strip().lower()
+    frame.attrs["horizon_label"] = f"{table_horizon}m"
+    frame.attrs["forecast_generated_at"] = created_at
+    frame.attrs["champion_id"] = str(metadata.get("champion_id", ""))
+    frame.attrs["selection_metric"] = selection_metric
+    frame.attrs["selection_metric_value"] = selection_value
+    frame.attrs["run_id"] = run_id
+    frame.attrs["source_dataset"] = source_dataset
+    return frame
+
+
 def _row_horizon(dates: pd.Series) -> list[int]:
     """Return 1-based month-ahead horizon indices ordered by date.
 
@@ -389,12 +520,22 @@ def _resolve_default_horizon(params: dict, available: list[int]) -> int:
 
 def _summarize_forecast(forecast_df: pd.DataFrame, source_dataset: str) -> dict:
     """Build a compact per-horizon summary for the inference metadata artifact."""
+    if forecast_df.empty:
+        return {
+            "source_dataset": source_dataset,
+            "start_date": None,
+            "end_date": None,
+            "rows": 0,
+            "skipped": True,
+            "skip_reason": forecast_df.attrs.get("skip_reason"),
+        }
     dates = pd.to_datetime(forecast_df["date"])
     return {
         "source_dataset": source_dataset,
         "start_date": str(dates.min().date()),
         "end_date": str(dates.max().date()),
         "rows": int(len(forecast_df)),
+        "skipped": False,
     }
 
 
@@ -440,10 +581,8 @@ def _build_inference_metadata(  # noqa: PLR0913
         )
     if model_family == "catboost":
         notes.append(
-            "CatBoost forecasts are generated via recursive inference: target-derived "
-            "lag and rolling features are recomputed step-by-step from observed demand "
-            "plus prior predictions. Prediction intervals are not produced; "
-            "forecast_lower and forecast_upper are null."
+            "CatBoost forecasts are capped at 3 months. The 6m and 12m output "
+            "tables are schema-valid empty frames when CatBoost is the champion."
         )
 
     return {

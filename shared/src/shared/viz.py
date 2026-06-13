@@ -198,3 +198,132 @@ def plot_forecast(
     )
 
     return fig
+
+
+def add_event_lines(
+    fig: go.Figure,
+    events: pd.DataFrame,
+    event_columns: dict[str, str],
+    date_col: str = "ds",
+    colors: Optional[list[str]] = None,
+) -> go.Figure:
+    """Overlay vertical reference lines on periods flagged by binary event columns.
+
+    For each entry in ``event_columns`` (mapping a flag column name to a human
+    label), a dashed vertical line is drawn at every period where the flag is
+    truthy (numeric value > 0). One invisible legend proxy per event type is added
+    so the line colors are explained in the legend without labelling each line.
+
+    Args:
+        fig: Target Plotly figure, e.g. one returned by ``plot_forecast``.
+        events: DataFrame with a datetime column and one or more binary flag columns.
+        event_columns: Ordered mapping of flag column name -> legend label.
+        date_col: Name of the datetime column in ``events``.
+        colors: Optional list of line colors, one per event type (cycled if shorter).
+
+    Returns:
+        The same figure with vertical event lines and legend proxies added.
+    """
+    if events is None or events.empty or date_col not in events.columns:
+        return fig
+
+    palette = colors or ["#F59E0B", "#7C3AED", "#0EA5E9", "#EF4444"]
+    dates = pd.to_datetime(events[date_col], errors="coerce")
+
+    for idx, (column, label) in enumerate(event_columns.items()):
+        if column not in events.columns:
+            continue
+        color = palette[idx % len(palette)]
+        flags = pd.to_numeric(events[column], errors="coerce").fillna(0) > 0
+        flagged_dates = dates[flags].dropna().drop_duplicates()
+        if flagged_dates.empty:
+            continue
+        for ts in flagged_dates:
+            ts_str = ts.strftime("%Y-%m-%d")
+            fig.add_shape(
+                type="line",
+                x0=ts_str,
+                x1=ts_str,
+                y0=0,
+                y1=1,
+                yref="paper",
+                line=dict(color=color, width=1.5, dash="dot"),
+                opacity=0.65,
+            )
+        # Legend proxy: invisible trace so the color is explained in the legend.
+        fig.add_trace(
+            go.Scatter(
+                x=[None],
+                y=[None],
+                mode="lines",
+                line=dict(color=color, width=2, dash="dot"),
+                name=label,
+            )
+        )
+    return fig
+
+
+def plot_feature_importance_bar(
+    importance: pd.DataFrame,
+    title: str = "Champion Feature Importance",
+    top_n: int = 15,
+    importance_col: str = "importance",
+    feature_col: str = "feature",
+    subtitle: Optional[str] = None,
+    x_axis_title: str = "Importance",
+) -> go.Figure:
+    """Render a horizontal bar chart of feature/driver importance for a champion model.
+
+    Family-agnostic: the importance values may be SHAP mean(|value|) (CatBoost), centered
+    component contributions (Prophet), or absolute coefficients (SARIMAX). The caller sets
+    ``x_axis_title``/``subtitle`` so the axis labelling stays honest about the statistic.
+
+    Args:
+        importance: DataFrame with at least ``feature_col`` and ``importance_col``.
+        title: Chart title.
+        top_n: Keep only the ``top_n`` most important features.
+        importance_col: Name of the importance value column.
+        feature_col: Name of the feature label column.
+        subtitle: Optional subtitle shown under the title (e.g. champion id + method).
+        x_axis_title: Label for the value axis (statistic-specific).
+
+    Returns:
+        A Plotly Figure ready to be rendered via ``st.plotly_chart``.
+    """
+    fig = go.Figure()
+
+    if importance is not None and not importance.empty:
+        ranked = (
+            importance.sort_values(importance_col, ascending=False)
+            .head(top_n)
+            # Plotly draws the first row at the bottom; reverse so the largest is on top.
+            .iloc[::-1]
+        )
+        fig.add_trace(
+            go.Bar(
+                x=ranked[importance_col],
+                y=ranked[feature_col].astype(str),
+                orientation="h",
+                marker=dict(color=_COLOR_ACTUALS),
+                hovertemplate="%{y}: %{x:.4g}<extra></extra>",
+            )
+        )
+
+    fig.update_layout(
+        title=dict(
+            text=f"{title}<br><sup>{subtitle}</sup>" if subtitle else title,
+            font=dict(size=16, color="#001F5B"),
+        ),
+        xaxis_title=x_axis_title,
+        yaxis_title="",
+        xaxis=dict(showgrid=True, gridcolor="#F3F4F6"),
+        yaxis=dict(showgrid=False, automargin=True),
+        template="plotly_white",
+        height=max(320, 28 * min(len(importance) if importance is not None else 0, top_n) + 120),
+        margin=dict(t=80, b=40, l=20, r=20),
+        plot_bgcolor="#FFFFFF",
+        paper_bgcolor="#FFFFFF",
+        showlegend=False,
+    )
+
+    return fig

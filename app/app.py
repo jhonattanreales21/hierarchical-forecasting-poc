@@ -14,23 +14,22 @@ st.set_page_config(
 apply_global_styles()
 
 render_hero(
-    title="Demand Forecast PoC",
+    title="Overview",
     subtitle=(
-        "Temporal hierarchical forecasting for a critical SKU. "
-        "Explore the monthly forecast, model evaluation, project status, "
-        "and future business assistant capabilities from the sidebar."
+        "A decision-support platform for demand planning: explore historical demand "
+        "trends, review the monthly forecast that guides planning decisions, and "
+        "understand the evidence behind each prediction."
     ),
-    eyebrow="Hierarchical Demand Forecasting",
+    eyebrow="Demand Forecasting Platform",
 )
 
 st.markdown(
     """
     <p class="app-muted-text">
-    This PoC demonstrates a complete forecasting system — from raw demand data and exogenous
-    variables through a Kedro ML pipeline to evaluated forecasts served through this Streamlit
-    application. The <strong>monthly layer is the primary, business-facing layer</strong>: it
-    displays the current production champion selected from a time-aware competition among
-    Prophet, SARIMAX, and CatBoost. Weekly and reconciliation layers are planned enhancements.
+    Upload new demand, context, or knowledge documents to refresh the analysis, then start
+    with the demand and exogenous data, walk through the monthly forecast, check how the
+    models were validated, and ask the business assistant when you need a quick answer.
+    Explore the sections below to begin.
     </p>
     """,
     unsafe_allow_html=True,
@@ -43,21 +42,27 @@ render_section_header(
 
 _SECTIONS = [
     (
+        "Data Upload",
+        "Active",
+        "Upload and validate demand, exogenous, and assistant-knowledge inputs.",
+        "success",
+    ),
+    (
+        "Descriptive Analysis",
+        "Active",
+        "Review original demand and external-variable timelines before forecasting.",
+        "success",
+    ),
+    (
         "Monthly Forecast",
         "Active",
-        "Forward-looking monthly demand forecast from the current production champion.",
+        "Review generated monthly forecast horizons, intervals, and forecast provenance.",
         "success",
     ),
     (
         "Evaluation Report",
         "Active",
-        "Champion selection rationale and held-out test performance across model families.",
-        "success",
-    ),
-    (
-        "Project Overview",
-        "Active",
-        "Live champion status, pipeline artifact health, and PoC scope summary.",
+        "Champion selection rationale and rolling-origin performance across model families.",
         "success",
     ),
     (

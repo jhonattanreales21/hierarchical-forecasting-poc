@@ -1,8 +1,8 @@
 evaluation:
   metrics:
-    primary: "wape"
+    primary: "wmape"
     static:
-      - "wape"
+      - "wmape"
       - "mase"
       - "rmse"
     secondary:
@@ -13,9 +13,9 @@ evaluation:
 
   operational_lead_time:
     enabled: true
-    split: "test"
+    split: "rolling_origin"
     lead_times:
       - 2
       - 3
-    primary_operational_metric: "wape"
+    primary_operational_metric: "wmape"
     missing_pair_policy: "nan_with_warning"

@@ -35,14 +35,20 @@ def test_standardize_forecast_columns_renames_generic_schema():
 
 
 def test_standardize_champion_metadata_derives_precision_and_flag():
-    meta = standardize_champion_metadata({"metrics": {"wape": 0.10}})
-    assert meta["test_metrics"]["forecast_precision"] == 0.90
+    meta = standardize_champion_metadata({"metrics": {"wmape": 0.10}})
+    assert meta["evaluation_metrics"]["forecast_precision"] == 0.90
     assert meta["business_success_flag"] is True
     assert meta["business_success_precision_threshold"] == 0.85
 
 
+def test_standardize_champion_metadata_requires_wmape_key():
+    meta = standardize_champion_metadata({"metrics": {"wape": 0.10}})
+    assert "forecast_precision" not in meta["evaluation_metrics"]
+    assert "business_success_flag" not in meta
+
+
 def test_standardize_champion_metadata_flags_failure_above_threshold():
-    meta = standardize_champion_metadata({"metrics": {"wape": 0.30}})
+    meta = standardize_champion_metadata({"metrics": {"wmape": 0.30}})
     assert meta["business_success_flag"] is False
 
 
@@ -63,18 +69,18 @@ def test_extract_identity_prefers_generated_at_over_legacy_key():
     meta = {
         "model_family": "prophet",
         "champion_id": "prophet_candidate_079",
-        "selection": {"primary_metric": "wape", "selected_at": "2026-06-03T05:40:40Z"},
-        "metrics": {"wape": 0.095, "mase": 0.46, "rmse": 95.8, "bias": -0.095},
-        "test_period": {"start_date": "2026-02-01", "end_date": "2026-05-01"},
+        "selection": {"primary_metric": "wmape", "selected_at": "2026-06-03T05:40:40Z"},
+        "metrics": {"wmape": 0.095, "mase": 0.46, "rmse": 95.8, "bias": -0.095},
         "training_cutoff": "2026-05-01",
     }
     identity = extract_champion_identity(standardize_champion_metadata(meta), inf)
     assert identity["model_family"] == "prophet"
     assert identity["forecast_generated_at"] == "2026-06-03T05:40:41+00:00"
-    assert identity["selection_metric"] == "wape"
+    assert identity["selection_metric"] == "wmape"
     assert identity["selection_metric_value"] == 0.095
     assert identity["supported_horizons"] == [3, 6, 12]
     assert identity["has_prediction_interval"] is True
+    assert "test_period" not in identity
 
 
 def test_extract_identity_is_family_agnostic_for_catboost():
@@ -83,7 +89,7 @@ def test_extract_identity_is_family_agnostic_for_catboost():
         {
             "model_family": "catboost",
             "champion_id": "catboost_trial_018",
-            "metrics": {"wape": 0.22, "mase": 1.05, "rmse": 230.0, "bias": -0.2},
+            "metrics": {"wmape": 0.22, "mase": 1.05, "rmse": 230.0, "bias": -0.2},
         }
     )
     inf = {
@@ -94,7 +100,7 @@ def test_extract_identity_is_family_agnostic_for_catboost():
         "horizons": {"3": {}, "6": {}, "12": {}},
     }
     summary = pd.DataFrame(
-        [{"production_champion_family": "catboost", "primary_metric": "wape"}]
+        [{"production_champion_family": "catboost", "primary_metric": "wmape"}]
     )
     identity = extract_champion_identity(meta, inf, summary)
     assert identity["model_family"] == "catboost"
@@ -108,7 +114,7 @@ def test_extract_identity_falls_back_to_selection_summary():
             {
                 "production_champion_family": "sarimax",
                 "production_champion_id": "sarimax_trial_060",
-                "primary_metric": "wape",
+                "primary_metric": "wmape",
                 "primary_metric_value": 0.11,
             }
         ]
@@ -122,7 +128,7 @@ def test_extract_identity_falls_back_to_selection_summary():
 def test_extract_identity_handles_all_empty():
     identity = extract_champion_identity({}, {}, None)
     assert identity["model_family"] is None
-    assert identity["test_metrics"] == {}
+    assert identity["evaluation_metrics"] == {}
     assert identity["supported_horizons"] == []
 
 

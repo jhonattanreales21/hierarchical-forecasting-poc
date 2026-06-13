@@ -1,4 +1,4 @@
-"""Tests for monthly Prophet Optuna training nodes."""
+"""Tests for monthly Prophet rolling-origin training nodes."""
 
 from __future__ import annotations
 
@@ -15,37 +15,26 @@ class _FakeProphetModel:
     def __init__(self, config: dict[str, Any]):
         self.config = config
 
-    def fit(self, train_df: pd.DataFrame) -> _FakeProphetModel:
+    def fit(self, train_df: pd.DataFrame) -> "_FakeProphetModel":
         if self.config["seasonality_mode"] == "broken":
             raise ValueError("synthetic trial failure")
         return self
 
     def predict(self, predict_df: pd.DataFrame) -> pd.DataFrame:
-        if self.config["seasonality_mode"] == "additive":
-            yhat = [10.0, 12.0, 14.0]
-        else:
-            yhat = [12.0, 14.0, 16.0]
+        base = 10.0 if self.config["seasonality_mode"] == "additive" else 12.0
+        yhat = [base + 2.0 * i for i in range(len(predict_df))]
         return pd.DataFrame({"ds": predict_df["ds"].values, "yhat": yhat})
 
 
-def _build_train_validation_inputs() -> tuple[pd.DataFrame, pd.DataFrame]:
-    train = pd.DataFrame(
+def _build_full_history(n: int = 20) -> pd.DataFrame:
+    return pd.DataFrame(
         {
-            "ds": pd.date_range("2024-01-01", periods=6, freq="MS"),
-            "y": [5.0, 6.0, 7.0, 8.0, 9.0, 10.0],
-            "sku": ["SKU-1"] * 6,
-            "regressor_1": [1.0] * 6,
+            "ds": pd.date_range("2024-01-01", periods=n, freq="MS"),
+            "y": [float(8 + i) for i in range(n)],
+            "sku": ["SKU-1"] * n,
+            "regressor_1": [1.0] * n,
         }
     )
-    validation = pd.DataFrame(
-        {
-            "ds": pd.date_range("2024-07-01", periods=3, freq="MS"),
-            "y": [10.0, 12.0, 14.0],
-            "sku": ["SKU-1"] * 3,
-            "regressor_1": [1.0] * 3,
-        }
-    )
-    return train, validation
 
 
 def _build_params() -> dict[str, Any]:
@@ -57,16 +46,21 @@ def _build_params() -> dict[str, Any]:
         "regressors": {"mode": "additive"},
         "tuning": {
             "optimizer": "optuna",
-            "objective": {"metric": "mape", "direction": "minimize"},
+            "objective": {"metric": "wmape_m3", "direction": "minimize"},
             "max_trials": 3,
             "top_n_prechampions": 2,
             "sampler": {"name": "tpe", "seed": 42},
+            "rolling_origin": {
+                "horizon": 3,
+                "n_cycles": 3,
+                "window": "expanding",
+                "step_months": 1,
+                "min_train_periods": 10,
+                "mase_seasonal_period": 12,
+            },
+            "pruning": {"enabled": False},
             "search_space": {
-                "changepoint_prior_scale": {
-                    "type": "float",
-                    "low": 0.01,
-                    "high": 0.5,
-                },
+                "changepoint_prior_scale": {"type": "float", "low": 0.01, "high": 0.5},
                 "seasonality_mode": {
                     "type": "categorical",
                     "choices": ["additive", "multiplicative"],
@@ -81,11 +75,7 @@ def _build_params() -> dict[str, Any]:
                 "interval_width": 0.8,
             },
         },
-        "metrics": {
-            "epsilon": 1.0,
-            "business_success_precision_threshold": 0.85,
-            "horizon_metrics": {"enabled": True, "horizons": [2, 3]},
-        },
+        "metrics": {"epsilon": 1.0, "mase_seasonal_period": 12},
     }
 
 
@@ -93,29 +83,10 @@ EXPECTED_SUCCESSFUL_TRIALS = 2
 EXPECTED_TOTAL_TRIALS = 3
 
 
-def test_train_and_evaluate_monthly_prophet_candidates_ranks_trials_and_emits_metadata(
-    monkeypatch,
-):
-    train_df, validation_df = _build_train_validation_inputs()
-    params = _build_params()
-    split_metadata = {"active_regressors": ["regressor_1"]}
-
+def _patch(monkeypatch):
     def fake_suggest_trial_params(trial, search_space, fixed_params):
-        candidates = [
-            {
-                "changepoint_prior_scale": 0.05,
-                "seasonality_mode": "additive",
-            },
-            {
-                "changepoint_prior_scale": 0.25,
-                "seasonality_mode": "multiplicative",
-            },
-            {
-                "changepoint_prior_scale": 0.50,
-                "seasonality_mode": "broken",
-            },
-        ]
-        config = dict(candidates[trial.number])
+        modes = ["additive", "multiplicative", "broken"]
+        config = {"changepoint_prior_scale": 0.05, "seasonality_mode": modes[trial.number]}
         config.update(fixed_params)
         return config
 
@@ -126,103 +97,64 @@ def test_train_and_evaluate_monthly_prophet_candidates_ranks_trials_and_emits_me
         lambda config, active_regressors, regressor_mode: _FakeProphetModel(config),
     )
 
+
+def test_prophet_rolling_origin_ranks_and_emits_wmape_m3(monkeypatch):
+    _patch(monkeypatch)
+    full_train = _build_full_history()
+    split_metadata = {"active_regressors": ["regressor_1"]}
+
     (
         tuning_results,
-        validation_metrics,
+        ro_metrics,
         prechampion_configs,
         candidate_models,
         training_metadata,
         best_model,
     ) = nodes.train_and_evaluate_monthly_prophet_candidates(
-        train_df,
-        validation_df,
-        split_metadata,
-        params,
+        full_train, split_metadata, _build_params()
     )
 
-    assert tuning_results["candidate_id"].tolist() == [
-        "prophet_candidate_001",
-        "prophet_candidate_002",
-        "prophet_candidate_003",
-    ]
-    assert tuning_results["status"].tolist() == ["success", "success", "failed"]
-    assert tuning_results["rank"].tolist()[:2] == [1, 2]
-    assert tuning_results["optimizer"].tolist() == ["optuna", "optuna", "optuna"]
-    assert tuning_results["objective_direction"].tolist() == [
-        "minimize",
-        "minimize",
-        "minimize",
-    ]
-    assert tuning_results["selection_metric"].tolist() == ["mape", "mape", "mape"]
-    assert training_metadata["best_candidate_id"] == "prophet_candidate_001"
-    assert training_metadata["best_trial_number"] == 0
-    assert training_metadata["completed_trials"] == EXPECTED_SUCCESSFUL_TRIALS
-    assert training_metadata["failed_trials"] == 1
-    assert len(training_metadata["trials"]) == EXPECTED_TOTAL_TRIALS
-    assert validation_metrics["candidate_id"].tolist() == [
-        "prophet_candidate_001",
-        "prophet_candidate_002",
-    ]
-    assert set(candidate_models) == {
-        "prophet_candidate_001",
-        "prophet_candidate_002",
-    }
-    assert best_model is candidate_models["prophet_candidate_001"]
+    # Two trials succeed, the "broken" one fails (all cycles raise).
+    statuses = dict(zip(tuning_results["candidate_id"], tuning_results["status"], strict=True))
+    assert statuses["prophet_candidate_003"] == "failed"
+    assert sum(s == "success" for s in statuses.values()) == EXPECTED_SUCCESSFUL_TRIALS
 
-    prechampion_ids = [
-        item["candidate_id"] for item in prechampion_configs["prechampions"]
-    ]
-    assert prechampion_ids == ["prophet_candidate_001", "prophet_candidate_002"]
+    # Objective + persisted metric set are rolling-origin.
+    assert tuning_results["selection_metric"].iloc[0] == "wmape_m3"
+    assert "wmape_m3" in ro_metrics.columns
+    assert training_metadata["evaluation_mode"] == "rolling_origin"
+    assert training_metadata["rolling_origin"]["horizon"] == 3
+
+    # Pre-champions are ranked; candidate models are refit on full history.
+    prechampion_ids = [c["candidate_id"] for c in prechampion_configs["prechampions"]]
+    assert len(prechampion_ids) == 2
+    assert best_model is candidate_models[prechampion_ids[0]]
+    assert "rolling_origin_metrics" in prechampion_configs["prechampions"][0]
 
 
-def test_monthly_prophet_optuna_outputs_preserve_stage4_contract(monkeypatch):
-    train_df, validation_df = _build_train_validation_inputs()
+def test_prophet_prechampion_contract(monkeypatch):
+    _patch(monkeypatch)
+    full_train = _build_full_history()
     params = _build_params()
-    split_metadata = {"active_regressors": ["regressor_1"]}
-
-    def fake_suggest_trial_params(trial, search_space, fixed_params):
-        config = {
-            "changepoint_prior_scale": 0.05 if trial.number == 0 else 0.25,
-            "seasonality_mode": "additive" if trial.number == 0 else "multiplicative",
-        }
-        config.update(fixed_params)
-        return config
-
-    monkeypatch.setattr(nodes, "suggest_trial_params", fake_suggest_trial_params)
-    monkeypatch.setattr(
-        nodes,
-        "_create_prophet_model",
-        lambda config, active_regressors, regressor_mode: _FakeProphetModel(config),
-    )
+    params["tuning"]["max_trials"] = 2  # only the two succeeding configs
 
     tuning_results, _, prechampion_configs, _, _, _ = (
         nodes.train_and_evaluate_monthly_prophet_candidates(
-            train_df,
-            validation_df,
-            split_metadata,
-            params | {"tuning": params["tuning"] | {"max_trials": 2}},
+            full_train, {"active_regressors": ["regressor_1"]}, params
         )
     )
 
     required_columns = {
-        "candidate_id",
-        "rank",
-        "is_prechampion",
-        "selection_metric",
-        "selection_metric_value",
+        "candidate_id", "rank", "is_prechampion",
+        "selection_metric", "selection_metric_value",
     }
     assert required_columns.issubset(tuning_results.columns)
 
-    first_prechampion = prechampion_configs["prechampions"][0]
-    assert first_prechampion["rank"] == 1
-    assert first_prechampion["active_regressors"] == ["regressor_1"]
-    assert set(first_prechampion["model_params"]) == {
-        "changepoint_prior_scale",
-        "seasonality_prior_scale",
-        "holidays_prior_scale",
-        "seasonality_mode",
-        "yearly_seasonality",
-        "weekly_seasonality",
-        "daily_seasonality",
-        "interval_width",
-    }
+    first = prechampion_configs["prechampions"][0]
+    assert first["rank"] == 1
+    assert first["active_regressors"] == ["regressor_1"]
+    assert {
+        "changepoint_prior_scale", "seasonality_prior_scale", "holidays_prior_scale",
+        "seasonality_mode", "yearly_seasonality", "weekly_seasonality",
+        "daily_seasonality", "interval_width",
+    }.issubset(first["model_params"])

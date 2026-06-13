@@ -55,14 +55,6 @@ monthly_prophet_train:
   type: pandas.ParquetDataset
   filepath: data/05_model_input/monthly_prophet_train.parquet
 
-monthly_prophet_validation:
-  type: pandas.ParquetDataset
-  filepath: data/05_model_input/monthly_prophet_validation.parquet
-
-monthly_prophet_test:
-  type: pandas.ParquetDataset
-  filepath: data/05_model_input/monthly_prophet_test.parquet
-
 monthly_prophet_full_train:
   type: pandas.ParquetDataset
   filepath: data/05_model_input/monthly_prophet_full_train.parquet
@@ -88,18 +80,6 @@ monthly_modeling_data:
   type: pandas.ParquetDataset
   filepath: data/05_model_input/monthly_modeling_data.parquet
 
-monthly_train:
-  type: pandas.ParquetDataset
-  filepath: data/05_model_input/monthly_train.parquet
-
-monthly_validation:
-  type: pandas.ParquetDataset
-  filepath: data/05_model_input/monthly_validation.parquet
-
-monthly_test:
-  type: pandas.ParquetDataset
-  filepath: data/05_model_input/monthly_test.parquet
-
 monthly_full_train:
   type: pandas.ParquetDataset
   filepath: data/05_model_input/monthly_full_train.parquet
@@ -107,6 +87,12 @@ monthly_full_train:
 monthly_split_metadata:
   type: json.JSONDataset
   filepath: data/05_model_input/monthly_split_metadata.json
+
+# 05_model_input — Rolling-origin window specification (audit artifact). The last
+# cycle predicts the most recent months; shared by model_input_preparation and train_monthly.
+monthly_rolling_origin_windows:
+  type: json.JSONDataset
+  filepath: data/05_model_input/monthly_rolling_origin_windows.json
 
 # 05_model_input — Generic monthly future feature frames (family-agnostic canonical inference inputs)
 monthly_future_3m:
@@ -122,18 +108,6 @@ monthly_future_12m:
   filepath: data/05_model_input/monthly_future_12m.parquet
 
 # 05_model_input — CatBoost monthly model-ready datasets
-monthly_catboost_train:
-  type: pandas.ParquetDataset
-  filepath: data/05_model_input/monthly_catboost_train.parquet
-
-monthly_catboost_validation:
-  type: pandas.ParquetDataset
-  filepath: data/05_model_input/monthly_catboost_validation.parquet
-
-monthly_catboost_test:
-  type: pandas.ParquetDataset
-  filepath: data/05_model_input/monthly_catboost_test.parquet
-
 monthly_catboost_full_train:
   type: pandas.ParquetDataset
   filepath: data/05_model_input/monthly_catboost_full_train.parquet
@@ -143,18 +117,6 @@ monthly_catboost_split_metadata:
   filepath: data/05_model_input/monthly_catboost_split_metadata.json
 
 # 05_model_input — SARIMAX monthly model-ready datasets
-monthly_sarimax_train:
-  type: pandas.ParquetDataset
-  filepath: data/05_model_input/monthly_sarimax_train.parquet
-
-monthly_sarimax_validation:
-  type: pandas.ParquetDataset
-  filepath: data/05_model_input/monthly_sarimax_validation.parquet
-
-monthly_sarimax_test:
-  type: pandas.ParquetDataset
-  filepath: data/05_model_input/monthly_sarimax_test.parquet
-
 monthly_sarimax_full_train:
   type: pandas.ParquetDataset
   filepath: data/05_model_input/monthly_sarimax_full_train.parquet
@@ -162,27 +124,6 @@ monthly_sarimax_full_train:
 monthly_sarimax_split_metadata:
   type: json.JSONDataset
   filepath: data/05_model_input/monthly_sarimax_split_metadata.json
-
-# Legacy / future-stage placeholders
-model_input_monthly_catboost_train:
-  type: pandas.ParquetDataset
-  filepath: data/05_model_input/monthly_catboost_train.parquet
-model_input_monthly_catboost_validation:
-  type: pandas.ParquetDataset
-  filepath: data/05_model_input/monthly_catboost_validation.parquet
-model_input_monthly_catboost_test:
-  type: pandas.ParquetDataset
-  filepath: data/05_model_input/monthly_catboost_test.parquet
-
-model_input_monthly_sarimax_train:
-  type: pandas.ParquetDataset
-  filepath: data/05_model_input/monthly_sarimax_train.parquet
-model_input_monthly_sarimax_validation:
-  type: pandas.ParquetDataset
-  filepath: data/05_model_input/monthly_sarimax_validation.parquet
-model_input_monthly_sarimax_test:
-  type: pandas.ParquetDataset
-  filepath: data/05_model_input/monthly_sarimax_test.parquet
 
 # Weekly splits
 model_input_weekly_prophet_train:
@@ -225,9 +166,9 @@ monthly_prophet_tuning_results:
   type: pandas.ParquetDataset
   filepath: data/06_models/tuning/monthly_prophet_tuning_results.parquet
 
-monthly_prophet_validation_metrics:
+monthly_prophet_rolling_origin_metrics:
   type: pandas.ParquetDataset
-  filepath: data/06_models/tuning/monthly_prophet_validation_metrics.parquet
+  filepath: data/06_models/tuning/monthly_prophet_rolling_origin_metrics.parquet
 
 monthly_prophet_prechampion_configs:
   type: json.JSONDataset
@@ -241,14 +182,18 @@ monthly_prophet_training_metadata:
   type: json.JSONDataset
   filepath: data/06_models/tuning/monthly_prophet_training_metadata.json
 
+monthly_prophet_rolling_origin_predictions:
+  type: pandas.ParquetDataset
+  filepath: data/06_models/tuning/monthly_prophet_rolling_origin_predictions.parquet
+
 # 06_models — Monthly SARIMAX training and tuning artifacts
 monthly_sarimax_tuning_results:
   type: pandas.ParquetDataset
   filepath: data/06_models/tuning/monthly_sarimax_tuning_results.parquet
 
-monthly_sarimax_validation_metrics:
+monthly_sarimax_rolling_origin_metrics:
   type: pandas.ParquetDataset
-  filepath: data/06_models/tuning/monthly_sarimax_validation_metrics.parquet
+  filepath: data/06_models/tuning/monthly_sarimax_rolling_origin_metrics.parquet
 
 monthly_sarimax_prechampion_configs:
   type: json.JSONDataset
@@ -262,14 +207,18 @@ monthly_sarimax_training_metadata:
   type: json.JSONDataset
   filepath: data/06_models/tuning/monthly_sarimax_training_metadata.json
 
+monthly_sarimax_rolling_origin_predictions:
+  type: pandas.ParquetDataset
+  filepath: data/06_models/tuning/monthly_sarimax_rolling_origin_predictions.parquet
+
 # 06_models — Monthly CatBoost training and tuning artifacts
 monthly_catboost_tuning_results:
   type: pandas.ParquetDataset
   filepath: data/06_models/tuning/monthly_catboost_tuning_results.parquet
 
-monthly_catboost_validation_metrics:
+monthly_catboost_rolling_origin_metrics:
   type: pandas.ParquetDataset
-  filepath: data/06_models/tuning/monthly_catboost_validation_metrics.parquet
+  filepath: data/06_models/tuning/monthly_catboost_rolling_origin_metrics.parquet
 
 monthly_catboost_prechampion_configs:
   type: json.JSONDataset
@@ -282,6 +231,10 @@ monthly_catboost_candidate_models:
 monthly_catboost_training_metadata:
   type: json.JSONDataset
   filepath: data/06_models/tuning/monthly_catboost_training_metadata.json
+
+monthly_catboost_rolling_origin_predictions:
+  type: pandas.ParquetDataset
+  filepath: data/06_models/tuning/monthly_catboost_rolling_origin_predictions.parquet
 
 # 06_models — candidate models per granularity × family
 candidate_monthly_prophet:
@@ -316,10 +269,10 @@ champion_registry:
   type: json.JSONDataset
   filepath: data/06_models/champions/champion_registry.json
 
-# 06_models — Monthly multi-family selection artifacts
-monthly_candidate_test_metrics:
+# 06_models — Monthly multi-family selection artifacts (rolling-origin metrics)
+monthly_candidate_metrics:
   type: pandas.ParquetDataset
-  filepath: data/06_models/selection/monthly_candidate_test_metrics.parquet
+  filepath: data/06_models/selection/monthly_candidate_metrics.parquet
 
 monthly_family_champion_summary:
   type: pandas.ParquetDataset
@@ -333,6 +286,25 @@ champion_monthly_metadata:
   type: json.JSONDataset
   filepath: data/06_models/champions/champion_monthly_metadata.json
 
+# 06_models — Monthly family-champion explainability (SHAP + native drivers)
+# Unified driver-importance table (app-facing) lives under 08_reporting; the raw
+# SHAP explainer and per-observation SHAP values are model artifacts under 06_models.
+monthly_family_champion_importance:
+  type: pandas.ParquetDataset
+  filepath: data/08_reporting/monthly_family_champion_importance.parquet
+
+monthly_catboost_shap_explainer:
+  type: pickle.PickleDataset
+  filepath: data/06_models/explainability/monthly_catboost_shap_explainer.pkl
+
+monthly_catboost_shap_values:
+  type: pandas.ParquetDataset
+  filepath: data/06_models/explainability/monthly_catboost_shap_values.parquet
+
+monthly_family_champion_explainability_metadata:
+  type: json.JSONDataset
+  filepath: data/06_models/explainability/monthly_family_champion_explainability_metadata.json
+
 # Tuning and validation results
 tuning_results_monthly:
   type: pandas.ParquetDataset
@@ -341,18 +313,10 @@ tuning_results_weekly:
   type: pandas.ParquetDataset
   filepath: data/06_models/tuning/weekly_tuning_results.parquet
 
-# 06_models — Monthly Prophet model-selection artifacts
-monthly_prophet_test_metrics:
-  type: pandas.ParquetDataset
-  filepath: data/06_models/selection/monthly_prophet_test_metrics.parquet
-
+# 06_models — Legacy Prophet-only model-selection artifacts
 monthly_prophet_model_selection_summary:
   type: pandas.ParquetDataset
   filepath: data/06_models/selection/monthly_prophet_model_selection_summary.parquet
-
-monthly_prophet_champion_test_forecast:
-  type: pandas.ParquetDataset
-  filepath: data/06_models/selection/monthly_prophet_champion_test_forecast.parquet
 
 monthly_prophet_champion_model:
   type: pickle.PickleDataset
@@ -416,10 +380,6 @@ evaluation_report:
 reconciliation_diagnostics:
   type: pandas.ParquetDataset
   filepath: data/08_reporting/reconciliation_diagnostics.parquet
-
-monthly_operational_test_forecasts:
-  type: pandas.ParquetDataset
-  filepath: data/08_reporting/monthly_operational_test_forecasts.parquet
 
 monthly_operational_lead_time_metrics:
   type: pandas.ParquetDataset

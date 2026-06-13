@@ -7,8 +7,8 @@ the functions stay pure and unit-testable.
 
 The app reads several artifacts whose key names have drifted between the legacy
 Prophet-only contract and the current generic monthly contract. The helpers here
-extract a single normalized "champion identity" with defensive fallbacks rather
-than assuming one metadata shape.
+extract a single normalized "champion identity" with defensive fallbacks where
+they do not reintroduce deprecated metric names.
 """
 
 from typing import Any, Optional
@@ -76,36 +76,38 @@ def _summary_value(summary: Optional[pd.DataFrame], column: str) -> Any:
 def standardize_champion_metadata(meta: dict) -> dict:
     """Normalize current and legacy champion metadata keys.
 
-    Current metadata stores held-out metrics under ``metrics``; legacy metadata
+    Current metadata stores rolling-origin metrics under ``metrics``; legacy metadata
     used ``test_metrics``. A model-family-agnostic ``forecast_precision``
-    (``1 - WAPE``) and a ``business_success_flag`` are derived when absent so the
+    (``1 - WMAPE``) and a ``business_success_flag`` are derived when absent so the
     app's precision KPIs work regardless of which family won.
 
     Args:
         meta: Raw champion metadata dict (may be empty).
 
     Returns:
-        Metadata dict with ``test_metrics`` populated and derived business flags.
+        Metadata dict with ``evaluation_metrics`` populated and derived business flags.
     """
     if not meta:
         return meta
     out = dict(meta)
-    metrics = dict(out.get("test_metrics") or out.get("metrics") or {})
+    metrics = dict(
+        out.get("evaluation_metrics") or out.get("metrics") or out.get("test_metrics") or {}
+    )
 
-    wape = metrics.get("wape")
-    if "forecast_precision" not in metrics and wape is not None:
+    wmape = metrics.get("wmape")
+    if "forecast_precision" not in metrics and wmape is not None:
         try:
-            metrics["forecast_precision"] = 1.0 - float(wape)
+            metrics["forecast_precision"] = 1.0 - float(wmape)
         except (TypeError, ValueError):
             pass
 
-    out["test_metrics"] = metrics
+    out["evaluation_metrics"] = metrics
 
     precision_threshold = out.get("business_success_precision_threshold", 0.85)
     out["business_success_precision_threshold"] = precision_threshold
-    if "business_success_flag" not in out and wape is not None:
+    if "business_success_flag" not in out and wmape is not None:
         try:
-            out["business_success_flag"] = float(wape) <= (1.0 - precision_threshold)
+            out["business_success_flag"] = float(wmape) <= (1.0 - precision_threshold)
         except (TypeError, ValueError):
             out["business_success_flag"] = False
     return out
@@ -118,9 +120,10 @@ def extract_champion_identity(
 ) -> dict:
     """Build a normalized, model-family-agnostic champion identity.
 
-    Pulls champion family, id, selection metric, evaluation window, refit status,
-    run provenance, and interval availability from whichever artifact exposes
-    them, using defensive fallbacks rather than assuming one metadata shape.
+    Pulls champion family, id, selection metric, evaluation mode, refit status,
+    run provenance, hyperparameters, active regressors, and interval availability
+    from whichever artifact exposes them, using defensive fallbacks rather than
+    assuming one metadata shape.
 
     Args:
         meta: Champion metadata dict (``champion_monthly_metadata.json``).
@@ -133,7 +136,12 @@ def extract_champion_identity(
     meta = meta or {}
     inf = inference_meta or {}
     selection = meta.get("selection", {}) or {}
-    metrics = meta.get("test_metrics") or meta.get("metrics") or {}
+    metrics = (
+        meta.get("evaluation_metrics")
+        or meta.get("metrics")
+        or meta.get("test_metrics")
+        or {}
+    )
     contract = meta.get("inference_contract", {}) or {}
 
     model_family = _first_not_none(
@@ -159,7 +167,6 @@ def extract_champion_identity(
         _summary_value(selection_summary, "primary_metric_value"),
     )
 
-    test_period = meta.get("test_period") or meta.get("test_window") or {}
     refit = meta.get("refit", {}) or {}
 
     forecast_generated_at = _first_not_none(
@@ -202,8 +209,14 @@ def extract_champion_identity(
             meta.get("selected_at"),
             _summary_value(selection_summary, "selection_timestamp"),
         ),
-        "test_period": test_period,
-        "test_metrics": metrics,
+        "evaluation": meta.get("evaluation", {}) or {},
+        "evaluation_metrics": metrics,
+        "hyperparameters": meta.get("hyperparameters") or {},
+        "active_regressors": _first_not_none(
+            meta.get("active_regressors"),
+            contract.get("active_regressors"),
+        )
+        or [],
         "training_cutoff": meta.get("training_cutoff"),
         "refit": refit,
         "forecast_generated_at": forecast_generated_at,

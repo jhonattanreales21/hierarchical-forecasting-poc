@@ -2,17 +2,10 @@
 
 These helpers rebuild target-derived features (lags, rolling statistics, and trend
 diffs/pct-changes) step-by-step from a demand buffer of observed values plus prior
-predictions. They are shared by two consumers so the recursion is identical
-everywhere:
-
-* ``forecast_inference`` — production monthly CatBoost inference.
-* ``model_selection`` — rolling-origin (operational lead-time) M-h evaluation of
-  CatBoost candidates on the held-out test set.
-
-Keeping a single implementation guarantees the operational-lead-time metrics used
-for champion selection reflect exactly how the CatBoost champion forecasts in
-production (predicted lags feed later steps), rather than an optimistic one-shot
-forecast that uses actual lags.
+predictions. They back the legacy recursive CatBoost inference path in
+``forecast_inference``, used for champion artifacts that do not carry direct
+horizon-specific models, where each predicted value feeds the lag and rolling
+features of later steps.
 """
 
 from __future__ import annotations

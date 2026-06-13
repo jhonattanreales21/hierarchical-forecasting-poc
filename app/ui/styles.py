@@ -333,7 +333,8 @@ def apply_global_styles() -> None:
         line-height: 1.45;
     }}
     .st-key-monthly-horizon-toolbar,
-    .st-key-monthly-chart-panel {{
+    .st-key-monthly-chart-panel,
+    .st-key-descriptive-controls {{
         background: {card_bg};
         border-radius: 16px;
         box-shadow: 0 6px 18px rgba(15, 23, 42, 0.06);

@@ -37,9 +37,11 @@ Three model families are evaluated at each active layer:
 |-------|------|--------|--------|
 | **SARIMAX** | Structured statistical baseline with seasonal + exogenous terms | Monthly | Implemented |
 | **Prophet** | Existing benchmark; robust to trend changes and seasonality | Monthly & Weekly | Implemented (monthly stable, weekly scaffolded) |
-| **CatBoost** | Main tabular candidate with full exogenous variable support and recursive inference | Monthly & Weekly | Monthly implemented (training + inference); weekly scaffolded |
+| **CatBoost** | Main tabular candidate with exogenous variables; **direct multi-horizon** strategy — one independent model per horizon h ∈ {1, 2, 3}, no recursive predictions | Monthly & Weekly | Monthly implemented (direct multi-horizon training + inference); weekly scaffolded |
 
-After training, forecasts at all granularities are **reconciled** using MinT (`mint_shrink`) to ensure temporal coherence — weekly forecasts within a month are consistent with the monthly total. The final outputs are exposed through a Streamlit app and a FastAPI layer.
+**Evaluation protocol**: all model families are evaluated using **rolling-origin backtesting** (expanding window, step = 1 month). Pooled WMAPE across cycles is the primary champion-selection metric. No held-out test split is reserved — the rolling-origin protocol covers the full observed history.
+
+After training, forecasts at all granularities are **reconciled** using MinT (`mint_shrink`) to ensure temporal coherence — weekly forecasts within a month are consistent with the monthly total. The final outputs are served through a Streamlit viewer and a **FastAPI layer** (`/forecast/latest`, `/forecast/backtest`, `/forecast/champion`).
 
 ---
 
@@ -57,8 +59,8 @@ After training, forecasts at all granularities are **reconciled** using MinT (`m
 | CI | GitHub Actions |
 | Linting & formatting | [Ruff](https://docs.astral.sh/ruff/) |
 | Testing | pytest |
-| Experiment tracking | [MLflow](https://mlflow.org/) *(planned)* |
-| Containerization | Docker + Docker Compose *(planned)* |
+| Experiment tracking | [MLflow](https://mlflow.org/) *(integration planned)* |
+| Containerization | Docker + Docker Compose |
 | Business assistant | [LangChain](https://python.langchain.com/) + [Chroma](https://www.trychroma.com/) *(planned)* |
 
 ---

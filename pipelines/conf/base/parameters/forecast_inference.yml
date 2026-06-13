@@ -14,6 +14,10 @@ forecast_inference:
     supported_horizons: [3, 6, 12]
     output_schema_version: "monthly_forecast_v1"
     allow_null_intervals: true
+    # Negative demand forecasts are physically invalid. When false (default),
+    # negative values are clipped to 0 and a WARNING is logged. Set to true
+    # to hard-fail the inference pipeline instead.
+    enforce_non_negative: false
     supported_families:
       - prophet
       - sarimax
@@ -35,8 +39,8 @@ forecast_inference:
       require_future_exogenous_if_trained_with_exog: true
       exogenous_columns: []
 
-    # CatBoost adapter: recursive multi-step inference from historical demand buffer.
-    # Prediction intervals are not produced (interval_method is null).
+    # CatBoost adapter: direct horizon-specific models. A CatBoost champion is
+    # capped at 3 months. Prediction intervals are not produced.
     catboost:
       date_column: "month_start_date"
       target_column: "monthly_demand"

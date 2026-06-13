@@ -213,7 +213,7 @@ Primary coherence target: monthly ↔ weekly. Full monthly ↔ weekly ↔ daily 
 
 - **SARIMAX** — Structured statistical baseline, especially relevant for the monthly layer
 - **Prophet** — Existing benchmark and early starting point
-- **CatBoost** — Main tabular candidate with exogenous variables
+- **CatBoost** — Main tabular candidate with exogenous variables. Uses the **direct multi-horizon strategy**: one independent `CatBoostRegressor` per forecast horizon (h ∈ {1, 2, 3}), trained on shifted-target pairs `(features_at_origin_t, demand(t+h))`. No recursive predictions are used during training or inference.
 - **N-HiTS (Nixtla)** — Optional neural benchmark, only after the monthly layer is stable
 
 ## Evaluation
@@ -235,33 +235,35 @@ Metrics must be reported:
 - By forecast horizon.
 - Before and after reconciliation, if reconciliation is used.
 
+**Evaluation framework**: the canonical evaluation protocol is **rolling-origin backtesting** (expanding window, step = 1 month). WMAPE, per-horizon WMAPE, and BIAS are **pooled** from cycle-level numerator/denominator totals. MASE and RMSE are arithmetic averages of per-cycle values. No held-out test split is reserved — rolling-origin metrics are the sole basis for champion selection.
+
 ## Model Selection and Champion Protocol
 
-Model selection must follow a staged, time-aware, leakage-safe process.
+Model selection is time-aware, leakage-safe, and driven entirely by **rolling-origin backtesting** — no held-out test split is reserved.
 
 Required stages:
 
-1. **Training split**
-   - Used for fitting model candidates and tuning hyperparameters.
+1. **Rolling-origin hyperparameter search (Optuna)**
+   - Each Optuna trial is evaluated by a rolling-origin backtest over the full available history.
+   - Expanding window, step = 1 month. The last cycle's origin is `horizon` months before the last observed month, so all history participates — nothing is withheld.
+   - Primary Optuna objective: pooled `WMAPE_M3` for CatBoost; pooled `WMAPE` for Prophet and SARIMAX. Direction: minimize.
+   - Optuna pruning halts poorly performing trials early after a configurable warm-up (`n_warmup_cycles`).
    - No validation or test observations may be used during hyperparameter search.
 
-2. **Validation / evaluation split**
-   - Used to score tuned candidates.
-   - Select the top 3 candidate configurations per model family, temporal granularity, and forecast horizon.
-   - This stage creates a shortlist, not the final champion.
+2. **Pre-champion shortlist and full-history refit**
+   - Top-N trial configurations per family are ranked by pooled rolling-origin WMAPE.
+   - Shortlisted configurations are immediately refit on the **full available history** (all observed months).
+   - Shortlisted rolling-origin metrics from the tuning step are preserved as the evaluation record — no re-scoring is performed.
 
-3. **Training + validation refit**
-   - Refit shortlisted configurations using the combined training and validation periods.
-   - Keep hyperparameters fixed from the tuning/shortlisting stage.
+3. **Cross-family champion election** (`model_selection` pipeline)
+   - Reads pre-champion rolling-origin metrics from each active family.
+   - Elects one `family_champion` per active family and one `production_champion` across families.
+   - Selection criterion: lowest pooled WMAPE from rolling-origin evaluation.
+   - No additional scoring round; rolling-origin metrics are canonical.
 
-4. **Testing split**
-   - Evaluate refitted shortlisted candidates on held-out test data.
-   - Select the best configuration per model family, temporal granularity, and horizon.
-   - Store this result as the family champion.
-
-5. **Full-history refit**
-   - Refit selected champion configurations using all available historical data.
-   - Use this final model to generate forecasts consumed by Streamlit and/or FastAPI.
+4. **Forecast inference**
+   - The elected production champion (already refit on full history) generates forecasts for all configured horizons.
+   - Forecast artifacts are consumed by Streamlit and FastAPI.
 
 Champion levels:
 
@@ -270,11 +272,14 @@ Champion levels:
 
 Rules:
 
-- Do not tune hyperparameters on validation + test combined.
-- Do not select champions using the same data used for hyperparameter tuning.
-- Do not use random splits for forecasting model evaluation.
+- Do not use a held-out test split for champion selection — rolling-origin metrics are canonical.
+- The rolling-origin window is expanding with step = 1; the last cycle predicts the most recent `horizon` months.
+- WMAPE, per-horizon WMAPE, and BIAS are pooled from cycle-level numerator/denominator totals across all cycles.
+- MASE and RMSE are arithmetic averages of per-cycle values.
+- CatBoost uses direct multi-horizon: one independent model per horizon h ∈ {1, 2, 3}. Predictions from earlier horizons are never reused.
+- Do not tune hyperparameters on any reserved held-out window.
 - Do not overwrite champion metadata without preserving run history.
-- Store candidate metrics, shortlist metadata, test metrics, selected hyperparameters, and final refit metadata.
+- Store candidate metrics, shortlist metadata, selected hyperparameters, and final refit metadata.
 - Report metrics by temporal granularity and forecast horizon.
 - Monthly champions are mandatory.
 - Weekly champions are only required when the weekly workflow is active and validated.
@@ -320,6 +325,8 @@ Rules:
 - Reusable utilities (metrics, loaders, schemas) belong in `shared/`, not duplicated across pipelines.
 - Exogenous variables are **core model inputs**, not optional add-ons.
 - The application layer (Streamlit / FastAPI) is part of the product, not a presentation artifact.
+- The Streamlit app is **model-family-agnostic**: it reads a normalized champion identity (`extract_champion_identity`) that works for Prophet, SARIMAX, or CatBoost without hardcoding family-specific artifact shapes. KPI cards and forecast charts adapt to whichever family won; prediction-interval bands are only shown when the champion produces them.
+- The FastAPI layer exposes precomputed Kedro pipeline artifacts at `GET /forecast/latest`, `GET /forecast/backtest`, and `GET /forecast/champion`. It is a read-only serving layer — it does not retrain models or modify artifacts.
 - All dataset I/O must go through `catalog.yml` — no hardcoded paths inside nodes.
 - The GenAI/RAG layer must consume curated outputs and documented knowledge sources; it must not recompute forecasts or modify model artifacts.
 - RAG utilities should be modular and testable. Avoid embedding retrieval, prompt construction, and UI rendering in a single Streamlit page.

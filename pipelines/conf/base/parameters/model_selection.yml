@@ -1,25 +1,19 @@
 model_selection:
-  primary_metric: "WAPE"
-  secondary_metrics:
-    - "MASE"
-    - "RMSE"
-  selection_strategy: "best_by_horizon"
-  tie_breaker: "RMSE"
-
-  # --- Monthly multi-family selection ---
+  # Champions are selected directly on the pooled rolling-origin metrics produced
+  # by training; there is no separate held-out evaluation stage.
   monthly:
     enabled: true
     active_families:
       - prophet
       - sarimax
       - catboost
-    primary_metric: wape
+    primary_metric: wmape
     direction: minimize
     tie_breakers:
-      - test_m3_wape
-      - test_m2_wape
+      - wmape_m3
+      - wmape_m2
+      - wmape_m1
       - mase
-      - rmse
       - abs_bias
     # Fail loudly when any active family has no prechampion artifacts.
     require_all_active_families: true
@@ -29,6 +23,14 @@ model_selection:
     # history (train + validation + test) before production inference.
     refit_champion:
       enabled: true
+    # Family-champion explainability for the app's Evaluation Report.
+    explainability:
+      enabled: true
+      top_n_features: 15        # display hint; the artifact stores all features
+      shap:
+        max_samples: null       # null = explain every full-history row
+      prophet:
+        include_components: true
     output:
       produce_generic_champion: true
       preserve_legacy_prophet_champion: true
@@ -40,10 +42,10 @@ model_selection:
     sku_column: "sku"
 
     selection:
-      primary_metric: "wape"
+      primary_metric: "wmape"
       tie_breakers:
-        - "test_m3_wape"
-        - "test_m2_wape"
+        - "wmape_m3"
+        - "wmape_m2"
         - "mase"
         - "rmse"
       missing_metric_policy: "skip_with_audit_note"
@@ -88,18 +90,16 @@ model_selection:
         - 3
 
   # --- CatBoost adapter settings for multi-family selection ---
-  # Column names default to the CatBoost split metadata when omitted. CatBoost
-  # candidates are refit on train+validation and scored on the precomputed test
-  # feature matrix (leakage-safe: the test split never enters fitting).
+  # Column names default to the CatBoost split metadata when omitted. CatBoost is
+  # evaluated as direct horizon-specific models.
   monthly_catboost:
     enabled: true
     date_column: "month_start_date"
     target_column: "monthly_demand"
     model_family: catboost
 
-    # Rolling-origin M-2/M-3 WAPE (operational lead-time). For CatBoost this is
-    # computed recursively (predicted demand feeds later lag features), so the
-    # lead-time metric matches production inference behaviour.
+    # Per-horizon WMAPE (operational lead-time) from the direct horizon-specific
+    # CatBoost models.
     operational_lead_time:
       enabled: true
       lead_times:
