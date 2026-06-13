@@ -43,9 +43,23 @@ def apply_global_styles() -> None:
         border-right: 1px solid {border};
     }}
 
+    /* ── Hide auto-generated sidebar nav links (top navbar replaces them) ── */
+    [data-testid="stSidebarNav"] {{
+        display: none !important;
+    }}
+
+    /* ── Hide the Streamlit top toolbar (navbar replaces all chrome) ─────── */
+    header[data-testid="stHeader"],
+    .stAppHeader {{
+        display: none !important;
+    }}
+    [data-testid="stDecoration"] {{
+        display: none !important;
+    }}
+
     /* ── Main container ────────────────────────────────────────────────────── */
     .block-container {{
-        padding-top: 1.75rem !important;
+        padding-top: 0.5rem !important;
         padding-bottom: 2.5rem !important;
     }}
 
@@ -91,10 +105,10 @@ def apply_global_styles() -> None:
     .app-hero {{
         background: linear-gradient(135deg, {navy} 0%, {deep_blue} 100%);
         color: #FFFFFF;
-        padding: 1.75rem 2.1rem;
-        border-radius: 14px;
-        margin-bottom: 1rem;
-        box-shadow: 0 10px 30px rgba(0, 31, 91, 0.16);
+        padding: 1rem 1.5rem;
+        border-radius: 10px;
+        margin-bottom: 0.85rem;
+        box-shadow: 0 4px 14px rgba(0, 31, 91, 0.12);
     }}
     .app-hero .app-eyebrow,
     .app-hero-eyebrow {{
@@ -103,13 +117,13 @@ def apply_global_styles() -> None:
     .app-hero .app-page-title,
     .app-hero-title {{
         color: #FFFFFF !important;
-        font-size: 2rem;
-        margin-bottom: 0.35rem;
+        font-size: 1.45rem;
+        margin-bottom: 0.2rem;
     }}
     .app-hero .app-page-subtitle,
     .app-hero-subtitle {{
         color: rgba(255, 255, 255, 0.82);
-        font-size: 1.05rem;
+        font-size: 0.9rem;
     }}
 
     /* ── Card ──────────────────────────────────────────────────────────────── */
@@ -418,6 +432,25 @@ def apply_global_styles() -> None:
         text-transform: uppercase;
         color: {text_muted};
         margin-bottom: 0.3rem;
+    }}
+
+    /* ── st.page_link inside nav cards ────────────────────────────────────── */
+    .app-nav-card + div [data-testid="stPageLink"] a,
+    [data-testid="stPageLink"] a {{
+        font-size: 0.8rem !important;
+        font-weight: 600 !important;
+        color: {blue} !important;
+        text-decoration: none !important;
+        display: inline-block;
+        margin-top: 0.1rem;
+        padding: 0;
+    }}
+    [data-testid="stPageLink"] a:hover {{
+        color: {navy} !important;
+        text-decoration: underline !important;
+    }}
+    [data-testid="stPageLink"] svg {{
+        display: none !important;
     }}
 
     /* ── Landing page nav cards ─────────────────────────────────────────────── */

@@ -1,6 +1,8 @@
 import pandas as pd
 import streamlit as st
 
+st.set_page_config(layout="wide", initial_sidebar_state="collapsed")
+
 from shared.forecast_assistant import (
     answer_question,
     build_assistant_context,
@@ -12,6 +14,7 @@ from shared.forecast_assistant import (
 from shared.rag import FaissVectorStore, build_chunks_from_path
 from shared.viz import add_event_lines, plot_forecast
 from ui.components import render_empty_state, render_hero, render_section_header
+from ui.navigation import render_top_navbar
 from ui.styles import apply_global_styles
 from utils.champion import extract_champion_identity, forecast_has_intervals
 from utils.data_loaders import (
@@ -50,6 +53,7 @@ def _latest_rag_source():
 
 
 apply_global_styles()
+render_top_navbar("Business Assistant")
 
 render_hero(
     title="Forecast Assistant",

@@ -1,6 +1,9 @@
 import streamlit as st
 
+st.set_page_config(layout="wide", initial_sidebar_state="collapsed")
+
 from shared.viz import plot_forecast
+from ui.navigation import render_top_navbar
 from ui.page_blocks.monthly_blocks import (
     render_champion_model_details,
     render_forecast_chart_panel,
@@ -23,6 +26,7 @@ from utils.data_loaders import (
 from utils.paths import CHAMPION_META
 
 apply_global_styles()
+render_top_navbar("Monthly Forecast")
 render_monthly_page_header()
 
 # ---------------------------------------------------------------------------
