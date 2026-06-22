@@ -10,10 +10,11 @@ name = "hdf_app"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
-    "streamlit>=1.35",
+    "streamlit>=1.36",
     "plotly>=5.0",
     "pandas>=2.0",
     "shared",
+    "streamlit-option-menu>=0.4.0",
 ]
 
 [tool.uv.sources]
@@ -21,3 +22,11 @@ shared = { workspace = true }
 
 [dependency-groups]
 dev = ["ruff", "pytest"]
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint.per-file-ignores]
+# Streamlit requires st.set_page_config() to be the first Streamlit command
+# executed, so module imports must follow it on every page entrypoint.
+"pages/*.py" = ["E402"]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import time
 
 import pandas as pd
 import streamlit as st
@@ -26,6 +27,78 @@ from utils.uploads import (
 )
 
 _DOC_TYPES = ["pdf", "docx", "md", "markdown", "txt"]
+
+# Tune this value to control how long the simulated loading animation runs (in seconds).
+_UPLOAD_SIMULATION_SECONDS: float = 20.0
+
+# Pipeline phases shown during the loading simulation.
+# Each entry: (display name, fraction of total time, list of step messages).
+# Fractions sum to 1.0; the training phase carries the largest share to mirror reality.
+_PIPELINE_PHASES: list[tuple[str, float, list[str]]] = [
+    (
+        "Data ingestion & validation",
+        0.10,
+        [
+            "Validating file schema and encoding",
+            "Parsing demand time series",
+            "Parsing exogenous variables",
+            "Detecting temporal granularity",
+            "Checking date continuity and duplicates",
+        ],
+    ),
+    (
+        "Feature engineering",
+        0.12,
+        [
+            "Aggregating demand to monthly level",
+            "Building lag and rolling-window features",
+            "Generating calendar and seasonal features",
+            "Merging exogenous variables into feature matrix",
+        ],
+    ),
+    (
+        "Model input preparation",
+        0.08,
+        [
+            "Building rolling-origin backtesting windows",
+            "Preparing expanding-window train splits",
+            "Generating horizon-shifted target arrays (h=1, 2, 3)",
+        ],
+    ),
+    (
+        "Model training",
+        0.45,
+        [
+            "SARIMAX — Optuna hyperparameter search",
+            "SARIMAX — refitting best configuration on full history",
+            "Prophet — Optuna hyperparameter search",
+            "Prophet — refitting best configuration on full history",
+            "CatBoost (h=1) — direct multi-horizon training",
+            "CatBoost (h=2) — direct multi-horizon training",
+            "CatBoost (h=3) — direct multi-horizon training",
+            "Running rolling-origin cross-validation on all candidates",
+        ],
+    ),
+    (
+        "Model selection",
+        0.15,
+        [
+            "Pooling WMAPE across rolling-origin backtest cycles",
+            "Computing MASE and RMSE per forecast horizon",
+            "Electing family champions (SARIMAX, Prophet, CatBoost)",
+            "Electing production champion across families",
+        ],
+    ),
+    (
+        "Forecast inference",
+        0.10,
+        [
+            "Refitting production champion on full history",
+            "Generating 3-month ahead point forecasts",
+            "Persisting forecast artifacts to catalog",
+        ],
+    ),
+]
 
 
 def _format_bytes(num_bytes: int) -> str:
@@ -63,6 +136,38 @@ def _render_csv_summary(label: str, summary: dict) -> None:
         render_warning_banner(
             "No date column was detected, so granularity could not be inferred.",
             title="Missing date column",
+        )
+
+
+def _simulate_upload_processing(
+    duration_seconds: float = _UPLOAD_SIMULATION_SECONDS,
+) -> None:
+    """Show a staged loading animation that simulates the full forecasting pipeline.
+
+    Phases and steps mirror the real Kedro pipeline order so the animation is
+    convincing once live training is wired in behind it.
+
+    Args:
+        duration_seconds: Total wall-clock seconds distributed across phases
+            according to each phase's weight in ``_PIPELINE_PHASES``.
+    """
+    total_steps = sum(len(steps) for _, _, steps in _PIPELINE_PHASES)
+    completed = 0
+
+    with st.status("Running forecasting pipeline…", expanded=True) as loader:
+        progress_bar = st.progress(0)
+        for phase_name, weight, steps in _PIPELINE_PHASES:
+            st.write(f"**▸ {phase_name}**")
+            per_step = (duration_seconds * weight) / len(steps)
+            for step in steps:
+                st.write(f"→ {step}")
+                time.sleep(per_step)
+                completed += 1
+                progress_bar.progress(completed / total_steps)
+        loader.update(
+            label="Pipeline complete — production champion elected.",
+            state="complete",
+            expanded=False,
         )
 
 
@@ -176,6 +281,7 @@ def render_data_upload_page() -> None:
         disabled=not both_ready,
         key="submit_data",
     ):
+        _simulate_upload_processing()
         _process_csv_pair(demand_file, exogenous_file)
 
     render_section_header(

@@ -1,6 +1,9 @@
 import streamlit as st
 
+st.set_page_config(layout="wide", initial_sidebar_state="collapsed")
+
 from ui.components import render_page_header, render_warning_banner
+from ui.navigation import render_top_navbar
 from ui.page_blocks.evaluation_blocks import (
     render_candidate_metrics_table,
     render_champion_explainability,
@@ -22,6 +25,7 @@ from utils.data_loaders import (
 from utils.paths import CHAMPION_META
 
 apply_global_styles()
+render_top_navbar("Evaluation Report")
 
 render_page_header(
     title="Evaluation Report",

@@ -9,6 +9,7 @@ st.set_page_config(
     page_title="Demand Forecast POC",
     page_icon="📈",
     layout="wide",
+    initial_sidebar_state="collapsed",
 )
 
 apply_global_styles()
@@ -37,7 +38,7 @@ st.markdown(
 
 render_section_header(
     "App Sections",
-    description="Select a page from the sidebar to navigate.",
+    description="Select a section below to begin.",
 )
 
 _SECTIONS = [
@@ -46,35 +47,40 @@ _SECTIONS = [
         "Active",
         "Upload and validate demand, exogenous, and assistant-knowledge inputs.",
         "success",
+        "pages/01_Data_Upload.py",
     ),
     (
         "Descriptive Analysis",
         "Active",
         "Review original demand and external-variable timelines before forecasting.",
         "success",
+        "pages/02_Descriptive_Analysis.py",
     ),
     (
         "Monthly Forecast",
         "Active",
         "Review generated monthly forecast horizons, intervals, and forecast provenance.",
         "success",
+        "pages/03_Monthly_Forecast.py",
     ),
     (
         "Evaluation Report",
         "Active",
         "Champion selection rationale and rolling-origin performance across model families.",
         "success",
+        "pages/04_Evaluation_Report.py",
     ),
     (
         "Business Assistant",
         "Active",
         "Retrieval-grounded Q&A over forecasts, business context, and model results.",
         "success",
+        "pages/05_business_assistant.py",
     ),
 ]
 
 cols = st.columns(3)
-for i, (name, status, desc, badge_status) in enumerate(_SECTIONS):
+for i, (name, status, desc, badge_status, page_file) in enumerate(_SECTIONS):
     with cols[i % 3]:
         st.markdown(
             f"""
@@ -86,3 +92,4 @@ for i, (name, status, desc, badge_status) in enumerate(_SECTIONS):
             """,
             unsafe_allow_html=True,
         )
+        st.page_link(page_file, label=f"Open {name}")

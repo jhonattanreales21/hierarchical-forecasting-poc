@@ -1,3 +1,8 @@
+import streamlit as st
+
+st.set_page_config(layout="wide", initial_sidebar_state="collapsed")
+
+from ui.navigation import render_top_navbar
 from ui.page_blocks.descriptive_blocks import (
     render_descriptive_analysis,
     render_descriptive_page_header,
@@ -11,6 +16,7 @@ from utils.data_loaders import (
 )
 
 apply_global_styles()
+render_top_navbar("Descriptive Analysis")
 render_descriptive_page_header()
 
 demand_by_granularity = {
